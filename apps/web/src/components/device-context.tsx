@@ -12,6 +12,8 @@ export interface DeviceContextValue {
   info: RpcQuery<DeviceInfo>;
   projects: RpcQuery<Project[]>;
   threads: RpcQuery<Thread[]>;
+  debugOpen: boolean;
+  setDebugOpen: (open: boolean) => void;
 }
 
 export const DeviceContext = createContext<DeviceContextValue | null>(null);

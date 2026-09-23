@@ -27,9 +27,11 @@ type SignalData struct {
 	Candidate *IceCandidate `json:"candidate,omitempty"`
 }
 
-// HubToDaemon is either a relayed signal from a browser or an error.
+// HubToDaemon is a relayed signal from a browser, an error, or
+// "client.revoked" (a browser connection's session was signed out).
 type HubToDaemon struct {
 	T       string     `json:"t"`
+	ConnID  string     `json:"connId,omitempty"`
 	From    string     `json:"from,omitempty"`
 	SID     string     `json:"sid,omitempty"`
 	Data    SignalData `json:"data"`
@@ -87,6 +89,36 @@ type DirListing struct {
 	Path   string   `json:"path"`
 	Parent *string  `json:"parent"`
 	Dirs   []string `json:"dirs"`
+}
+
+type CandidateInfo struct {
+	Type     string `json:"type"`
+	Protocol string `json:"protocol"`
+	Address  string `json:"address"`
+	Port     uint16 `json:"port"`
+}
+
+type CandidatePair struct {
+	Local  CandidateInfo `json:"local"`
+	Remote CandidateInfo `json:"remote"`
+}
+
+type NetInterface struct {
+	Name      string   `json:"name"`
+	Addresses []string `json:"addresses"`
+}
+
+// PeerDebug is the daemon's view of one browser peer connection.
+type PeerDebug struct {
+	SID                string          `json:"sid"`
+	ConnectionState    string          `json:"connectionState"`
+	ICEConnectionState string          `json:"iceConnectionState"`
+	SelectedPair       *CandidatePair  `json:"selectedPair"`
+	LocalCandidates    []CandidateInfo `json:"localCandidates"`
+	RemoteCandidates   []CandidateInfo `json:"remoteCandidates"`
+	Interfaces         []NetInterface  `json:"interfaces"`
+	OpenTerminals      int             `json:"openTerminals"`
+	ConnectedForMs     int64           `json:"connectedForMs"`
 }
 
 type RPCRequest struct {

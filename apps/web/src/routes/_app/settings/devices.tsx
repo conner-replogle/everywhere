@@ -29,7 +29,7 @@ function DeviceSettings() {
   const [removing, setRemoving] = useState<Device | null>(null);
 
   return (
-    <div className="mx-auto w-full max-w-4xl px-4 py-6 sm:px-6">
+    <div>
       <div className="mb-4 flex items-end gap-3">
         <div>
           <h1 className="text-base font-semibold tracking-tight">Device settings</h1>

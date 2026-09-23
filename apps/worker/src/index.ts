@@ -1,9 +1,11 @@
 import { Hono } from "hono";
-import type { Context, Next } from "hono";
-import { bearerDevice, createSession, destroySession, sessionUser } from "./auth";
-import { hashPassword, randomId, randomToken, sha256, verifyPassword } from "./crypto";
-import { HUB_ID_HEADER, HUB_KIND_HEADER } from "./hub";
+import { bearerDevice } from "./auth";
+import { randomId, randomToken, sha256 } from "./crypto";
+import { HUB_ID_HEADER, HUB_KIND_HEADER, HUB_SESSION_HEADER } from "./hub";
 import { failingScript, installScript } from "./install";
+import { auth, requireUser } from "./routes/auth";
+import { iceServers, TURN_TTL_SECONDS } from "./turn";
+import { apiGuard, clientIp, originAllowed, rateLimited, tooMany } from "./security";
 import type { App } from "./types";
 
 export { AccountHub } from "./hub";
@@ -12,59 +14,12 @@ const ENROLL_TOKEN_TTL_MS = 15 * 60 * 1000;
 
 const app = new Hono<App>();
 
-async function requireUser(c: Context<App>, next: Next) {
-  const user = await sessionUser(c);
-  if (!user) return c.json({ error: "unauthorized" }, 401);
-  c.set("user", user);
-  await next();
-}
+app.use("/api/*", apiGuard);
+app.route("/api/auth", auth);
 
 function hub(env: Env, accountId: string) {
   return env.HUB.get(env.HUB.idFromName(accountId));
 }
-
-// --- auth -------------------------------------------------------------------
-
-app.get("/api/auth/me", async (c) => {
-  const user = await sessionUser(c);
-  const anyUser = await c.env.DB.prepare("SELECT 1 FROM users LIMIT 1").first();
-  return c.json({ user, signupOpen: !anyUser });
-});
-
-app.post("/api/auth/signup", async (c) => {
-  const { username, password } = await c.req.json<{ username?: string; password?: string }>();
-  if (!username?.trim() || !password || password.length < 8) {
-    return c.json({ error: "username and a password of at least 8 characters are required" }, 400);
-  }
-  const id = randomId();
-  // First signup wins: the insert only happens while the table is empty.
-  const res = await c.env.DB.prepare(
-    `INSERT INTO users (id, username, password_hash, created_at)
-     SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users)`,
-  )
-    .bind(id, username.trim(), await hashPassword(password), Date.now())
-    .run();
-  if (res.meta.changes !== 1) return c.json({ error: "signup is closed" }, 403);
-  await createSession(c, id);
-  return c.json({ user: { id, username: username.trim() } });
-});
-
-app.post("/api/auth/login", async (c) => {
-  const { username, password } = await c.req.json<{ username?: string; password?: string }>();
-  const row = await c.env.DB.prepare("SELECT id, username, password_hash FROM users WHERE username = ?")
-    .bind(username?.trim() ?? "")
-    .first<{ id: string; username: string; password_hash: string }>();
-  if (!row || !password || !(await verifyPassword(password, row.password_hash))) {
-    return c.json({ error: "invalid username or password" }, 401);
-  }
-  await createSession(c, row.id);
-  return c.json({ user: { id: row.id, username: row.username } });
-});
-
-app.post("/api/auth/logout", async (c) => {
-  await destroySession(c);
-  return c.json({});
-});
 
 // --- devices ----------------------------------------------------------------
 
@@ -102,6 +57,24 @@ app.delete("/api/devices/:id", requireUser, async (c) => {
   return c.json({});
 });
 
+// --- WebRTC -------------------------------------------------------------------
+
+app.get("/api/ice-servers", requireUser, async (c) => {
+  if (await rateLimited(c, `ice:${c.var.user.id}`)) return tooMany(c);
+  const { iceServers: servers, turn } = await iceServers(c.env);
+  return c.json({ iceServers: servers, turn, expiresAt: Date.now() + TURN_TTL_SECONDS * 1000 });
+});
+
+// Daemons get relay candidates too, for networks that block the UDP ports a
+// browser's relay would send to (strict corporate/campus egress).
+app.get("/api/daemon/ice-servers", async (c) => {
+  const device = await bearerDevice(c);
+  if (!device) return c.json({ error: "unauthorized" }, 401);
+  if (await rateLimited(c, `ice:${device.id}`)) return tooMany(c);
+  const { iceServers: servers, turn } = await iceServers(c.env);
+  return c.json({ iceServers: servers, turn, expiresAt: Date.now() + TURN_TTL_SECONDS * 1000 });
+});
+
 // --- enrollment -------------------------------------------------------------
 
 app.post("/api/enroll-tokens", requireUser, async (c) => {
@@ -114,6 +87,9 @@ app.post("/api/enroll-tokens", requireUser, async (c) => {
 });
 
 app.get("/i/:token", async (c) => {
+  if (await rateLimited(c, `install:${clientIp(c)}`)) {
+    return c.text(failingScript("too many requests; wait a minute"), 429);
+  }
   const token = c.req.param("token");
   const row = await c.env.DB.prepare(
     "SELECT 1 FROM enroll_tokens WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?",
@@ -123,12 +99,20 @@ app.get("/i/:token", async (c) => {
   const script = row
     ? installScript({ server: c.env.PUBLIC_URL, token, repo: c.env.GITHUB_REPO })
     : failingScript("this install link is invalid, used, or expired; generate a new one in the web UI");
-  return c.text(script, 200, { "content-type": "text/x-shellscript; charset=utf-8", "cache-control": "no-store" });
+  return c.text(script, 200, {
+    "content-type": "text/x-shellscript; charset=utf-8",
+    "cache-control": "no-store",
+    "x-content-type-options": "nosniff",
+  });
 });
 
 app.post("/api/daemon/enroll", async (c) => {
+  if (await rateLimited(c, `enroll:${clientIp(c)}`)) return tooMany(c);
   const body = await c.req.json<{ token?: string; hostname?: string; os?: string; arch?: string; version?: string }>();
-  if (!body.token || !body.hostname) return c.json({ error: "token and hostname are required" }, 400);
+  if (typeof body.token !== "string" || typeof body.hostname !== "string" || !body.hostname) {
+    return c.json({ error: "token and hostname are required" }, 400);
+  }
+  const clip = (v: unknown, fallback: string) => (typeof v === "string" && v ? v.slice(0, 64) : fallback);
   const tokenHash = await sha256(body.token);
   const deviceId = randomId();
   const now = Date.now();
@@ -149,11 +133,11 @@ app.post("/api/daemon/enroll", async (c) => {
     .bind(
       deviceId,
       claim.account_id,
-      body.hostname,
-      body.hostname,
-      body.os ?? "linux",
-      body.arch ?? "unknown",
-      body.version ?? "unknown",
+      clip(body.hostname, "device"),
+      clip(body.hostname, "device"),
+      clip(body.os, "linux"),
+      clip(body.arch, "unknown"),
+      clip(body.version, "unknown"),
       await sha256(credential),
       now,
     )
@@ -165,8 +149,12 @@ app.post("/api/daemon/enroll", async (c) => {
 
 app.get("/api/ws", requireUser, async (c) => {
   if (c.req.header("upgrade") !== "websocket") return c.text("expected websocket", 426);
+  // Browsers always send Origin on WebSocket handshakes; cookies alone would
+  // let another site (or another *.replogle.dev subdomain) hijack the socket.
+  if (!originAllowed(c)) return c.json({ error: "cross-origin websocket rejected" }, 403);
   const headers = new Headers(c.req.raw.headers);
   headers.set(HUB_KIND_HEADER, "client");
+  headers.set(HUB_SESSION_HEADER, c.var.sessionId);
   return hub(c.env, c.var.user.id).fetch(new Request(c.req.raw, { headers }));
 });
 
@@ -174,7 +162,7 @@ app.get("/api/daemon/ws", async (c) => {
   if (c.req.header("upgrade") !== "websocket") return c.text("expected websocket", 426);
   const device = await bearerDevice(c);
   if (!device) return c.json({ error: "unauthorized" }, 401);
-  const version = c.req.header("x-ew-version") ?? "unknown";
+  const version = (c.req.header("x-ew-version") ?? "unknown").slice(0, 64);
   await c.env.DB.prepare("UPDATE devices SET version = ? WHERE id = ?").bind(version, device.id).run();
   const headers = new Headers(c.req.raw.headers);
   headers.set(HUB_KIND_HEADER, "device");

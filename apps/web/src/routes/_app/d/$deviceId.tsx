@@ -2,6 +2,7 @@ import { createFileRoute, Link, Outlet } from "@tanstack/react-router";
 import { LoaderIcon, PanelLeftIcon, RotateCcwIcon, WifiOffIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { CenteredMessage } from "@/components/centered-message";
+import { DebugPanel, useDebugPanelState } from "@/components/debug-panel";
 import { DeviceContext, type DeviceContextValue, useDevice } from "@/components/device-context";
 import { DeviceSidebar } from "@/components/device-sidebar";
 import { Button } from "@/components/ui/button";
@@ -22,6 +23,7 @@ function DeviceLayout() {
   const projects = useRpc(peer, "projects.list", {}, ["projects.changed"]);
   const threads = useRpc(peer, "threads.list", {}, ["threads.changed"]);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [debugOpen, setDebugOpen] = useDebugPanelState();
 
   // Close the mobile drawer on navigation within the device.
   const pathname = Route.useMatch({ select: (m) => m.pathname });
@@ -37,7 +39,7 @@ function DeviceLayout() {
     );
   }
 
-  const ctx: DeviceContextValue = { deviceId, device, peer, conn, info, projects, threads };
+  const ctx: DeviceContextValue = { deviceId, device, peer, conn, info, projects, threads, debugOpen, setDebugOpen };
 
   return (
     <DeviceContext.Provider value={ctx}>
@@ -68,6 +70,12 @@ function DeviceLayout() {
           </Button>
           {conn.state === "connected" ? <Outlet /> : <ConnectionPanel />}
         </section>
+        {debugOpen && (
+          <DebugPanel
+            onClose={() => setDebugOpen(false)}
+            className="w-[380px] shrink-0 max-lg:absolute max-lg:inset-y-0 max-lg:right-0 max-lg:z-30 max-lg:shadow-2xl max-lg:shadow-black/60 max-sm:w-full"
+          />
+        )}
       </div>
     </DeviceContext.Provider>
   );
@@ -107,8 +115,8 @@ function ConnectionPanel() {
       >
         {unreachable ? (
           <p>
-            {name} is online, but no direct connection could be made. Terminals travel peer-to-peer over Tailscale, so
-            this browser's machine has to be on the same tailnet as {name}.
+            {name} is online, but no connection could be made, neither direct (LAN, Tailscale) nor through the TURN
+            relay. Open the debug panel for details.
           </p>
         ) : (
           <p className="font-mono text-xs">{conn.error}</p>

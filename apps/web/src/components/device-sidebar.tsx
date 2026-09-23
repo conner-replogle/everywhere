@@ -1,6 +1,7 @@
 import type { Project, Thread } from "@everywhere/protocol";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import {
+  BugIcon,
   ChevronRightIcon,
   FolderIcon,
   FolderPlusIcon,
@@ -59,7 +60,7 @@ function useCollapsed(deviceId: string) {
 }
 
 export function DeviceSidebar({ className }: { className?: string }) {
-  const { deviceId, device, peer, conn, info, projects, threads } = useDevice();
+  const { deviceId, device, peer, conn, info, projects, threads, debugOpen, setDebugOpen } = useDevice();
   const navigate = useNavigate();
   const { threadId: activeThreadId } = useParams({ strict: false });
   const { collapsed, toggle } = useCollapsed(deviceId);
@@ -124,6 +125,17 @@ export function DeviceSidebar({ className }: { className?: string }) {
                   : "Connecting…"}
           </div>
         </div>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className={cn(debugOpen && "bg-accent text-accent-foreground")}
+          onClick={() => setDebugOpen(!debugOpen)}
+          aria-pressed={debugOpen}
+          aria-label="Connection debug"
+          title="Connection debug"
+        >
+          <BugIcon />
+        </Button>
       </div>
 
       <div className="flex h-8 shrink-0 items-center px-3 pt-1">

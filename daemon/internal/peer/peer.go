@@ -20,6 +20,9 @@ import (
 type Signaler func(to, sid string, data protocol.SignalData)
 
 type Server struct {
+	// ICEServers supplies STUN/TURN servers for new connections.
+	ICEServers func() []webrtc.ICEServer
+
 	store *store.Store
 	terms *term.Manager
 	info  protocol.DeviceInfo
@@ -31,9 +34,10 @@ type Server struct {
 }
 
 type peer struct {
-	sid  string
-	from string
-	pc   *webrtc.PeerConnection
+	sid     string
+	from    string
+	pc      *webrtc.PeerConnection
+	started time.Time
 
 	mu       sync.Mutex
 	control  *webrtc.DataChannel
@@ -129,13 +133,15 @@ func (s *Server) answer(from, sid, sdp string) error {
 	if old := s.peer(sid); old != nil {
 		_ = old.pc.Close()
 	}
-	pc, err := s.api.NewPeerConnection(webrtc.Configuration{
-		ICEServers: []webrtc.ICEServer{{URLs: []string{"stun:stun.cloudflare.com:3478"}}},
-	})
+	servers := []webrtc.ICEServer{{URLs: []string{"stun:stun.cloudflare.com:3478"}}}
+	if s.ICEServers != nil {
+		servers = s.ICEServers()
+	}
+	pc, err := s.api.NewPeerConnection(webrtc.Configuration{ICEServers: servers})
 	if err != nil {
 		return err
 	}
-	p := &peer{sid: sid, from: from, pc: pc, terms: map[*termClient]bool{}}
+	p := &peer{sid: sid, from: from, pc: pc, started: time.Now(), terms: map[*termClient]bool{}}
 	s.mu.Lock()
 	s.peers[sid] = p
 	s.mu.Unlock()
@@ -201,6 +207,23 @@ func (s *Server) answer(from, sid, sdp string) error {
 		s.send(from, sid, c)
 	}
 	return nil
+}
+
+// CloseClient closes every peer opened by a browser connection whose session
+// was signed out.
+func (s *Server) CloseClient(connID string) {
+	s.mu.Lock()
+	var closing []*peer
+	for _, p := range s.peers {
+		if p.from == connID {
+			closing = append(closing, p)
+		}
+	}
+	s.mu.Unlock()
+	for _, p := range closing {
+		slog.Info("closing peer of signed-out session", "sid", p.sid)
+		_ = p.pc.Close()
+	}
 }
 
 func (s *Server) peer(sid string) *peer {

@@ -27,9 +27,24 @@ export const auth = {
     return me;
   },
 
-  async login(username: string, password: string): Promise<void> {
-    const { user } = await api.login(username, password);
+  /** Returns an MFA challenge when the account has 2FA on; otherwise signs in. */
+  async login(username: string, password: string): Promise<{ challenge: string } | null> {
+    const res = await api.login(username, password);
+    if (res.mfaRequired) return { challenge: res.challenge };
+    set({ user: res.user, signupOpen: false });
+    void this.load(true); // the login response omits recovery-code counts
+    return null;
+  },
+
+  async loginMfa(challenge: string, code: string): Promise<void> {
+    const { user } = await api.loginMfa(challenge, code);
     set({ user, signupOpen: false });
+    void this.load(true);
+  },
+
+  /** Re-fetch the user after a security change (2FA on/off, recovery codes used). */
+  async refresh(): Promise<Me> {
+    return this.load(true);
   },
 
   async signup(username: string, password: string): Promise<void> {

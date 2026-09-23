@@ -29,6 +29,8 @@ export interface SignalSink {
 const PING_INTERVAL_MS = 25_000;
 const BACKOFF_MIN_MS = 500;
 const BACKOFF_MAX_MS = 15_000;
+/** The hub closes a browser socket with this when its session is signed out or expires. */
+const CLOSE_SESSION_REVOKED = 4003;
 
 class Hub {
   private ws: WebSocket | null = null;
@@ -117,7 +119,7 @@ class Hub {
       this.handle(msg);
     };
 
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       if (this.ws !== ws) return;
       this.ws = null;
       clearInterval(this.pingTimer);
@@ -125,23 +127,43 @@ class Hub {
       this.sinks.clear();
       this.update({ ...this.snap, status: "closed", presenceKnown: false });
       if (!this.running) return;
+      if (ev.code === CLOSE_SESSION_REVOKED) {
+        // Signed out elsewhere (or expired): reconnecting would only 401.
+        // Confirm with the API before giving up, then resume if still signed in.
+        void this.checkSession().then((signedIn) => {
+          if (signedIn !== false) this.scheduleReconnect();
+        });
+        return;
+      }
+      // A failed upgrade (e.g. 401) looks the same as a network error; ask the API which it was.
       if (!opened) void this.checkSession();
-      const delay = Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** this.attempt++);
-      const jitter = delay * (0.8 + Math.random() * 0.4);
-      this.retryTimer = setTimeout(() => this.connect(), jitter);
+      this.scheduleReconnect();
     };
   }
 
-  /** A failed upgrade looks the same as a network error; ask the API which it was. */
-  private async checkSession(): Promise<void> {
+  private scheduleReconnect(): void {
+    if (!this.running) return;
+    clearTimeout(this.retryTimer);
+    const delay = Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** this.attempt++);
+    const jitter = delay * (0.8 + Math.random() * 0.4);
+    this.retryTimer = setTimeout(() => this.connect(), jitter);
+  }
+
+  /**
+   * Stops the hub and reports `onUnauthorized` if the session is gone.
+   * Resolves to whether we're signed in, or null if the API is unreachable.
+   */
+  private async checkSession(): Promise<boolean | null> {
     try {
       const me = await api.me();
       if (!me.user && this.running) {
         this.stop();
         this.onUnauthorized?.();
       }
+      return !!me.user;
     } catch {
       // Network is down; keep retrying the socket.
+      return null;
     }
   }
 

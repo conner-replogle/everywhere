@@ -35,6 +35,34 @@ everywhere update
 everywhere uninstall [--purge]
 ```
 
+## Security
+
+- **Accounts:** passwords are hashed with PBKDF2-SHA256 (100k iterations) and must be 10–256
+  characters. Optional TOTP two-factor auth uses any authenticator app, with 10 single-use
+  recovery codes. TOTP seeds are AES-GCM encrypted with the `TOTP_KEY` Worker secret.
+- **Sessions:** `__Host-` cookie (HttpOnly, Secure, SameSite=Lax), valid for 30 days. You can list
+  and revoke them under Settings → Security. Changing the password signs out every other session.
+  Revoking a session closes its WebSocket, and daemons drop any WebRTC connections it opened.
+- **Brute force:** login, 2FA, signup, enrollment and install links are rate-limited per IP.
+  Login is also limited per username. A 2FA challenge dies after 5 wrong codes, and a TOTP code
+  can't be used twice.
+- **CSRF and hijacking:** state-changing API calls must be JSON from an allowed Origin, and the
+  browser WebSocket checks Origin. Static pages have a strict CSP (`script-src 'self'`,
+  `frame-ancestors 'none'`), HSTS, nosniff and no-referrer.
+- **Devices:** each daemon has its own bearer credential, stored hashed on the server and `0600`
+  on the device. Removing a device revokes it immediately. Terminal data goes browser ↔ daemon
+  over DTLS and never passes through the Worker.
+
+**Locked out?** There's no email reset. From a machine logged in to the Cloudflare account:
+
+```sh
+bun run reset-password <username>                 # prints a temporary password, signs out all sessions
+bun run reset-password <username> --disable-2fa   # also removes the authenticator + recovery codes
+```
+
+Don't rotate `TOTP_KEY` while 2FA is enabled; the stored seeds would become unreadable
+(recover with `--disable-2fa`).
+
 ## Development
 
 Prerequisites: Bun, Go 1.27+, Wrangler logged in.
@@ -57,11 +85,17 @@ EVERYWHERE_HOME=/tmp/ew EVERYWHERE_BIN_DIR=/tmp/ew/bin EVERYWHERE_NO_SERVICE=1 \
 EVERYWHERE_HOME=/tmp/ew /tmp/ew/bin/everywhere daemon -v
 ```
 
+API security test (auth, 2FA, CSRF, sessions, rate limits) against a fresh local Worker:
+
+```sh
+cd apps/worker && EW_TEST_SERVER=http://localhost:8787 bun test/security.e2e.ts
+```
+
 End-to-end test (hub signaling → WebRTC → RPC → PTY), against that stack:
 
 ```sh
 cd daemon
-EW_E2E_SERVER=http://localhost:8787 EW_E2E_COOKIE='ew_session=…' EW_E2E_DEVICE=<device id> \
+EW_E2E_SERVER=http://localhost:8787 EW_E2E_COOKIE='__Host-ew_session=…' EW_E2E_DEVICE=<device id> \
   go test ./internal/e2e -v -count=1
 ```
 
@@ -70,6 +104,7 @@ EW_E2E_SERVER=http://localhost:8787 EW_E2E_COOKIE='ew_session=…' EW_E2E_DEVICE
 - **Daemon:** push a `v*` tag. GitHub Actions runs goreleaser and publishes
   `everywhere_{linux,darwin}_{amd64,arm64}.tar.gz` plus `checksums.txt`. The
   installer and `everywhere update` depend on those names.
-- **Worker:** `bun run deploy`. This builds the web app, applies D1 migrations
+- **Worker:** one-time setup: `openssl rand -base64 32 | tr -d '\n' | bunx wrangler secret put TOTP_KEY`
+  (run in `apps/worker`). Then `bun run deploy`. This builds the web app, applies D1 migrations
   remotely and deploys to `ai.replogle.dev`. Sign up immediately after the
   first deploy; the first signup becomes the only account.

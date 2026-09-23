@@ -20,6 +20,7 @@ import (
 
 	"github.com/conner-replogle/everywhere/daemon/internal/config"
 	"github.com/conner-replogle/everywhere/daemon/internal/hub"
+	"github.com/conner-replogle/everywhere/daemon/internal/ice"
 	"github.com/conner-replogle/everywhere/daemon/internal/peer"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/service"
@@ -146,8 +147,15 @@ func daemon(args []string) error {
 		Hostname: hostname, Home: home, OS: runtime.GOOS, Arch: runtime.GOARCH, Version: version.Version,
 	})
 	defer srv.Shutdown()
+	srv.ICEServers = (&ice.Provider{Server: cfg.Server, Credential: credential}).Servers
+	go srv.ICEServers() // warm the cache so the first connection doesn't wait
 
-	hc := &hub.Client{Server: cfg.Server, Credential: credential, OnSignal: srv.HandleSignal}
+	hc := &hub.Client{
+		Server:          cfg.Server,
+		Credential:      credential,
+		OnSignal:        srv.HandleSignal,
+		OnClientRevoked: srv.CloseClient,
+	}
 	srv.SetSignaler(hc.Send)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

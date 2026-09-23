@@ -1,1 +1,8 @@
 PUBLIC_URL=http://localhost:8787
+# Extra origins allowed to call the API (the vite dev server).
+ALLOWED_ORIGINS=http://localhost:5173
+# Dev-only key; generate your own with `openssl rand -base64 32`.
+# Production uses `wrangler secret put TOTP_KEY`.
+TOTP_KEY=10jtzL/xzwfR5UE61xi1GMR383n1rOhgpHSY/GTtY28=
+# Cloudflare Realtime TURN API token (optional; without it only STUN is used).
+# TURN_API_TOKEN=

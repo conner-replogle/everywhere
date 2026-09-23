@@ -1,5 +1,6 @@
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { AuthForm } from "@/components/auth-form";
+import { PASSWORD_HINT } from "@/lib/api";
 import { auth } from "@/lib/auth";
 
 export const Route = createFileRoute("/signup")({
@@ -18,7 +19,7 @@ function Signup() {
       title="Create the owner account"
       description="This install has one user. Signup closes as soon as this account exists."
       submitLabel="Create account"
-      passwordHint="At least 8 characters."
+      passwordHint={PASSWORD_HINT}
       autoCompletePassword="new-password"
       onSubmit={async (u, p) => {
         await auth.signup(u, p);

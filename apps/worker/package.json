@@ -7,7 +7,8 @@
     "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
     "migrate:local": "wrangler d1 migrations apply DB --local",
     "types": "wrangler types",
-    "typecheck": "tsc -p ."
+    "typecheck": "tsc -p .",
+    "reset-password": "bun scripts/reset-password.ts"
   },
   "dependencies": {
     "@everywhere/protocol": "workspace:*",

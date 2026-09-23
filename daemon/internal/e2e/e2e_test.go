@@ -3,7 +3,7 @@
 //
 // Run with a local stack (see README):
 //
-//	EW_E2E_SERVER=http://localhost:8799 EW_E2E_COOKIE='ew_session=...' EW_E2E_DEVICE=<id> go test ./internal/e2e -v
+//	EW_E2E_SERVER=http://localhost:8799 EW_E2E_COOKIE='__Host-ew_session=...' EW_E2E_DEVICE=<id> go test ./internal/e2e -v
 package e2e
 
 import (
@@ -42,7 +42,7 @@ func TestEndToEnd(t *testing.T) {
 	defer cancel()
 
 	ws, _, err := websocket.Dial(ctx, strings.Replace(server, "http", "ws", 1)+"/api/ws", &websocket.DialOptions{
-		HTTPHeader: http.Header{"Cookie": {cookie}},
+		HTTPHeader: http.Header{"Cookie": {cookie}, "Origin": {server}},
 	})
 	if err != nil {
 		t.Fatalf("dial hub: %v", err)
@@ -55,7 +55,12 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("expected device %s online in presence, got %+v", device, first)
 	}
 
-	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	// EW_E2E_RELAY=1 forces the connection through the TURN relay.
+	cfg := webrtc.Configuration{}
+	if os.Getenv("EW_E2E_RELAY") != "" {
+		cfg = relayConfig(t, server, cookie)
+	}
+	pc, err := webrtc.NewPeerConnection(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,6 +127,17 @@ func TestEndToEnd(t *testing.T) {
 	rpc.call(t, "device.info", nil, &info)
 	t.Logf("device.info: %+v", info)
 
+	var dbg protocol.PeerDebug
+	rpc.call(t, "debug.peer", nil, &dbg)
+	if dbg.SID != sid || dbg.SelectedPair == nil || dbg.ConnectionState != "connected" || len(dbg.Interfaces) == 0 {
+		t.Errorf("debug.peer = %+v", dbg)
+	} else if cfg.ICETransportPolicy == webrtc.ICETransportPolicyRelay && dbg.SelectedPair.Remote.Type != "relay" {
+		t.Errorf("expected the daemon to see a relay candidate, got %+v", dbg.SelectedPair)
+	} else {
+		t.Logf("debug.peer: selected %s %s:%d <-> %s %s:%d", dbg.SelectedPair.Local.Type, dbg.SelectedPair.Local.Address,
+			dbg.SelectedPair.Local.Port, dbg.SelectedPair.Remote.Type, dbg.SelectedPair.Remote.Address, dbg.SelectedPair.Remote.Port)
+	}
+
 	var projects []protocol.Project
 	rpc.call(t, "projects.list", nil, &projects)
 	if len(projects) == 0 || !projects[0].IsHome {
@@ -177,6 +193,33 @@ func TestEndToEnd(t *testing.T) {
 }
 
 // --- helpers ------------------------------------------------------------------
+
+func relayConfig(t *testing.T, server, cookie string) webrtc.Configuration {
+	t.Helper()
+	req, _ := http.NewRequest("GET", server+"/api/ice-servers", nil)
+	req.Header.Set("Cookie", cookie)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		IceServers []struct {
+			URLs       []string `json:"urls"`
+			Username   string   `json:"username"`
+			Credential string   `json:"credential"`
+		} `json:"iceServers"`
+		Turn bool `json:"turn"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || !out.Turn {
+		t.Fatalf("no TURN servers from /api/ice-servers (turn=%v, err=%v)", out.Turn, err)
+	}
+	cfg := webrtc.Configuration{ICETransportPolicy: webrtc.ICETransportPolicyRelay}
+	for _, s := range out.IceServers {
+		cfg.ICEServers = append(cfg.ICEServers, webrtc.ICEServer{URLs: s.URLs, Username: s.Username, Credential: s.Credential})
+	}
+	return cfg
+}
 
 func readJSON(t *testing.T, ctx context.Context, ws *websocket.Conn, v any) {
 	t.Helper()

@@ -50,7 +50,7 @@ function AppLayout() {
         </Link>
         <nav className="flex items-center gap-0.5">
           <NavLink to="/">Devices</NavLink>
-          <NavLink to="/settings/devices">Settings</NavLink>
+          <NavLink to="/settings">Settings</NavLink>
         </nav>
         <div className="ml-auto flex items-center gap-3">
           <HubStatus />
@@ -84,7 +84,7 @@ function AppLayout() {
   );
 }
 
-function NavLink({ to, children }: { to: "/" | "/settings/devices"; children: React.ReactNode }) {
+function NavLink({ to, children }: { to: "/" | "/settings"; children: React.ReactNode }) {
   return (
     <Link
       to={to}

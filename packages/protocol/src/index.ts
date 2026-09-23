@@ -35,6 +35,8 @@ export type DaemonToHub =
 /** Sent by the hub to a daemon. `from` is a browser connection id. */
 export type HubToDaemon =
   | { t: "signal"; from: string; sid: string; data: SignalData }
+  /** The browser connection's session was signed out; close its peers. */
+  | { t: "client.revoked"; connId: string }
   | { t: "error"; code: HubErrorCode; message: string };
 
 export type HubErrorCode = "device_offline" | "client_gone" | "daemon_too_old" | "bad_message" | "revoked";
@@ -81,6 +83,27 @@ export interface DirListing {
   dirs: string[];
 }
 
+export interface CandidateInfo {
+  type: string; // host | srflx | prflx | relay
+  protocol: string; // udp | tcp
+  address: string;
+  port: number;
+}
+
+/** The daemon's view of one browser's peer connection, for the debug panel. */
+export interface PeerDebug {
+  sid: string;
+  connectionState: string;
+  iceConnectionState: string;
+  selectedPair: { local: CandidateInfo; remote: CandidateInfo } | null;
+  localCandidates: CandidateInfo[];
+  remoteCandidates: CandidateInfo[];
+  /** Network interfaces the daemon gathers candidates on, e.g. tailscale0 100.101.102.103. */
+  interfaces: { name: string; addresses: string[] }[];
+  openTerminals: number;
+  connectedForMs: number;
+}
+
 /** Control-channel RPC methods: name -> [params, result]. */
 export interface RpcMethods {
   "device.info": [Record<string, never>, DeviceInfo];
@@ -93,6 +116,7 @@ export interface RpcMethods {
   "threads.rename": [{ id: string; name: string }, Thread];
   "threads.delete": [{ id: string }, Record<string, never>];
   "fs.listDirs": [{ path: string }, DirListing];
+  "debug.peer": [Record<string, never>, PeerDebug];
 }
 export type RpcMethod = keyof RpcMethods;
 

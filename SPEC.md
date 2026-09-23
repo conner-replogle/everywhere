@@ -30,9 +30,12 @@ something you run in a terminal. Harness-specific support comes later.
 
 - The Worker never sees project, thread, or terminal data. Those live only on
   the daemon (SQLite) and travel over WebRTC.
-- Tailscale is assumed on every device, the viewing device included. ICE uses the
-  daemon's tailnet host candidate. No TURN. If a device can't be reached, the UI
-  says so.
+- ICE prefers direct paths: LAN, Tailscale (the daemon's tailnet host candidate
+  plus peer-reflexive discovery) and NAT traversal via STUN. Cloudflare Realtime
+  TURN is the fallback. The Worker mints 12-hour credentials for browsers
+  (`GET /api/ice-servers`) and daemons (`GET /api/daemon/ice-servers`), so it
+  still works when the viewer isn't on the tailnet or the daemon's network blocks
+  UDP. Relayed traffic stays DTLS-encrypted end to end.
 - The Worker is trusted (no signaling-key pinning in V1).
 
 ## Decisions
@@ -41,14 +44,14 @@ something you run in a terminal. Harness-specific support comes later.
 |---|---|
 | Tenancy | Self-hosted, single user; every row keyed by `account_id` for later multi-tenant |
 | Daemon | Go, static binary, linux amd64/arm64 (macOS built, unsupported) |
-| Data path | WebRTC (pion) over Tailscale; Worker only does signaling |
+| Data path | WebRTC (pion): direct/Tailscale first, Cloudflare TURN fallback; Worker only does signaling |
 | Signaling | Hibernatable WebSockets on one `AccountHub` DO per account |
 | Worker storage | D1 for auth + device registry; DO holds sockets only |
 | Local storage | SQLite on daemon (`modernc.org/sqlite`, CGO-free) |
 | Session survival | None. PTYs are daemon children; if the daemon dies, threads get a fresh shell on next open |
 | Scrollback | In-memory ~1MB ring buffer per running thread; lost with the shell |
 | Multi-viewer | One writer, others live read-only, "Take over" button |
-| Auth | Username/password; first signup wins, signup closes after one user |
+| Auth | Username/password (PBKDF2) plus optional TOTP 2FA with recovery codes; first signup wins; reset via `bun run reset-password` |
 | Enrollment | One-use install link generated in the web UI (15 min TTL) |
 | Frontend | React + Vite + TanStack Router + Tailwind + shadcn/ui + xterm.js |
 | Distribution | Public GitHub releases (`conner-replogle/everywhere`) via goreleaser |
@@ -221,6 +224,6 @@ reused for every thread on that device in that tab.
 ## Out of scope for V1
 
 Mobile app, desktop app, harness integrations (resume, structured agent UIs),
-TURN / non-Tailscale access, multi-user signup, key pinning or E2E verification,
+multi-user signup, key pinning or E2E verification,
 sessions surviving daemon restart, persisted scrollback, official macOS support,
 Windows, daemon auto-update.

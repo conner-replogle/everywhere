@@ -28,6 +28,8 @@ type Client struct {
 	Server     string // e.g. https://ai.replogle.dev
 	Credential string
 	OnSignal   SignalHandler
+	// OnClientRevoked is called when a browser connection's session is signed out.
+	OnClientRevoked func(connID string)
 
 	conn atomic.Pointer[websocket.Conn]
 }
@@ -139,6 +141,10 @@ func (c *Client) session(ctx context.Context) error {
 		switch msg.T {
 		case "signal":
 			c.OnSignal(msg.From, msg.SID, msg.Data)
+		case "client.revoked":
+			if c.OnClientRevoked != nil {
+				c.OnClientRevoked(msg.ConnID)
+			}
 		case "error":
 			slog.Warn("hub error", "code", msg.Code, "message", msg.Message)
 		}

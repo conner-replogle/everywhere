@@ -1,12 +1,12 @@
 const PBKDF2_ITERATIONS = 100_000; // Workers' WebCrypto maximum
 
-function b64url(bytes: Uint8Array): string {
+export function b64url(bytes: Uint8Array): string {
   let s = "";
   for (const b of bytes) s += String.fromCharCode(b);
   return btoa(s).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 }
 
-function fromB64url(s: string): Uint8Array {
+export function fromB64url(s: string): Uint8Array {
   const bin = atob(s.replaceAll("-", "+").replaceAll("_", "/"));
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
 }

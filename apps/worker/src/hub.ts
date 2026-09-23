@@ -10,10 +10,11 @@ import { HUB_PING, HUB_PONG } from "@everywhere/protocol";
 import { randomId } from "./crypto";
 import { versionAtLeast } from "./version";
 
-type Attachment = { kind: "device"; id: string } | { kind: "client"; id: string };
+type Attachment = { kind: "device"; id: string } | { kind: "client"; id: string; session: string };
 
 export const HUB_KIND_HEADER = "x-ew-kind";
 export const HUB_ID_HEADER = "x-ew-id";
+export const HUB_SESSION_HEADER = "x-ew-session";
 
 /**
  * One per account. Holds a hibernatable WebSocket for every connected daemon
@@ -43,7 +44,8 @@ export class AccountHub extends DurableObject<Env> {
     } else {
       const connId = randomId();
       this.ctx.acceptWebSocket(server, [`client:${connId}`]);
-      server.serializeAttachment({ kind: "client", id: connId } satisfies Attachment);
+      const session = request.headers.get(HUB_SESSION_HEADER) ?? "";
+      server.serializeAttachment({ kind: "client", id: connId, session } satisfies Attachment);
       send(server, { t: "presence", online: this.onlineDevices() } satisfies HubToClient);
     }
     return new Response(null, { status: 101, webSocket: client });
@@ -60,7 +62,13 @@ export class AccountHub extends DurableObject<Env> {
 
     if (me.kind === "client") {
       const m = msg as ClientToHub;
-      if (m.t !== "signal") return this.fail(ws, "bad_message", "unknown message");
+      if (!isSignal(m)) return this.fail(ws, "bad_message", "unknown message");
+      // Re-check the session before each new connection, so sessions removed
+      // out of band (expiry, reset-password script) can't open new peers.
+      if (m.data.type === "offer" && !(await this.sessionValid(me.session))) {
+        ws.close(4003, "session expired");
+        return;
+      }
       const target = this.socket(`device:${m.to}`);
       if (!target) {
         return send(ws, { t: "error", code: "device_offline", message: "device is offline", sid: m.sid } satisfies HubToClient);
@@ -77,7 +85,7 @@ export class AccountHub extends DurableObject<Env> {
       }
       return;
     }
-    if (m.t === "signal") {
+    if (isSignal(m)) {
       const target = this.socket(`client:${m.to}`);
       if (!target) return this.fail(ws, "client_gone", `client ${m.to} is gone`);
       send(target, { t: "signal", from: me.id, sid: m.sid, data: m.data } satisfies HubToClient);
@@ -106,6 +114,28 @@ export class AccountHub extends DurableObject<Env> {
       ws.close(4003, "revoked");
     }
     this.broadcast({ t: "presence.update", deviceId, online: false });
+  }
+
+  /**
+   * Called when sessions are signed out or revoked: closes their sockets and
+   * tells daemons to drop any WebRTC peers those browsers opened.
+   */
+  async revokeSessions(sessionIds: string[]): Promise<void> {
+    const revoked = new Set(sessionIds);
+    const conns: string[] = [];
+    for (const ws of this.ctx.getWebSockets()) {
+      const a = ws.deserializeAttachment() as Attachment | null;
+      if (a?.kind === "client" && revoked.has(a.session)) {
+        conns.push(a.id);
+        ws.close(4003, "signed out");
+      }
+    }
+    if (conns.length === 0) return;
+    for (const ws of this.ctx.getWebSockets()) {
+      const a = ws.deserializeAttachment() as Attachment | null;
+      if (a?.kind !== "device") continue;
+      for (const connId of conns) send(ws, { t: "client.revoked", connId } satisfies HubToDaemon);
+    }
   }
 
   private async onGone(ws: WebSocket): Promise<void> {
@@ -143,9 +173,29 @@ export class AccountHub extends DurableObject<Env> {
     send(ws, { t: "error", code, message });
   }
 
+  private async sessionValid(sessionId: string): Promise<boolean> {
+    const row = await this.env.DB.prepare("SELECT 1 FROM sessions WHERE id_hash = ? AND expires_at > ?")
+      .bind(sessionId, Date.now())
+      .first();
+    return !!row;
+  }
+
   private async touchDevice(deviceId: string): Promise<void> {
     await this.env.DB.prepare("UPDATE devices SET last_seen_at = ? WHERE id = ?").bind(Date.now(), deviceId).run();
   }
+}
+
+function isSignal(m: unknown): m is { t: "signal"; to: string; sid: string; data: ClientToHub["data"] } {
+  const x = m as Record<string, unknown> | null;
+  return (
+    !!x &&
+    x.t === "signal" &&
+    typeof x.to === "string" &&
+    typeof x.sid === "string" &&
+    x.sid.length <= 128 &&
+    typeof x.data === "object" &&
+    x.data !== null
+  );
 }
 
 function send(ws: WebSocket, msg: HubToClient | HubToDaemon): void {

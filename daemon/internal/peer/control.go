@@ -25,7 +25,13 @@ func (s *Server) serveControl(p *peer, dc *webrtc.DataChannel) {
 			return
 		}
 		resp := protocol.RPCResponse{ID: req.ID}
-		result, err := s.call(req.Method, req.Params)
+		var result any
+		var err error
+		if req.Method == "debug.peer" {
+			result = p.debug()
+		} else {
+			result, err = s.call(req.Method, req.Params)
+		}
 		if err != nil {
 			resp.Error = &protocol.RPCError{Message: err.Error()}
 		} else {

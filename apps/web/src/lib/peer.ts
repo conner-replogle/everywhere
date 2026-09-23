@@ -16,6 +16,7 @@ import {
   type TermDaemonMsg,
 } from "@everywhere/protocol";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { api } from "./api";
 import { hub } from "./hub";
 
 export type PeerState = "idle" | "connecting" | "connected" | "failed" | "offline";
@@ -28,11 +29,77 @@ export interface PeerSnapshot {
   generation: number;
 }
 
-const ICE_SERVERS: RTCIceServer[] = [{ urls: "stun:stun.cloudflare.com:3478" }];
-const CONNECT_TIMEOUT_MS = 15_000;
+export type PeerLogKind = "state" | "signal" | "ice" | "error" | "info";
+
+export interface PeerLogEntry {
+  at: number;
+  kind: PeerLogKind;
+  message: string;
+}
+
+/** Browser-side connection facts for the debug panel (see also `pc` for getStats). */
+export interface PeerDebugInfo {
+  deviceId: string;
+  sid: string | null;
+  state: PeerState;
+  error: string | null;
+  generation: number;
+  viewers: number;
+  reconnectAttempt: number;
+  offerSentAt: number | null;
+  answerReceivedAt: number | null;
+  connectedAt: number | null;
+  candidatesSent: number;
+  candidatesReceived: number;
+  connectionState: RTCPeerConnectionState | null;
+  iceConnectionState: RTCIceConnectionState | null;
+  iceGatheringState: RTCIceGatheringState | null;
+  signalingState: RTCSignalingState | null;
+}
+
+const LOG_LIMIT = 200;
+
+/** "host udp 100.101.102.103:41641" from an a=candidate line. */
+function describeCandidate(line: string): string {
+  // candidate:<foundation> <component> <proto> <priority> <addr> <port> typ <type> ...
+  const [, , proto, , addr, port, , type] = line.replace(/^candidate:/, "").split(" ");
+  if (!type) return line;
+  return `${type} ${proto?.toLowerCase()} ${addr}:${port}`;
+}
+
+const STUN_ONLY: RTCIceServer[] = [{ urls: "stun:stun.cloudflare.com:3478" }];
+const CONNECT_TIMEOUT_MS = 20_000;
 const DISCONNECT_GRACE_MS = 5_000;
 const RPC_TIMEOUT_MS = 15_000;
-export const UNREACHABLE_MESSAGE = "Couldn't reach device — is this browser on your tailnet?";
+export const UNREACHABLE_MESSAGE = "Couldn't reach device — direct and relayed connections both failed.";
+
+// STUN + short-lived Cloudflare TURN credentials from the Worker, cached until
+// an hour before they expire. ICE prefers direct paths (LAN, Tailscale, NAT
+// traversal); the TURN relay is only picked when none of them work.
+let iceCache: { servers: RTCIceServer[]; turn: boolean; expiresAt: number } | null = null;
+
+async function iceServers(): Promise<{ servers: RTCIceServer[]; turn: boolean }> {
+  if (iceCache && iceCache.expiresAt - Date.now() > 60 * 60 * 1000) return iceCache;
+  try {
+    const r = await api.iceServers();
+    iceCache = { servers: r.iceServers, turn: r.turn, expiresAt: r.expiresAt };
+    return iceCache;
+  } catch {
+    return { servers: STUN_ONLY, turn: false };
+  }
+}
+
+const FORCE_RELAY_KEY = "ew.forceRelay";
+
+/** Debug switch: only use TURN relay candidates, to test the fallback path. */
+export function forceRelay(): boolean {
+  return localStorage.getItem(FORCE_RELAY_KEY) === "1";
+}
+
+export function setForceRelay(on: boolean): void {
+  if (on) localStorage.setItem(FORCE_RELAY_KEY, "1");
+  else localStorage.removeItem(FORCE_RELAY_KEY);
+}
 
 function randomSid(): string {
   // crypto.randomUUID needs a secure context; getRandomValues doesn't.
@@ -77,6 +144,15 @@ export class DevicePeer {
   private pending = new Map<number, PendingCall>();
   private unsubHub: () => void;
 
+  // Debug bookkeeping; read by the debug panel on its own schedule, so it
+  // doesn't notify subscribers.
+  private log: PeerLogEntry[] = [];
+  private offerSentAt: number | null = null;
+  private answerReceivedAt: number | null = null;
+  private connectedAt: number | null = null;
+  private candidatesSent = 0;
+  private candidatesReceived = 0;
+
   constructor(readonly deviceId: string) {
     this.unsubHub = hub.subscribe(this.onHubChange);
   }
@@ -91,6 +167,9 @@ export class DevicePeer {
   };
 
   private set(patch: Partial<PeerSnapshot>): void {
+    if (patch.state && patch.state !== this.snap.state) {
+      this.record("state", `${this.snap.state} → ${patch.state}${patch.error ? `: ${patch.error}` : ""}`);
+    }
     this.snap = { ...this.snap, ...patch };
     for (const fn of this.listeners) fn();
   }
@@ -110,8 +189,9 @@ export class DevicePeer {
     };
   }
 
-  /** Manual retry after `failed`. */
+  /** Manual retry after `failed`, or a forced reconnect from the debug panel. */
   retry(): void {
+    this.record("info", "manual reconnect");
     this.reconnectAttempt = 0;
     this.teardown();
     this.set({ state: "idle", error: null });
@@ -175,10 +255,29 @@ export class DevicePeer {
     }
   };
 
+  private negotiateSeq = 0;
+
   private async negotiate(): Promise<void> {
+    const seq = ++this.negotiateSeq;
+    const ice = await iceServers();
+    // A newer negotiation (or a state change) superseded this one while we waited.
+    if (seq !== this.negotiateSeq || this.snap.state !== "connecting" || this.pc) return;
     this.teardown();
     const sid = randomSid();
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    const relayOnly = forceRelay();
+    this.record(
+      "info",
+      `negotiating sid ${sid} (${ice.turn ? "TURN fallback available" : "STUN only"}${relayOnly ? ", relay forced" : ""})`,
+    );
+    this.offerSentAt = null;
+    this.answerReceivedAt = null;
+    this.connectedAt = null;
+    this.candidatesSent = 0;
+    this.candidatesReceived = 0;
+    const pc = new RTCPeerConnection({
+      iceServers: ice.servers,
+      iceTransportPolicy: relayOnly ? "relay" : "all",
+    });
     const control = pc.createDataChannel(CONTROL_CHANNEL, { ordered: true });
     this.pc = pc;
     this.control = control;
@@ -199,11 +298,28 @@ export class DevicePeer {
     });
 
     pc.onicecandidate = (ev) => {
-      if (alive() && ev.candidate?.candidate) signal({ type: "candidate", candidate: toWireCandidate(ev.candidate) });
+      if (!alive()) return;
+      if (ev.candidate?.candidate) {
+        this.candidatesSent++;
+        this.record("signal", `candidate sent: ${describeCandidate(ev.candidate.candidate)}`);
+        signal({ type: "candidate", candidate: toWireCandidate(ev.candidate) });
+      } else if (!ev.candidate) {
+        this.record("ice", `gathering complete (${this.candidatesSent} local candidates)`);
+      }
+    };
+    pc.oniceconnectionstatechange = () => {
+      if (alive()) this.record("ice", `iceConnectionState ${pc.iceConnectionState}`);
+    };
+    pc.onicegatheringstatechange = () => {
+      if (alive()) this.record("ice", `iceGatheringState ${pc.iceGatheringState}`);
+    };
+    pc.onsignalingstatechange = () => {
+      if (alive()) this.record("ice", `signalingState ${pc.signalingState}`);
     };
 
     pc.onconnectionstatechange = () => {
       if (!alive()) return;
+      this.record("ice", `connectionState ${pc.connectionState}`);
       clearTimeout(this.disconnectTimer);
       if (pc.connectionState === "failed") this.onDrop();
       else if (pc.connectionState === "disconnected") {
@@ -215,12 +331,19 @@ export class DevicePeer {
 
     control.onopen = () => {
       if (!alive()) return;
+      this.connectedAt = Date.now();
+      this.record(
+        "info",
+        `control channel open${this.offerSentAt ? ` (${this.connectedAt - this.offerSentAt} ms after offer)` : ""}`,
+      );
       clearTimeout(this.connectTimer);
       this.reconnectAttempt = 0;
       this.set({ state: "connected", error: null, generation: this.snap.generation + 1 });
     };
     control.onclose = () => {
-      if (alive()) this.onDrop();
+      if (!alive()) return;
+      this.record("info", "control channel closed");
+      this.onDrop();
     };
     control.onmessage = (ev) => {
       if (alive() && typeof ev.data === "string") this.onControlMessage(ev.data);
@@ -235,7 +358,9 @@ export class DevicePeer {
       await pc.setLocalDescription(offer);
       if (!alive()) return;
       // If the hub dropped in between, onHubChange restarts negotiation.
-      signal({ type: "offer", sdp: offer.sdp ?? "" });
+      const sent = signal({ type: "offer", sdp: offer.sdp ?? "" });
+      this.offerSentAt = Date.now();
+      this.record("signal", sent ? "offer sent" : "offer dropped (hub not connected)");
     } catch (e) {
       if (alive()) this.fail(`WebRTC setup failed: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -245,6 +370,8 @@ export class DevicePeer {
     try {
       switch (data.type) {
         case "answer": {
+          this.answerReceivedAt = Date.now();
+          this.record("signal", "answer received");
           await pc.setRemoteDescription({ type: "answer", sdp: data.sdp });
           this.remoteDescriptionSet = true;
           const queued = this.queuedCandidates;
@@ -253,6 +380,8 @@ export class DevicePeer {
           return;
         }
         case "candidate": {
+          this.candidatesReceived++;
+          this.record("signal", `candidate received: ${describeCandidate(data.candidate.candidate)}`);
           const init: RTCIceCandidateInit = {
             candidate: data.candidate.candidate,
             sdpMid: data.candidate.sdpMid ?? null,
@@ -264,6 +393,7 @@ export class DevicePeer {
           return;
         }
         case "bye":
+          this.record("signal", "bye received");
           this.onDrop();
           return;
         case "offer":
@@ -272,10 +402,12 @@ export class DevicePeer {
       }
     } catch (e) {
       console.warn("signal handling failed", e);
+      this.record("error", `handling ${data.type} failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 
   private onHubError(code: HubErrorCode, message: string): void {
+    this.record("error", `hub error ${code}${message ? `: ${message}` : ""}`);
     if (code === "device_offline") {
       this.teardown();
       this.set({ state: "offline", error: null });
@@ -299,11 +431,13 @@ export class DevicePeer {
     // Reconnect with a fresh sid; a second ICE failure lands in `failed`.
     this.set({ state: "connecting", error: null });
     const delay = Math.min(8000, 500 * 2 ** this.reconnectAttempt++);
+    this.record("info", `connection dropped; reconnect attempt ${this.reconnectAttempt} in ${delay} ms`);
     clearTimeout(this.reconnectTimer);
     this.reconnectTimer = setTimeout(() => this.kick(), delay);
   }
 
   private fail(message: string): void {
+    this.record("error", message);
     this.teardown();
     this.set({ state: "failed", error: message });
   }
@@ -323,13 +457,56 @@ export class DevicePeer {
       if (sid) hub.send({ t: "signal", to: this.deviceId, sid, data: { type: "bye" } });
       pc.onicecandidate = null;
       pc.onconnectionstatechange = null;
+      pc.oniceconnectionstatechange = null;
+      pc.onicegatheringstatechange = null;
+      pc.onsignalingstatechange = null;
       pc.close();
+      this.record("info", `closed sid ${sid}`);
     }
     for (const [, p] of this.pending) {
       clearTimeout(p.timer);
       p.reject(new Error("Connection to device closed"));
     }
     this.pending.clear();
+  }
+
+  // --- debug ----------------------------------------------------------------
+
+  private record(kind: PeerLogKind, message: string): void {
+    this.log.push({ at: Date.now(), kind, message });
+    if (this.log.length > LOG_LIMIT) this.log.splice(0, this.log.length - LOG_LIMIT);
+  }
+
+  /** Oldest first, at most the last 200 events. */
+  debugLog(): readonly PeerLogEntry[] {
+    return this.log.slice();
+  }
+
+  /** The live RTCPeerConnection, for getStats(). Null between connections. */
+  get peerConnection(): RTCPeerConnection | null {
+    return this.pc;
+  }
+
+  debugInfo(): PeerDebugInfo {
+    const pc = this.pc;
+    return {
+      deviceId: this.deviceId,
+      sid: this.sid,
+      state: this.snap.state,
+      error: this.snap.error,
+      generation: this.snap.generation,
+      viewers: this.viewers,
+      reconnectAttempt: this.reconnectAttempt,
+      offerSentAt: this.offerSentAt,
+      answerReceivedAt: this.answerReceivedAt,
+      connectedAt: this.connectedAt,
+      candidatesSent: this.candidatesSent,
+      candidatesReceived: this.candidatesReceived,
+      connectionState: pc?.connectionState ?? null,
+      iceConnectionState: pc?.iceConnectionState ?? null,
+      iceGatheringState: pc?.iceGatheringState ?? null,
+      signalingState: pc?.signalingState ?? null,
+    };
   }
 
   // --- control RPC ----------------------------------------------------------
