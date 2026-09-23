@@ -51,6 +51,7 @@ export const HUB_PONG = "pong";
 
 export const CONTROL_CHANNEL = "control";
 export const TERM_CHANNEL_PREFIX = "term:";
+export const AGENT_CHANNEL_PREFIX = "agent:";
 
 export interface DeviceInfo {
   hostname: string;
@@ -164,3 +165,110 @@ export type TermDaemonMsg =
   | { t: "writer"; you: boolean }
   | { t: "exited"; code: number }
   | { t: "error"; message: string };
+
+/**
+ * Agent channel `agent:<threadId>` for claude threads: JSON text frames both
+ * ways. The client sends `attach` first; the daemon replays persisted events
+ * after `afterSeq`, sends `synced`, then the live state and every change.
+ */
+export type AgentClientMsg =
+  | { t: "attach"; afterSeq?: number }
+  | { t: "send"; text: string }
+  | { t: "interrupt" }
+  | {
+      t: "respond";
+      requestId: string;
+      decision: "allow" | "allowSession" | "deny";
+      /** deny: feedback for claude. */
+      message?: string;
+      /** question requests: question text -> chosen answer. */
+      answers?: Record<string, string>;
+    }
+  | { t: "setMode"; mode: PermissionMode }
+  /** "" means claude's default model. */
+  | { t: "setModel"; model: string };
+
+export type AgentDaemonMsg =
+  | { t: "event"; seq: number; at: number; event: AgentEvent }
+  | { t: "synced"; truncated: boolean }
+  | { t: "state"; state: AgentState }
+  /** Appends to state.streaming[key]; not persisted. */
+  | { t: "delta"; key: string; kind: "text" | "thinking"; text: string }
+  | { t: "error"; message: string };
+
+export type PermissionMode = "default" | "acceptEdits" | "plan" | "auto" | "bypassPermissions";
+
+export interface AgentState {
+  status: AgentStatus;
+  error?: string;
+  sessionId?: string;
+  /** Configured model; "" means claude's default. */
+  model: string;
+  /** The model the running session actually uses. */
+  activeModel?: string;
+  permissionMode: PermissionMode;
+  pending: AgentRequest[];
+  streaming: AgentStreaming[];
+  models: AgentModel[];
+  account?: { email?: string; subscriptionType?: string };
+  /** Claude's latest rate_limit_info, passed through. */
+  rateLimit?: unknown;
+}
+
+/** A prompt waiting for the user. */
+export interface AgentRequest {
+  id: string;
+  kind: "tool" | "question" | "plan";
+  toolName: string;
+  toolUseId: string;
+  input: unknown;
+  title?: string;
+  description?: string;
+  decisionReason?: string;
+  /** Whether "allow for this session" is offered. */
+  canAllowSession: boolean;
+}
+
+export interface AgentStreaming {
+  key: string;
+  kind: "text" | "thinking";
+  text: string;
+}
+
+export interface AgentModel {
+  value: string;
+  displayName: string;
+  description?: string;
+}
+
+interface AgentEventBase {
+  /** Set on events from a subagent: the id of the tool call that started it. */
+  parentId?: string;
+}
+
+/** One persisted entry in a claude thread's log. */
+export type AgentEvent = AgentEventBase &
+  (
+    | { type: "user"; id: string; text: string }
+    | { type: "assistant" | "thinking"; id: string; text: string; streamKey?: string }
+    /** id is the tool_use id; a toolResult with the same id follows. */
+    | { type: "tool"; id: string; name: string; input: unknown }
+    | { type: "toolResult"; id: string; output: string; isError?: boolean }
+    | {
+        type: "request";
+        id: string;
+        kind: AgentRequest["kind"];
+        toolName: string;
+        decision: "allow" | "allowSession" | "deny" | "canceled";
+        answers?: Record<string, string>;
+        text?: string;
+      }
+    | {
+        type: "turn";
+        status: "started" | "completed" | "interrupted" | "error";
+        text?: string;
+        costUsd?: number;
+        durationMs?: number;
+      }
+    | { type: "notice"; text: string }
+  );

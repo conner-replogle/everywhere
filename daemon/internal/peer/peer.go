@@ -1,5 +1,5 @@
 // Package peer answers WebRTC connections from browsers and serves the control
-// RPC and terminal data channels over them.
+// RPC, terminal and agent data channels over them.
 package peer
 
 import (
@@ -11,6 +11,7 @@ import (
 
 	"github.com/pion/webrtc/v4"
 
+	"github.com/conner-replogle/everywhere/daemon/internal/agent"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/store"
 	"github.com/conner-replogle/everywhere/daemon/internal/term"
@@ -23,10 +24,11 @@ type Server struct {
 	// ICEServers supplies STUN/TURN servers for new connections.
 	ICEServers func() []webrtc.ICEServer
 
-	store *store.Store
-	terms *term.Manager
-	info  protocol.DeviceInfo
-	api   *webrtc.API
+	store  *store.Store
+	terms  *term.Manager
+	agents *agent.Manager
+	info   protocol.DeviceInfo
+	api    *webrtc.API
 
 	mu     sync.Mutex
 	peers  map[string]*peer // by sid
@@ -44,16 +46,21 @@ type peer struct {
 	answered bool
 	pending  []protocol.SignalData // local candidates gathered before the answer was sent
 	terms    map[*termClient]bool
+	agents   map[*agentClient]bool
 }
 
-// closeTerms detaches every terminal this peer had open. Data channel close
-// callbacks aren't guaranteed when the whole connection drops.
-func (p *peer) closeTerms() {
+// closeChannels detaches every terminal and agent thread this peer had open.
+// Data channel close callbacks aren't guaranteed when the whole connection
+// drops.
+func (p *peer) closeChannels() {
 	p.mu.Lock()
-	terms := p.terms
-	p.terms = nil
+	terms, agents := p.terms, p.agents
+	p.terms, p.agents = nil, nil
 	p.mu.Unlock()
 	for c := range terms {
+		c.detach()
+	}
+	for c := range agents {
 		c.detach()
 	}
 }
@@ -77,7 +84,9 @@ func NewServer(st *store.Store, info protocol.DeviceInfo) *Server {
 		api:   webrtc.NewAPI(webrtc.WithSettingEngine(se)),
 		peers: map[string]*peer{},
 	}
-	s.terms = term.NewManager(st, func() { s.broadcast(protocol.EventThreadsChanged) })
+	threadsChanged := func() { s.broadcast(protocol.EventThreadsChanged) }
+	s.terms = term.NewManager(st, threadsChanged)
+	s.agents = agent.NewManager(st, threadsChanged)
 	return s
 }
 
@@ -88,7 +97,7 @@ func (s *Server) SetSignaler(fn Signaler) {
 	s.mu.Unlock()
 }
 
-// Shutdown closes all peers and kills all shells.
+// Shutdown closes all peers, kills all shells and stops all claude processes.
 func (s *Server) Shutdown() {
 	s.mu.Lock()
 	peers := make([]*peer, 0, len(s.peers))
@@ -100,6 +109,7 @@ func (s *Server) Shutdown() {
 		_ = p.pc.Close()
 	}
 	s.terms.Shutdown()
+	s.agents.Shutdown()
 }
 
 // HandleSignal processes one signaling message from a browser. Messages for a
@@ -141,7 +151,7 @@ func (s *Server) answer(from, sid, sdp string) error {
 	if err != nil {
 		return err
 	}
-	p := &peer{sid: sid, from: from, pc: pc, started: time.Now(), terms: map[*termClient]bool{}}
+	p := &peer{sid: sid, from: from, pc: pc, started: time.Now(), terms: map[*termClient]bool{}, agents: map[*agentClient]bool{}}
 	s.mu.Lock()
 	s.peers[sid] = p
 	s.mu.Unlock()
@@ -168,7 +178,7 @@ func (s *Server) answer(from, sid, sdp string) error {
 		slog.Info("peer state", "sid", sid, "state", st.String())
 		if st == webrtc.PeerConnectionStateFailed || st == webrtc.PeerConnectionStateClosed {
 			_ = pc.Close()
-			p.closeTerms()
+			p.closeChannels()
 			s.mu.Lock()
 			if s.peers[sid] == p {
 				delete(s.peers, sid)
@@ -182,6 +192,8 @@ func (s *Server) answer(from, sid, sdp string) error {
 			s.serveControl(p, dc)
 		case strings.HasPrefix(label, protocol.TermChannelPrefix):
 			s.serveTerm(p, dc, strings.TrimPrefix(label, protocol.TermChannelPrefix))
+		case strings.HasPrefix(label, protocol.AgentChannelPrefix):
+			s.serveAgent(p, dc, strings.TrimPrefix(label, protocol.AgentChannelPrefix))
 		default:
 			_ = dc.Close()
 		}

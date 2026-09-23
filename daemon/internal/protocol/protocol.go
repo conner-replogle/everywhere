@@ -56,8 +56,9 @@ type SignalOut struct {
 // ---------------------------------------------------------------------------
 
 const (
-	ControlChannel    = "control"
-	TermChannelPrefix = "term:"
+	ControlChannel     = "control"
+	TermChannelPrefix  = "term:"
+	AgentChannelPrefix = "agent:"
 )
 
 type DeviceInfo struct {
@@ -175,4 +176,142 @@ type TermExited struct {
 type TermError struct {
 	T       string `json:"t"` // "error"
 	Message string `json:"message"`
+}
+
+// ---------------------------------------------------------------------------
+// Agent channel agent:<threadId>: JSON text frames in both directions.
+// ---------------------------------------------------------------------------
+
+// AgentClientMsg is a frame from the browser, discriminated by T:
+//   - attach {afterSeq}: must come first; replays events after afterSeq
+//   - send {text}: a prompt; starts or resumes claude as needed
+//   - interrupt
+//   - respond {requestId, decision, message?, answers?}
+//   - setMode {mode}, setModel {model}
+type AgentClientMsg struct {
+	T         string            `json:"t"`
+	AfterSeq  int64             `json:"afterSeq,omitempty"`
+	Text      string            `json:"text,omitempty"`
+	RequestID string            `json:"requestId,omitempty"`
+	Decision  string            `json:"decision,omitempty"` // allow | allowSession | deny
+	Message   string            `json:"message,omitempty"`  // deny: feedback for claude
+	Answers   map[string]string `json:"answers,omitempty"`  // question requests: question -> answer
+	Mode      string            `json:"mode,omitempty"`
+	Model     string            `json:"model,omitempty"`
+}
+
+// Frames from the daemon, discriminated by T.
+type (
+	// AgentEventMsg carries one persisted event (T "event").
+	AgentEventMsg struct {
+		T     string          `json:"t"`
+		Seq   int64           `json:"seq"`
+		At    int64           `json:"at"`
+		Event json.RawMessage `json:"event"`
+	}
+	// AgentSyncedMsg ends the replay that follows attach (T "synced").
+	// Truncated means older events were left out.
+	AgentSyncedMsg struct {
+		T         string `json:"t"`
+		Truncated bool   `json:"truncated"`
+	}
+	// AgentStateMsg is the full live state (T "state"), sent after the
+	// replay and whenever it changes.
+	AgentStateMsg struct {
+		T     string     `json:"t"`
+		State AgentState `json:"state"`
+	}
+	// AgentDeltaMsg appends streamed text to State.Streaming[Key] (T
+	// "delta"). Deltas aren't persisted; the completed text arrives as an
+	// assistant or thinking event with the same StreamKey.
+	AgentDeltaMsg struct {
+		T    string `json:"t"`
+		Key  string `json:"key"`
+		Kind string `json:"kind"` // text | thinking
+		Text string `json:"text"`
+	}
+	// AgentErrorMsg reports a failed request from this client (T "error").
+	AgentErrorMsg struct {
+		T       string `json:"t"`
+		Message string `json:"message"`
+	}
+)
+
+type AgentState struct {
+	// Status is stopped | starting | idle | working | waiting | error.
+	Status         string           `json:"status"`
+	Error          string           `json:"error,omitempty"`
+	SessionID      string           `json:"sessionId,omitempty"`
+	Model          string           `json:"model"`                 // configured; "" = claude's default
+	ActiveModel    string           `json:"activeModel,omitempty"` // what the running session uses
+	PermissionMode string           `json:"permissionMode"`
+	Pending        []AgentRequest   `json:"pending"`
+	Streaming      []AgentStreaming `json:"streaming"`
+	Models         []AgentModel     `json:"models"`
+	Account        *AgentAccount    `json:"account,omitempty"`
+	// RateLimit is claude's latest rate_limit_info, passed through.
+	RateLimit json.RawMessage `json:"rateLimit,omitempty"`
+}
+
+// AgentRequest is a prompt waiting for the user.
+type AgentRequest struct {
+	ID              string          `json:"id"`
+	Kind            string          `json:"kind"` // tool | question | plan
+	ToolName        string          `json:"toolName"`
+	ToolUseID       string          `json:"toolUseId"`
+	Input           json.RawMessage `json:"input"`
+	Title           string          `json:"title,omitempty"`
+	Description     string          `json:"description,omitempty"`
+	DecisionReason  string          `json:"decisionReason,omitempty"`
+	CanAllowSession bool            `json:"canAllowSession"`
+}
+
+type AgentStreaming struct {
+	Key  string `json:"key"`
+	Kind string `json:"kind"` // text | thinking
+	Text string `json:"text"`
+}
+
+type AgentModel struct {
+	Value       string `json:"value"`
+	DisplayName string `json:"displayName"`
+	Description string `json:"description,omitempty"`
+}
+
+type AgentAccount struct {
+	Email            string `json:"email,omitempty"`
+	SubscriptionType string `json:"subscriptionType,omitempty"`
+}
+
+// AgentEvent is one persisted entry in a claude thread's log. Type selects
+// which fields are set:
+//   - user {id, text}: a prompt
+//   - assistant, thinking {id, text, streamKey?}: a completed block
+//   - tool {id, name, input}: a tool call; id is the tool_use id
+//   - toolResult {id, output, isError}: id matches the tool event
+//   - request {id, kind, toolName, decision, answers?}: a resolved prompt;
+//     decision is allow | allowSession | deny | canceled
+//   - turn {status, text?, costUsd?, durationMs?}: status is started |
+//     completed | interrupted | error
+//   - notice {text}: e.g. compaction, claude exiting
+//
+// ParentID is set on events from a subagent: the id of the tool call that
+// started it.
+type AgentEvent struct {
+	Type       string            `json:"type"`
+	ID         string            `json:"id,omitempty"`
+	ParentID   string            `json:"parentId,omitempty"`
+	Text       string            `json:"text,omitempty"`
+	StreamKey  string            `json:"streamKey,omitempty"`
+	Name       string            `json:"name,omitempty"`
+	Input      json.RawMessage   `json:"input,omitempty"`
+	Output     string            `json:"output,omitempty"`
+	IsError    bool              `json:"isError,omitempty"`
+	Kind       string            `json:"kind,omitempty"`
+	ToolName   string            `json:"toolName,omitempty"`
+	Decision   string            `json:"decision,omitempty"`
+	Answers    map[string]string `json:"answers,omitempty"`
+	Status     string            `json:"status,omitempty"`
+	CostUSD    float64           `json:"costUsd,omitempty"`
+	DurationMS int64             `json:"durationMs,omitempty"`
 }

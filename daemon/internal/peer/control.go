@@ -88,7 +88,7 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 			return nil, err
 		}
 		for _, t := range threads {
-			s.terms.Kill(t.ID)
+			s.killThread(t)
 		}
 		s.broadcast(protocol.EventProjectsChanged)
 		s.broadcast(protocol.EventThreadsChanged)
@@ -97,7 +97,7 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 	case "threads.list":
 		threads, err := s.store.ListThreads(params.ProjectID)
 		for i := range threads {
-			threads[i].Running = s.terms.Running(threads[i].ID)
+			s.fillStatus(&threads[i])
 		}
 		return threads, err
 	case "threads.create":
@@ -109,15 +109,19 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 	case "threads.rename":
 		t, err := s.store.RenameThread(params.ID, params.Name)
 		if err == nil {
-			t.Running = s.terms.Running(t.ID)
+			s.fillStatus(&t)
 			s.broadcast(protocol.EventThreadsChanged)
 		}
 		return t, err
 	case "threads.delete":
+		t, err := s.store.GetThread(params.ID)
+		if err != nil {
+			return nil, err
+		}
 		if err := s.store.DeleteThread(params.ID); err != nil {
 			return nil, err
 		}
-		s.terms.Kill(params.ID)
+		s.killThread(t)
 		s.broadcast(protocol.EventThreadsChanged)
 		return empty{}, nil
 
@@ -125,6 +129,23 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		return listDirs(params.Path)
 	}
 	return nil, fmt.Errorf("unknown method %q", method)
+}
+
+// fillStatus sets a thread's live fields from its manager.
+func (s *Server) fillStatus(t *protocol.Thread) {
+	if t.Kind == protocol.ThreadClaude {
+		t.Running, t.AgentStatus = s.agents.Status(t.ID)
+	} else {
+		t.Running = s.terms.Running(t.ID)
+	}
+}
+
+func (s *Server) killThread(t protocol.Thread) {
+	if t.Kind == protocol.ThreadClaude {
+		s.agents.Kill(t.ID)
+	} else {
+		s.terms.Kill(t.ID)
+	}
 }
 
 // listDirs lists subdirectory names only; file contents are never read.
