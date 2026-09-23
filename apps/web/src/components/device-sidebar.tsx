@@ -1,4 +1,4 @@
-import type { Project, Thread } from "@everywhere/protocol";
+import type { Project, Thread, ThreadKind } from "@everywhere/protocol";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import {
   BugIcon,
@@ -9,6 +9,7 @@ import {
   MoreHorizontalIcon,
   PencilIcon,
   PlusIcon,
+  SparklesIcon,
   SquareTerminalIcon,
   Trash2Icon,
   XIcon,
@@ -98,9 +99,9 @@ export function DeviceSidebar({ className }: { className?: string }) {
     }
   }
 
-  async function newThread(projectId: string) {
+  async function newThread(projectId: string, kind: ThreadKind) {
     await run(async () => {
-      const t = await peer.call("threads.create", { projectId });
+      const t = await peer.call("threads.create", { projectId, kind });
       threads.refetch();
       if (collapsed.has(projectId)) toggle(projectId);
       await navigate({ to: "/d/$deviceId/t/$threadId", params: { deviceId, threadId: t.id } });
@@ -188,16 +189,22 @@ export function DeviceSidebar({ className }: { className?: string }) {
                       <span className="text-xs text-muted-foreground tabular-nums">{list.length}</span>
                     )}
                   </button>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
-                    onClick={() => newThread(p.id)}
-                    aria-label={`New thread in ${p.name}`}
-                    title="New thread"
-                  >
-                    <PlusIcon />
-                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
+                        aria-label={`New thread in ${p.name}`}
+                        title="New thread"
+                      >
+                        <PlusIcon />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start">
+                      <NewThreadItems onPick={(kind) => newThread(p.id, kind)} />
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button
@@ -214,10 +221,7 @@ export function DeviceSidebar({ className }: { className?: string }) {
                         {p.path}
                       </div>
                       <DropdownMenuSeparator />
-                      <DropdownMenuItem onSelect={() => newThread(p.id)}>
-                        <PlusIcon />
-                        New thread
-                      </DropdownMenuItem>
+                      <NewThreadItems onPick={(kind) => newThread(p.id, kind)} />
                       {!p.isHome && (
                         <>
                           <DropdownMenuItem onSelect={() => setPending({ kind: "rename-project", project: p })}>
@@ -251,15 +255,18 @@ export function DeviceSidebar({ className }: { className?: string }) {
                       />
                     ))}
                     {list.length === 0 && (
-                      <li>
-                        <button
-                          type="button"
-                          onClick={() => newThread(p.id)}
-                          className="flex h-6 w-full items-center gap-1.5 rounded-md pl-7 text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground"
-                        >
-                          <PlusIcon className="size-3" />
-                          New thread
-                        </button>
+                      <li className="flex gap-1 pl-6">
+                        {(["terminal", "claude"] as const).map((kind) => (
+                          <button
+                            key={kind}
+                            type="button"
+                            onClick={() => newThread(p.id, kind)}
+                            className="flex h-6 items-center gap-1.5 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+                          >
+                            <PlusIcon className="size-3" />
+                            {kind === "claude" ? "Claude" : "Terminal"}
+                          </button>
+                        ))}
                       </li>
                     )}
                   </ul>
@@ -326,11 +333,16 @@ export function DeviceSidebar({ className }: { className?: string }) {
         description={
           pending?.kind === "delete-project" ? (
             <p>
-              Its threads are deleted and any running shells in them are killed. Files in{" "}
+              Its threads are deleted and any running shells or Claude sessions in them are stopped. Files in{" "}
               <code className="font-mono text-xs text-foreground">{pending.project.path}</code> are not touched.
             </p>
           ) : (
-            <p>If its shell is running, it's killed. Anyone viewing it is disconnected.</p>
+            <p>
+              {pending?.kind === "delete-thread" && pending.thread.kind === "claude"
+                ? "Its conversation history in everywhere is deleted and Claude is stopped if it's running."
+                : "If its shell is running, it's killed."}{" "}
+              Anyone viewing it is disconnected.
+            </p>
           )
         }
         onConfirm={async () => {
@@ -379,11 +391,13 @@ function ThreadRow({
         params={{ deviceId, threadId: t.id }}
         className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-md pl-7 focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none"
       >
-        <SquareTerminalIcon className={cn("size-3.5 shrink-0", active ? "text-primary" : "text-muted-foreground")} />
-        <span className={cn("truncate", !active && "text-foreground/85")}>{t.name}</span>
-        {t.running && (
-          <span className="ml-auto size-1.5 shrink-0 rounded-full bg-live" title="Shell running" aria-label="running" />
+        {t.kind === "claude" ? (
+          <SparklesIcon className={cn("size-3.5 shrink-0", active ? "text-primary" : "text-muted-foreground")} />
+        ) : (
+          <SquareTerminalIcon className={cn("size-3.5 shrink-0", active ? "text-primary" : "text-muted-foreground")} />
         )}
+        <span className={cn("truncate", !active && "text-foreground/85")}>{t.name}</span>
+        <ThreadStatusDot thread={t} />
       </Link>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -409,6 +423,43 @@ function ThreadRow({
         </DropdownMenuContent>
       </DropdownMenu>
     </li>
+  );
+}
+
+function NewThreadItems({ onPick }: { onPick: (kind: ThreadKind) => void }) {
+  return (
+    <>
+      <DropdownMenuItem onSelect={() => onPick("terminal")}>
+        <SquareTerminalIcon />
+        New terminal
+      </DropdownMenuItem>
+      <DropdownMenuItem onSelect={() => onPick("claude")}>
+        <SparklesIcon />
+        New Claude thread
+      </DropdownMenuItem>
+    </>
+  );
+}
+
+/** Mint means live (shell or idle claude); claude threads also show what they're doing. */
+function ThreadStatusDot({ thread: t }: { thread: Thread }) {
+  const s = t.kind === "claude" ? t.agentStatus : undefined;
+  if (s === "working" || s === "starting") {
+    return <span className="ml-auto size-1.5 shrink-0 animate-pulse rounded-full bg-primary" title="Claude is working" />;
+  }
+  if (s === "waiting") {
+    return <span className="ml-auto size-1.5 shrink-0 rounded-full bg-warn" title="Claude is waiting for you" />;
+  }
+  if (s === "error") {
+    return <span className="ml-auto size-1.5 shrink-0 rounded-full bg-destructive" title="Claude stopped with an error" />;
+  }
+  if (!t.running) return null;
+  return (
+    <span
+      className="ml-auto size-1.5 shrink-0 rounded-full bg-live"
+      title={t.kind === "claude" ? "Claude running" : "Shell running"}
+      aria-label="running"
+    />
   );
 }
 

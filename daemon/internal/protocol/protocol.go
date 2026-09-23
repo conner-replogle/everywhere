@@ -289,8 +289,8 @@ type AgentAccount struct {
 //   - assistant, thinking {id, text, streamKey?}: a completed block
 //   - tool {id, name, input}: a tool call; id is the tool_use id
 //   - toolResult {id, output, isError}: id matches the tool event
-//   - request {id, kind, toolName, decision, answers?}: a resolved prompt;
-//     decision is allow | allowSession | deny | canceled
+//   - request {id, kind, toolName, toolUseId, decision, answers?}: a
+//     resolved prompt; decision is allow | allowSession | deny | canceled
 //   - turn {status, text?, costUsd?, durationMs?}: status is started |
 //     completed | interrupted | error
 //   - notice {text}: e.g. compaction, claude exiting
@@ -309,6 +309,7 @@ type AgentEvent struct {
 	IsError    bool              `json:"isError,omitempty"`
 	Kind       string            `json:"kind,omitempty"`
 	ToolName   string            `json:"toolName,omitempty"`
+	ToolUseID  string            `json:"toolUseId,omitempty"`
 	Decision   string            `json:"decision,omitempty"`
 	Answers    map[string]string `json:"answers,omitempty"`
 	Status     string            `json:"status,omitempty"`

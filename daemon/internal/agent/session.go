@@ -623,7 +623,8 @@ func (s *session) resolve(id string, ev protocol.AgentEvent) {
 			break
 		}
 	}
-	ev.Type, ev.ID, ev.Kind, ev.ToolName = "request", id, requestKind(req.ToolName), req.ToolName
+	ev.Type, ev.ID, ev.Kind = "request", id, requestKind(req.ToolName)
+	ev.ToolName, ev.ToolUseID = req.ToolName, req.ToolUseID
 	s.emit(ev)
 }
 

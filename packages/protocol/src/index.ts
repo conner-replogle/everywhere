@@ -259,6 +259,8 @@ export type AgentEvent = AgentEventBase &
         id: string;
         kind: AgentRequest["kind"];
         toolName: string;
+        /** The tool call this prompt was about. */
+        toolUseId: string;
         decision: "allow" | "allowSession" | "deny" | "canceled";
         answers?: Record<string, string>;
         text?: string;

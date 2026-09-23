@@ -9,8 +9,9 @@ something you run in a terminal. Harness-specific support comes later.
 - **Device**: a machine running the `everywhere` daemon, enrolled to an account.
 - **Project**: a named directory on a device (e.g. `~/code/api` on `hetzner-1`).
   Every device has an implicit **home** project (`$HOME`) for loose terminals.
-- **Thread**: a named, persistent terminal slot inside a project. Its shell is
-  a child process of the daemon, spawned lazily when a client opens the thread.
+- **Thread**: a named, persistent slot inside a project, either a
+  **terminal** (a shell, spawned lazily when a client opens the thread) or a
+  **claude** thread (a Claude Code conversation; see Claude threads).
 - **Client**: a browser tab on the website (later: desktop/mobile apps, which
   are viewers only).
 - **Writer**: the one client allowed to type into / resize a thread. Everyone
@@ -141,7 +142,14 @@ everywhere status | version | update | uninstall
 
 ```
 projects (id, name, path UNIQUE, created_at)                -- home project seeded on first run
-threads  (id, project_id, name, created_at, last_opened_at, had_session BOOL)
+threads  (id, project_id, kind, name, created_at, last_opened_at, had_session BOOL,
+          agent_session_id, agent_model, agent_permission_mode)
+agent_events (thread_id, seq, at, event JSON)               -- claude thread log
+```
+
+Migrations are append-only and tracked in `PRAGMA user_version`.
+
+```
 ```
 
 ### Runtime
@@ -186,13 +194,49 @@ threads  (id, project_id, name, created_at, last_opened_at, had_session BOOL)
 3. `everywhere enroll --server https://ai.replogle.dev --token <token>`.
 4. Enable and start the unit. Without systemd, print how to run `everywhere daemon`.
 
+### Claude threads
+
+A claude thread runs the user's own `claude` CLI (found on PATH, via the
+login shell, or in `~/.local/bin`) with the login shell's environment, in the
+project directory. The daemon speaks Claude Code's stream-json protocol, the
+same one the Agent SDK uses (`internal/claude`):
+
+- **Process lifecycle** (`internal/agent`):
+  - One `claude` process per active thread, started on the first prompt and
+    resumed with `--resume <session>` after that.
+  - It keeps running with no viewers attached.
+  - It is stopped after 30 idle minutes; the next prompt resumes it.
+  - Each thread is an actor goroutine that owns its state.
+- **Event log**: Claude's output becomes a persisted event log (`agent_events`,
+  per-thread `seq`) plus live state: status, pending permission prompts,
+  streamed text, mode and model.
+- **`agent:<threadId>` data channel** (JSON both ways):
+  - client → daemon:
+    - `attach {afterSeq}` must come first; it replays the events after
+      `afterSeq`, then `synced`
+    - `send {text}`: a prompt. While a turn runs, it is folded into that turn.
+    - `interrupt`
+    - `respond {requestId, decision, message?, answers?}`, where decision is
+      allow | allowSession | deny
+    - `setMode`, `setModel`
+  - daemon → client:
+    - `event {seq, at, event}`
+    - `synced`
+    - `state {state}`, pushed on every change
+    - `delta {key, text}`: streamed text, not persisted
+    - `error`
+- **Clients**: any attached client may prompt and answer; the first answer wins.
+- **Thread list**: `threads.list` reports `running` and `agentStatus`
+  (stopped | starting | idle | working | waiting | error).
+
 ## Web app
 
 ```
 /login, /signup                 signup only while no user exists
 /                               devices with live presence; offline = greyed, empty
 /d/$deviceId                    project + thread sidebar (via control channel)
-/d/$deviceId/t/$threadId        xterm.js terminal (WebGL, fit addon), writer banner + Take over
+/d/$deviceId/t/$threadId        terminal: xterm.js (WebGL, fit addon), writer banner + Take over
+                                claude: timeline, permission/question/plan cards, composer
 /settings/devices               add device (shows install command), rename, revoke
 ```
 
@@ -223,7 +267,7 @@ reused for every thread on that device in that tab.
 
 ## Out of scope for V1
 
-Mobile app, desktop app, harness integrations (resume, structured agent UIs),
+Mobile app, desktop app, harnesses other than Claude Code,
 multi-user signup, key pinning or E2E verification,
 sessions surviving daemon restart, persisted scrollback, official macOS support,
 Windows, daemon auto-update.

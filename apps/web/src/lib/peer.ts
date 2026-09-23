@@ -2,6 +2,9 @@
 // Signaling goes through the hub; everything else rides data channels.
 
 import {
+  AGENT_CHANNEL_PREFIX,
+  type AgentClientMsg,
+  type AgentDaemonMsg,
   CONTROL_CHANNEL,
   type HubErrorCode,
   type IceCandidate,
@@ -569,6 +572,13 @@ export class DevicePeer {
     ch.binaryType = "arraybuffer";
     return new TerminalChannel(ch, handlers);
   }
+
+  /** Opens an `agent:<threadId>` channel for a claude thread. Throws if not connected. */
+  openAgent(threadId: string, handlers: AgentHandlers): AgentChannel {
+    if (!this.pc || this.snap.state !== "connected") throw new Error("Not connected to device");
+    const ch = this.pc.createDataChannel(`${AGENT_CHANNEL_PREFIX}${threadId}`, { ordered: true });
+    return new AgentChannel(ch, handlers);
+  }
 }
 
 export interface TerminalHandlers {
@@ -618,6 +628,54 @@ export class TerminalChannel {
 
   sendInput(data: string): void {
     if (this.isOpen) this.ch.send(this.encoder.encode(data));
+  }
+
+  close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.ch.close();
+  }
+}
+
+export interface AgentHandlers {
+  onOpen(): void;
+  onMessage(msg: AgentDaemonMsg): void;
+  onClose(): void;
+}
+
+export class AgentChannel {
+  private closed = false;
+
+  constructor(
+    private ch: RTCDataChannel,
+    h: AgentHandlers,
+  ) {
+    ch.onopen = () => {
+      if (!this.closed) h.onOpen();
+    };
+    ch.onmessage = (ev) => {
+      if (this.closed || typeof ev.data !== "string") return;
+      try {
+        h.onMessage(JSON.parse(ev.data) as AgentDaemonMsg);
+      } catch {
+        // ignore malformed frames
+      }
+    };
+    ch.onclose = () => {
+      if (this.closed) return;
+      this.closed = true;
+      h.onClose();
+    };
+  }
+
+  get isOpen(): boolean {
+    return !this.closed && this.ch.readyState === "open";
+  }
+
+  send(msg: AgentClientMsg): boolean {
+    if (!this.isOpen) return false;
+    this.ch.send(JSON.stringify(msg));
+    return true;
   }
 
   close(): void {
