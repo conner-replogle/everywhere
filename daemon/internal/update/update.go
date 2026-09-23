@@ -5,14 +5,17 @@ import (
 	"archive/tar"
 	"bufio"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,6 +61,67 @@ func Latest(exe string) error {
 		return err
 	}
 	return os.Rename(tmp, exe)
+}
+
+// LatestVersion returns the newest release's version, e.g. "0.1.2", without
+// downloading it: GitHub redirects /releases/latest to the release's tag,
+// which avoids the rate-limited API.
+func LatestVersion(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://github.com/"+version.Repo+"/releases/latest", nil)
+	if err != nil {
+		return "", err
+	}
+	client := &http.Client{
+		Timeout:       15 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	resp.Body.Close()
+	loc := resp.Header.Get("Location")
+	if resp.StatusCode/100 != 3 || !strings.Contains(loc, "/releases/tag/") {
+		return "", fmt.Errorf("finding the latest release: unexpected %s", resp.Status)
+	}
+	return strings.TrimPrefix(path.Base(loc), "v"), nil
+}
+
+// Newer reports whether version a is newer than b. Versions are dotted
+// numbers with an optional "v"; anything unparsable (like "dev") is never
+// newer and never older.
+func Newer(a, b string) bool {
+	pa, oka := parse(a)
+	pb, okb := parse(b)
+	if !oka || !okb {
+		return false
+	}
+	for i := range max(len(pa), len(pb)) {
+		var x, y int
+		if i < len(pa) {
+			x = pa[i]
+		}
+		if i < len(pb) {
+			y = pb[i]
+		}
+		if x != y {
+			return x > y
+		}
+	}
+	return false
+}
+
+func parse(v string) ([]int, bool) {
+	v, _, _ = strings.Cut(strings.TrimPrefix(v, "v"), "-") // drop pre-release suffixes
+	var out []int
+	for _, part := range strings.Split(v, ".") {
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, false
+		}
+		out = append(out, n)
+	}
+	return out, true
 }
 
 func fetch(url string) ([]byte, error) {

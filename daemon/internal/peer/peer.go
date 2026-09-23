@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/webrtc/v4"
@@ -23,6 +24,9 @@ type Signaler func(to, sid string, data protocol.SignalData)
 type Server struct {
 	// ICEServers supplies STUN/TURN servers for new connections.
 	ICEServers func() []webrtc.ICEServer
+	// Restart, if set, restarts the daemon into a newly installed binary;
+	// device.update needs it.
+	Restart func()
 
 	store  *store.Store
 	terms  *term.Manager
@@ -33,6 +37,11 @@ type Server struct {
 	mu     sync.Mutex
 	peers  map[string]*peer // by sid
 	signal Signaler
+
+	updating atomic.Bool
+	updateMu sync.Mutex
+	latest   string // latest release version, cached
+	latestAt time.Time
 }
 
 type peer struct {
@@ -105,8 +114,21 @@ func (s *Server) Shutdown() {
 		peers = append(peers, p)
 	}
 	s.mu.Unlock()
-	for _, p := range peers {
-		_ = p.pc.Close()
+	// pion's Close waits several seconds on a live connection; the process
+	// is exiting (or re-execing), so don't hold it up for long.
+	closed := make(chan struct{})
+	go func() {
+		var wg sync.WaitGroup
+		for _, p := range peers {
+			wg.Go(func() { _ = p.pc.Close() })
+		}
+		wg.Wait()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		slog.Info("not waiting for peer connections to finish closing")
 	}
 	s.terms.Shutdown()
 	s.agents.Shutdown()

@@ -17,6 +17,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { useDevice } from "@/components/device-context";
+import { DeviceUpdate } from "@/components/device-update";
 import { NewProjectDialog } from "@/components/new-project-dialog";
 import { PresenceDot } from "@/components/presence-dot";
 import { RenameDialog } from "@/components/rename-dialog";
@@ -70,6 +71,8 @@ export function DeviceSidebar({ className }: { className?: string }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const connected = conn.state === "connected";
   const online = useDeviceOnline(deviceId);
+  // Daemons from before claude threads would open a terminal instead.
+  const claudeSupported = info.data?.features?.includes("claude") ?? false;
 
   const threadsByProject = useMemo(() => {
     const m = new Map<string, Thread[]>();
@@ -139,6 +142,8 @@ export function DeviceSidebar({ className }: { className?: string }) {
         </Button>
       </div>
 
+      <DeviceUpdate />
+
       <div className="flex h-8 shrink-0 items-center px-3 pt-1">
         <span className="text-xs font-medium text-muted-foreground">Projects</span>
         <Button
@@ -202,7 +207,7 @@ export function DeviceSidebar({ className }: { className?: string }) {
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="start">
-                      <NewThreadItems onPick={(kind) => newThread(p.id, kind)} />
+                      <NewThreadItems claude={claudeSupported} onPick={(kind) => newThread(p.id, kind)} />
                     </DropdownMenuContent>
                   </DropdownMenu>
                   <DropdownMenu>
@@ -221,7 +226,7 @@ export function DeviceSidebar({ className }: { className?: string }) {
                         {p.path}
                       </div>
                       <DropdownMenuSeparator />
-                      <NewThreadItems onPick={(kind) => newThread(p.id, kind)} />
+                      <NewThreadItems claude={claudeSupported} onPick={(kind) => newThread(p.id, kind)} />
                       {!p.isHome && (
                         <>
                           <DropdownMenuItem onSelect={() => setPending({ kind: "rename-project", project: p })}>
@@ -256,7 +261,7 @@ export function DeviceSidebar({ className }: { className?: string }) {
                     ))}
                     {list.length === 0 && (
                       <li className="flex gap-1 pl-6">
-                        {(["terminal", "claude"] as const).map((kind) => (
+                        {(claudeSupported ? (["terminal", "claude"] as const) : (["terminal"] as const)).map((kind) => (
                           <button
                             key={kind}
                             type="button"
@@ -426,16 +431,20 @@ function ThreadRow({
   );
 }
 
-function NewThreadItems({ onPick }: { onPick: (kind: ThreadKind) => void }) {
+function NewThreadItems({ claude, onPick }: { claude: boolean; onPick: (kind: ThreadKind) => void }) {
   return (
     <>
       <DropdownMenuItem onSelect={() => onPick("terminal")}>
         <SquareTerminalIcon />
         New terminal
       </DropdownMenuItem>
-      <DropdownMenuItem onSelect={() => onPick("claude")}>
+      <DropdownMenuItem
+        disabled={!claude}
+        onSelect={() => onPick("claude")}
+        title={claude ? undefined : "Update the daemon to use Claude threads (run `everywhere update` on the device)"}
+      >
         <SparklesIcon />
-        New Claude thread
+        {claude ? "New Claude thread" : "Claude needs a daemon update"}
       </DropdownMenuItem>
     </>
   );

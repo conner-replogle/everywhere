@@ -67,6 +67,29 @@ type DeviceInfo struct {
 	OS       string `json:"os"`
 	Arch     string `json:"arch"`
 	Version  string `json:"version"`
+	// Features lists what this daemon supports beyond V1, so the web app can
+	// adapt to older daemons.
+	Features []string `json:"features"`
+}
+
+const (
+	FeatureClaude = "claude" // claude threads and the agent channel
+	FeatureUpdate = "update" // device.checkUpdate and device.update
+)
+
+// UpdateInfo is the result of device.checkUpdate.
+type UpdateInfo struct {
+	Current   string `json:"current"`
+	Latest    string `json:"latest"`
+	Available bool   `json:"available"`
+	// Reason says why this daemon can't update itself (e.g. a dev build).
+	Reason string `json:"reason,omitempty"`
+}
+
+// UpdateResult is the result of device.update, sent just before the daemon
+// restarts into the new version.
+type UpdateResult struct {
+	Version string `json:"version"`
 }
 
 type Project struct {

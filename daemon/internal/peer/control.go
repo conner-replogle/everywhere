@@ -24,21 +24,30 @@ func (s *Server) serveControl(p *peer, dc *webrtc.DataChannel) {
 		if err := json.Unmarshal(msg.Data, &req); err != nil {
 			return
 		}
-		resp := protocol.RPCResponse{ID: req.ID}
-		var result any
-		var err error
-		if req.Method == "debug.peer" {
-			result = p.debug()
-		} else {
-			result, err = s.call(req.Method, req.Params)
+		handle := func() {
+			resp := protocol.RPCResponse{ID: req.ID}
+			var result any
+			var err error
+			if req.Method == "debug.peer" {
+				result = p.debug()
+			} else {
+				result, err = s.call(req.Method, req.Params)
+			}
+			if err != nil {
+				resp.Error = &protocol.RPCError{Message: err.Error()}
+			} else {
+				resp.Result = result
+			}
+			out, _ := json.Marshal(resp)
+			_ = dc.SendText(string(out))
 		}
-		if err != nil {
-			resp.Error = &protocol.RPCError{Message: err.Error()}
+		// Requests are answered in order, except the ones that go out to
+		// GitHub, which would hold up everything behind them.
+		if req.Method == "device.checkUpdate" || req.Method == "device.update" {
+			go handle()
 		} else {
-			resp.Result = result
+			handle()
 		}
-		out, _ := json.Marshal(resp)
-		_ = dc.SendText(string(out))
 	})
 }
 
@@ -61,6 +70,10 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 	switch method {
 	case "device.info":
 		return s.info, nil
+	case "device.checkUpdate":
+		return s.checkUpdate()
+	case "device.update":
+		return s.applyUpdate()
 
 	case "projects.list":
 		return s.store.ListProjects()

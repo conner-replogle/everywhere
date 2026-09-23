@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -53,6 +54,9 @@ func main() {
 		err = enroll(args)
 	case "daemon":
 		err = daemon(args)
+		if errors.Is(err, errRestart) {
+			err = reexec()
+		}
 	case "add":
 		err = add(args)
 	case "status":
@@ -145,6 +149,7 @@ func daemon(args []string) error {
 	home, _ := os.UserHomeDir()
 	srv := peer.NewServer(st, protocol.DeviceInfo{
 		Hostname: hostname, Home: home, OS: runtime.GOOS, Arch: runtime.GOARCH, Version: version.Version,
+		Features: []string{protocol.FeatureClaude, protocol.FeatureUpdate},
 	})
 	defer srv.Shutdown()
 	srv.ICEServers = (&ice.Provider{Server: cfg.Server, Credential: credential}).Servers
@@ -160,12 +165,34 @@ func daemon(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	var restart atomic.Bool
+	srv.Restart = func() {
+		restart.Store(true)
+		stop()
+	}
 	slog.Info("everywhere daemon starting", "version", version.Version, "device", cfg.DeviceID)
 	if err := hc.Run(ctx); err != nil {
 		return err
 	}
+	if restart.Load() {
+		slog.Info("shutting down to restart")
+		return errRestart // main re-execs once the deferred cleanup has run
+	}
 	slog.Info("shutting down")
 	return nil
+}
+
+// errRestart asks main to replace the process with the (updated) binary.
+var errRestart = errors.New("restart requested")
+
+// reexec replaces this process with the binary on disk, keeping the PID so
+// systemd (or whatever started us) sees one continuous run.
+func reexec() error {
+	exe, err := executable()
+	if err != nil {
+		return err
+	}
+	return syscall.Exec(exe, os.Args, os.Environ())
 }
 
 func add(args []string) error {

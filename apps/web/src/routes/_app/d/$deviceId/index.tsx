@@ -16,9 +16,9 @@ function DeviceHome() {
         <h2 className="text-[15px] font-semibold">{hasThreads ? "Pick a thread" : "No threads yet"}</h2>
         <p className="text-muted-foreground">
           {hasThreads
-            ? "Choose a thread in the sidebar to open its terminal."
+            ? "Choose a thread in the sidebar, or start a terminal or Claude thread in a project."
             : projects.data
-              ? "Hover a project in the sidebar and press + to start a thread. Each thread is a persistent shell in that project's directory."
+              ? "Hover a project in the sidebar and press + to start a thread. Each thread is a shell or a Claude conversation in that project's directory."
               : "Loading projects…"}
         </p>
       </div>

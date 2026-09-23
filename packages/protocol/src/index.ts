@@ -59,6 +59,19 @@ export interface DeviceInfo {
   os: string;
   arch: string;
   version: string;
+  /** What the daemon supports beyond V1; absent on daemons older than this field. */
+  features?: DeviceFeature[];
+}
+
+/** claude: claude threads and the agent channel. update: device.checkUpdate and device.update. */
+export type DeviceFeature = "claude" | "update";
+
+export interface UpdateInfo {
+  current: string;
+  latest: string;
+  available: boolean;
+  /** Why this daemon can't update itself (e.g. a dev build). */
+  reason?: string;
 }
 
 export interface Project {
@@ -125,6 +138,9 @@ export interface PeerDebug {
 /** Control-channel RPC methods: name -> [params, result]. */
 export interface RpcMethods {
   "device.info": [Record<string, never>, DeviceInfo];
+  "device.checkUpdate": [Record<string, never>, UpdateInfo];
+  /** Installs the latest release, answers, then restarts into it (the connection drops). */
+  "device.update": [Record<string, never>, { version: string }];
   "projects.list": [Record<string, never>, Project[]];
   "projects.create": [{ path: string; name?: string }, Project];
   "projects.rename": [{ id: string; name: string }, Project];
