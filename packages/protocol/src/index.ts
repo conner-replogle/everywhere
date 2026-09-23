@@ -68,13 +68,30 @@ export interface Project {
   createdAt: number;
 }
 
+export type ThreadKind = "terminal" | "claude";
+
+/**
+ * A claude thread's status:
+ * - stopped: no claude process; the next message resumes the conversation
+ * - starting: launching claude
+ * - idle: claude is running, no turn in progress
+ * - working: a turn is in progress
+ * - waiting: a turn is blocked on the user (a permission prompt or question)
+ * - error: claude failed to start or crashed; see AgentState.error
+ */
+export type AgentStatus = "stopped" | "starting" | "idle" | "working" | "waiting" | "error";
+
 export interface Thread {
   id: string;
   projectId: string;
+  kind: ThreadKind;
   name: string;
   createdAt: number;
   lastOpenedAt: number | null;
+  /** A live shell (terminal) or claude process (claude). */
   running: boolean;
+  /** Set for claude threads; see AgentState.status. */
+  agentStatus?: AgentStatus;
 }
 
 export interface DirListing {
@@ -112,7 +129,7 @@ export interface RpcMethods {
   "projects.rename": [{ id: string; name: string }, Project];
   "projects.delete": [{ id: string }, Record<string, never>];
   "threads.list": [{ projectId?: string }, Thread[]];
-  "threads.create": [{ projectId: string; name?: string }, Thread];
+  "threads.create": [{ projectId: string; name?: string; kind?: ThreadKind }, Thread];
   "threads.rename": [{ id: string; name: string }, Thread];
   "threads.delete": [{ id: string }, Record<string, never>];
   "fs.listDirs": [{ path: string }, DirListing];

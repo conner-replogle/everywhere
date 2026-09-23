@@ -4,10 +4,12 @@ package store
 import (
 	"crypto/rand"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -17,7 +19,12 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
-const schema = `
+// migrations run in order, each in a transaction; PRAGMA user_version counts
+// how many have been applied. Append only: never edit one that has shipped.
+var migrations = []string{
+	// 1: the V1 schema. Databases from before versioning already have it,
+	// hence IF NOT EXISTS.
+	`
 CREATE TABLE IF NOT EXISTS projects (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
@@ -34,7 +41,23 @@ CREATE TABLE IF NOT EXISTS threads (
   had_session    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS threads_project ON threads(project_id);
-`
+`,
+	// 2: agent threads. A thread is a terminal or a Claude conversation; the
+	// agent columns are only used by the latter.
+	`
+ALTER TABLE threads ADD COLUMN kind TEXT NOT NULL DEFAULT 'terminal';
+ALTER TABLE threads ADD COLUMN agent_session_id TEXT;
+ALTER TABLE threads ADD COLUMN agent_model TEXT;
+ALTER TABLE threads ADD COLUMN agent_permission_mode TEXT NOT NULL DEFAULT 'default';
+CREATE TABLE agent_events (
+  thread_id TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  seq       INTEGER NOT NULL,
+  at        INTEGER NOT NULL,
+  event     TEXT NOT NULL,
+  PRIMARY KEY (thread_id, seq)
+) WITHOUT ROWID;
+`,
+}
 
 type Store struct {
 	db *sql.DB
@@ -50,7 +73,7 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(schema); err != nil {
+	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
@@ -63,6 +86,31 @@ func Open(path string) (*Store, error) {
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+func migrate(db *sql.DB) error {
+	var version int
+	if err := db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		return err
+	}
+	for i := version; i < len(migrations); i++ {
+		tx, err := db.Begin()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(migrations[i]); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("migration %d: %w", i+1, err)
+		}
+		if _, err := tx.Exec(fmt.Sprintf("PRAGMA user_version = %d", i+1)); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 func (s *Store) seedHome() error {
 	home, err := os.UserHomeDir()
@@ -150,12 +198,12 @@ func (s *Store) DeleteProject(id string) error {
 
 // --- threads ----------------------------------------------------------------
 
-const threadCols = "id, project_id, name, created_at, last_opened_at"
+const threadCols = "id, project_id, kind, name, created_at, last_opened_at"
 
 func scanThread(sc interface{ Scan(...any) error }) (protocol.Thread, error) {
 	var t protocol.Thread
 	var opened sql.NullInt64
-	err := sc.Scan(&t.ID, &t.ProjectID, &t.Name, &t.CreatedAt, &opened)
+	err := sc.Scan(&t.ID, &t.ProjectID, &t.Kind, &t.Name, &t.CreatedAt, &opened)
 	if opened.Valid {
 		t.LastOpenedAt = &opened.Int64
 	}
@@ -195,21 +243,30 @@ func (s *Store) GetThread(id string) (protocol.Thread, error) {
 	return t, err
 }
 
-func (s *Store) CreateThread(projectID, name string) (protocol.Thread, error) {
+// CreateThread adds a thread of the given kind ("" means terminal). The name
+// defaults to "<kind> N".
+func (s *Store) CreateThread(projectID, name, kind string) (protocol.Thread, error) {
+	if kind == "" {
+		kind = protocol.ThreadTerminal
+	}
+	if kind != protocol.ThreadTerminal && kind != protocol.ThreadClaude {
+		return protocol.Thread{}, fmt.Errorf("unknown thread kind %q", kind)
+	}
 	if _, err := s.GetProject(projectID); err != nil {
 		return protocol.Thread{}, err
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
 		var n int
-		if err := s.db.QueryRow("SELECT COUNT(*) FROM threads WHERE project_id = ?", projectID).Scan(&n); err != nil {
+		err := s.db.QueryRow("SELECT COUNT(*) FROM threads WHERE project_id = ? AND kind = ?", projectID, kind).Scan(&n)
+		if err != nil {
 			return protocol.Thread{}, err
 		}
-		name = fmt.Sprintf("terminal %d", n+1)
+		name = fmt.Sprintf("%s %d", kind, n+1)
 	}
-	t := protocol.Thread{ID: newID(), ProjectID: projectID, Name: name, CreatedAt: now()}
-	_, err := s.db.Exec("INSERT INTO threads (id, project_id, name, created_at) VALUES (?, ?, ?, ?)",
-		t.ID, t.ProjectID, t.Name, t.CreatedAt)
+	t := protocol.Thread{ID: newID(), ProjectID: projectID, Kind: kind, Name: name, CreatedAt: now()}
+	_, err := s.db.Exec("INSERT INTO threads (id, project_id, kind, name, created_at) VALUES (?, ?, ?, ?, ?)",
+		t.ID, t.ProjectID, t.Kind, t.Name, t.CreatedAt)
 	return t, err
 }
 
@@ -245,6 +302,90 @@ func (s *Store) ThreadShell(threadID string) (dir string, hadSession bool, err e
 func (s *Store) MarkSpawned(threadID string) error {
 	_, err := s.db.Exec("UPDATE threads SET had_session = 1, last_opened_at = ? WHERE id = ?", now(), threadID)
 	return err
+}
+
+// --- agent threads ----------------------------------------------------------
+
+// AgentThread is what the agent manager needs to run a claude thread.
+type AgentThread struct {
+	Dir            string
+	SessionID      string // "" until the first turn
+	Model          string // "" means the CLI's default
+	PermissionMode string
+}
+
+func (s *Store) AgentThread(threadID string) (AgentThread, error) {
+	var a AgentThread
+	var session, model sql.NullString
+	var kind string
+	err := s.db.QueryRow(`
+SELECT p.path, t.kind, t.agent_session_id, t.agent_model, t.agent_permission_mode
+FROM threads t JOIN projects p ON p.id = t.project_id WHERE t.id = ?`, threadID,
+	).Scan(&a.Dir, &kind, &session, &model, &a.PermissionMode)
+	if errors.Is(err, sql.ErrNoRows) {
+		return a, ErrNotFound
+	}
+	if err == nil && kind != protocol.ThreadClaude {
+		return a, fmt.Errorf("thread %s is a %s thread", threadID, kind)
+	}
+	a.SessionID, a.Model = session.String, model.String
+	return a, err
+}
+
+func (s *Store) SetAgentSessionID(threadID, sessionID string) error {
+	return s.execOne("UPDATE threads SET agent_session_id = ?, last_opened_at = ? WHERE id = ?", sessionID, now(), threadID)
+}
+
+func (s *Store) SetAgentModel(threadID, model string) error {
+	return s.execOne("UPDATE threads SET agent_model = NULLIF(?, '') WHERE id = ?", model, threadID)
+}
+
+func (s *Store) SetAgentPermissionMode(threadID, mode string) error {
+	return s.execOne("UPDATE threads SET agent_permission_mode = ? WHERE id = ?", mode, threadID)
+}
+
+// AgentEvent is one entry in a claude thread's event log.
+type AgentEvent struct {
+	Seq   int64
+	At    int64
+	Event json.RawMessage
+}
+
+// AppendAgentEvent adds an event to a thread's log and returns it with its
+// sequence number. Callers serialize appends per thread.
+func (s *Store) AppendAgentEvent(threadID string, event json.RawMessage) (AgentEvent, error) {
+	e := AgentEvent{At: now(), Event: event}
+	err := s.db.QueryRow(`
+INSERT INTO agent_events (thread_id, seq, at, event)
+SELECT ?, COALESCE(MAX(seq), 0) + 1, ?, ? FROM agent_events WHERE thread_id = ?
+RETURNING seq`, threadID, e.At, string(event), threadID).Scan(&e.Seq)
+	return e, err
+}
+
+// AgentEvents returns a thread's events after afterSeq, oldest first. When
+// more than limit match, it returns the newest limit and truncated is true.
+func (s *Store) AgentEvents(threadID string, afterSeq int64, limit int) (events []AgentEvent, truncated bool, err error) {
+	rows, err := s.db.Query(`
+SELECT seq, at, event FROM agent_events WHERE thread_id = ? AND seq > ?
+ORDER BY seq DESC LIMIT ?`, threadID, afterSeq, limit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var e AgentEvent
+		var ev string
+		if err := rows.Scan(&e.Seq, &e.At, &ev); err != nil {
+			return nil, false, err
+		}
+		e.Event = json.RawMessage(ev)
+		events = append(events, e)
+	}
+	if len(events) > limit {
+		events, truncated = events[:limit], true
+	}
+	slices.Reverse(events)
+	return events, truncated, rows.Err()
 }
 
 // --- helpers ----------------------------------------------------------------

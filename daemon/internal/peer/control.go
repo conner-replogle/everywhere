@@ -50,6 +50,7 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		Name      string `json:"name"`
 		Path      string `json:"path"`
 		ProjectID string `json:"projectId"`
+		Kind      string `json:"kind"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &params); err != nil {
@@ -100,7 +101,7 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		}
 		return threads, err
 	case "threads.create":
-		t, err := s.store.CreateThread(params.ProjectID, params.Name)
+		t, err := s.store.CreateThread(params.ProjectID, params.Name, params.Kind)
 		if err == nil {
 			s.broadcast(protocol.EventThreadsChanged)
 		}

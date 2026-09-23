@@ -76,13 +76,22 @@ type Project struct {
 	CreatedAt int64  `json:"createdAt"`
 }
 
+const (
+	ThreadTerminal = "terminal"
+	ThreadClaude   = "claude"
+)
+
 type Thread struct {
 	ID           string `json:"id"`
 	ProjectID    string `json:"projectId"`
+	Kind         string `json:"kind"` // terminal | claude
 	Name         string `json:"name"`
 	CreatedAt    int64  `json:"createdAt"`
 	LastOpenedAt *int64 `json:"lastOpenedAt"`
-	Running      bool   `json:"running"`
+	// Running reports a live shell (terminal) or claude process (claude).
+	Running bool `json:"running"`
+	// AgentStatus is set for claude threads; see AgentState.Status.
+	AgentStatus string `json:"agentStatus,omitempty"`
 }
 
 type DirListing struct {
