@@ -1,0 +1,12 @@
+{
+  "name": "everywhere",
+  "private": true,
+  "type": "module",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {
+    "dev": "bun run --filter '@everywhere/worker' --filter '@everywhere/web' dev",
+    "build": "bun run --filter '@everywhere/web' build",
+    "deploy": "bun run build && bun run --filter '@everywhere/worker' deploy",
+    "typecheck": "bun run --filter '*' typecheck"
+  }
+}

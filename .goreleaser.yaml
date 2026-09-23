@@ -1,0 +1,25 @@
+version: 2
+project_name: everywhere
+
+builds:
+  - id: everywhere
+    dir: daemon
+    main: ./cmd/everywhere
+    binary: everywhere
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X github.com/conner-replogle/everywhere/daemon/internal/version.Version={{ .Version }}
+
+archives:
+  # The installer and `everywhere update` rely on these exact names.
+  - formats: [tar.gz]
+    name_template: "everywhere_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github-native

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+*.log
+.DS_Store
+/daemon/bin/
+/daemon/dist/
+apps/web/src/routeTree.gen.ts
+.claude/

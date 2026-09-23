@@ -1,0 +1,36 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "everywhere",
+  "main": "src/index.ts",
+  "account_id": "c6f8f04408d88cfe47437164e1c4ace2",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "routes": [{ "pattern": "ai.replogle.dev", "custom_domain": true }],
+  "assets": {
+    "directory": "../web/dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/i/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "everywhere",
+      "database_id": "ee3cf613-66de-4322-91c7-3d1cfda32dbd",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "HUB", "class_name": "AccountHub" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AccountHub"] }],
+  "vars": {
+    // Where browsers and daemons reach this Worker. Override locally in .dev.vars
+    // (e.g. PUBLIC_URL=http://localhost:8787); wrangler dev rewrites request URLs
+    // to the production route, so the request origin can't be trusted there.
+    "PUBLIC_URL": "https://ai.replogle.dev",
+    "GITHUB_REPO": "conner-replogle/everywhere",
+    "MIN_DAEMON_VERSION": "0.1.0"
+  }
+}
