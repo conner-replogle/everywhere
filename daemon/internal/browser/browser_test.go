@@ -211,3 +211,82 @@ func TestStuckViewerDoesNotStallOthers(t *testing.T) {
 		t.Fatalf("healthy viewer got %d frames in a second next to a stuck one", got)
 	}
 }
+
+func TestViewportPickAndTouch(t *testing.T) {
+	if _, err := findChrome(context.Background()); errors.Is(err, ErrNotInstalled) {
+		t.Skip(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte(`<!doctype html><meta name=viewport content="width=device-width">
+<title>start</title><style>body{margin:0}</style>
+<button id=b data-testid=go style="position:absolute;left:0;top:0;width:200px;height:100px"
+  ontouchend="document.title='touched:'+innerWidth+':'+navigator.userAgent.includes('Mobile')">Go</button>
+<input id=i style="position:absolute;left:0;top:200px;width:300px;height:40px">`))
+	}))
+	defer srv.Close()
+
+	m := NewManager(t.TempDir())
+	defer m.Shutdown()
+	v := newFakeViewer()
+	if err := m.Attach(context.Background(), "p", v, Viewport{Width: 800, Height: 600}); err != nil {
+		t.Fatal(err)
+	}
+	defer m.Detach("p", v)
+
+	// A phone preset: its size, touch, and a mobile user agent after a load.
+	m.Handle("p", v, protocol.BrowserClientMsg{T: "viewport", Mode: "preset", Preset: "iphone-se"})
+	v.waitFor(t, "preset", func() bool {
+		vp := v.lastState().Viewport
+		return vp.Mode == "preset" && vp.Width == 375 && vp.Height == 667 && vp.Mobile
+	})
+	m.Handle("p", v, protocol.BrowserClientMsg{T: "navigate", URL: srv.URL})
+	v.waitFor(t, "page", func() bool { return v.lastState().Title == "start" })
+	v.waitFor(t, "a phone-sized frame", func() bool {
+		return len(v.frames) > 0 && v.frames[len(v.frames)-1].Width == 375
+	})
+	pt := []protocol.BrowserTouchPoint{{ID: 1, X: 20, Y: 20}}
+	m.Handle("p", v, protocol.BrowserClientMsg{T: "touch", Kind: "start", Points: pt})
+	m.Handle("p", v, protocol.BrowserClientMsg{T: "touch", Kind: "end"})
+	v.waitFor(t, "tap", func() bool { return v.lastState().Title == "touched:375:true" })
+
+	// A viewer resizing doesn't change a preset, but does in fill mode.
+	m.Handle("p", v, protocol.BrowserClientMsg{T: "resize", Width: 700, Height: 500})
+	m.Handle("p", v, protocol.BrowserClientMsg{T: "viewport", Mode: "fill"})
+	v.waitFor(t, "fill", func() bool {
+		vp := v.lastState().Viewport
+		return vp.Mode == "fill" && vp.Width == 700 && vp.Height == 500 && !vp.Mobile
+	})
+
+	// Picking describes the element under the point.
+	m.Handle("p", v, protocol.BrowserClientMsg{T: "pick", ID: 7, X: 50, Y: 50})
+	var picked *protocol.BrowserPicked
+	v.waitFor(t, "picked", func() bool {
+		for _, msg := range v.msgs {
+			if p, ok := msg.(protocol.BrowserPicked); ok {
+				picked = &p
+				return true
+			}
+		}
+		return false
+	})
+	if el := picked.Element; picked.ID != 7 || el == nil || el.Tag != "button" || el.Selector != "#b" || el.Role != "button" || el.Name != "Go" || el.Width != 200 {
+		t.Fatalf("picked %+v", picked.Element)
+	}
+
+	// Focusing a text field says so, for touch keyboards.
+	m.Handle("p", v, protocol.BrowserClientMsg{T: "mouse", Kind: "down", X: 20, Y: 220, Buttons: 1, ClickCount: 1})
+	m.Handle("p", v, protocol.BrowserClientMsg{T: "mouse", Kind: "up", X: 20, Y: 220, ClickCount: 1})
+	v.waitFor(t, "editing", func() bool { return v.lastState().Editing })
+
+	m.Handle("p", v, protocol.BrowserClientMsg{T: "appearance", ColorScheme: "dark"})
+	v.waitFor(t, "dark", func() bool { return v.lastState().ColorScheme == "dark" })
+}
+
+func TestMobileUA(t *testing.T) {
+	got := mobileUA("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
+	want := "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36"
+	if got != want {
+		t.Fatalf("got %q", got)
+	}
+}

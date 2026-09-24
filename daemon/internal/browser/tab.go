@@ -53,6 +53,15 @@ var pageScript = fmt.Sprintf(`(() => {
   };
   if (document.readyState === "loading") addEventListener("DOMContentLoaded", watch, { once: true });
   else watch();
+  let editing = null;
+  const focus = () => {
+    let a = document.activeElement;
+    while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+    const e = !!a && (a.isContentEditable || a.tagName === "TEXTAREA" || (a.tagName === "INPUT" && !plain.test(a.type)));
+    if (e !== editing) { editing = e; send("f:" + (e ? 1 : 0)); }
+  };
+  addEventListener("focusin", focus, true);
+  addEventListener("focusout", () => setTimeout(focus), true);
 })()`, pageBinding)
 
 // selectionScript returns the selected text, in a focused field or the page.
@@ -69,11 +78,12 @@ type Viewport struct {
 	Width, Height int
 	DPR           float64
 	Quality       int
+	Mobile        bool // a touch device: emulate one while the tab fills its view
 }
 
 func (v Viewport) clamp() Viewport {
-	v.Width = min(max(v.Width, 200), 3840)
-	v.Height = min(max(v.Height, 200), 2160)
+	v.Width = clampDim(v.Width, 3840)
+	v.Height = clampDim(v.Height, 2160)
 	if v.DPR <= 0 {
 		v.DPR = 1
 	}
@@ -87,7 +97,7 @@ func (v Viewport) clamp() Viewport {
 
 // ViewportOf reads the viewport fields of an attach or resize message.
 func ViewportOf(m protocol.BrowserClientMsg) Viewport {
-	return Viewport{Width: m.Width, Height: m.Height, DPR: m.DPR, Quality: m.Quality}
+	return Viewport{Width: m.Width, Height: m.Height, DPR: m.DPR, Quality: m.Quality, Mobile: m.Mobile}
 }
 
 type event struct {
@@ -176,11 +186,16 @@ type Tab struct {
 	seq     int64
 
 	// Owned by the input goroutine.
-	vp      Viewport
-	vpSet   bool
-	casting bool
+	vp         Viewport // the latest viewer's; the tab's size in fill mode
+	setting    protocol.BrowserViewportSetting
+	metrics    metrics
+	metricsSet bool
+	casting    bool
+	cast       castParams
 	// Owned by the event goroutine: popups this tab opened, not yet adopted.
 	popups map[string]bool
+	// Console messages and failed requests, for agents.
+	diag diagnostics
 }
 
 func newTab(m *Manager, key string, br *chrome, targetID, sessionID string) *Tab {
@@ -192,8 +207,11 @@ func newTab(m *Manager, key string, br *chrome, targetID, sessionID string) *Tab
 		input:   make(chan inputItem, 256),
 		frames:  make(chan screencastFrame, 4),
 		viewers: map[Client]*viewerState{},
-		state:   protocol.BrowserState{T: "state", URL: "about:blank"},
+		state:   protocol.BrowserState{T: "state", URL: "about:blank", Viewport: protocol.BrowserViewportSetting{Mode: "fill"}},
 		popups:  map[string]bool{},
+		// Until a viewer says otherwise, e.g. for an agent.
+		vp:      Viewport{Width: 1280, Height: 800, DPR: 1, Quality: 70},
+		setting: protocol.BrowserViewportSetting{Mode: "fill"},
 	}
 }
 
@@ -210,9 +228,10 @@ func (t *Tab) setup(ctx context.Context) error {
 	}{
 		{"Page.enable", nil},
 		{"Runtime.enable", nil},
+		{"Network.enable", nil},
+		{"Log.enable", nil},
 		// Headless pages never have focus otherwise: no caret, no :focus.
 		{"Emulation.setFocusEmulationEnabled", map[string]any{"enabled": true}},
-		{"Emulation.setUserAgentOverride", map[string]any{"userAgent": t.br.userAgent}},
 		{"Runtime.addBinding", map[string]any{"name": pageBinding}},
 		{"Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": pageScript}},
 		{"Runtime.evaluate", map[string]any{"expression": pageScript}},
@@ -353,17 +372,45 @@ func (t *Tab) inputLoop() {
 	}
 }
 
-func isMove(m protocol.BrowserClientMsg) bool { return m.T == "mouse" && m.Kind == "move" }
+func isMove(m protocol.BrowserClientMsg) bool {
+	return (m.T == "mouse" || m.T == "touch") && m.Kind == "move"
+}
 
 var mouseTypes = map[string]string{"move": "mouseMoved", "down": "mousePressed", "up": "mouseReleased", "wheel": "mouseWheel"}
 
 var buttonNames = []string{"left", "middle", "right", "back", "forward"}
 
+var touchTypes = map[string]string{"start": "touchStart", "move": "touchMove", "end": "touchEnd", "cancel": "touchCancel"}
+
 func (t *Tab) handleInput(it inputItem) error {
 	m := it.msg
 	switch m.T {
 	case "resize":
-		return t.setViewport(ViewportOf(m).clamp())
+		t.vp = ViewportOf(m).clamp()
+		return t.applyViewport()
+	case "apply": // the tab's own, when it opens
+		return t.applyViewport()
+	case "viewport":
+		v, err := ResolveViewport(m.Mode, m.Preset, m.Orientation, m.Width, m.Height)
+		if err != nil {
+			if it.c != nil {
+				it.c.Send(protocol.BrowserNotice{T: "notice", Message: err.Error()})
+			}
+			return nil
+		}
+		t.setting = v
+		return t.applyViewport()
+	case "appearance":
+		cs := m.ColorScheme
+		if cs != "" && cs != "light" && cs != "dark" {
+			return nil
+		}
+		if err := t.call("Emulation.setEmulatedMedia", map[string]any{
+			"features": []map[string]string{{"name": "prefers-color-scheme", "value": cs}},
+		}, nil); err != nil {
+			return err
+		}
+		t.updateState(func(s *protocol.BrowserState) { s.ColorScheme = cs })
 	case "idle":
 		if t.casting && !t.watched() {
 			t.casting = false
@@ -451,6 +498,22 @@ func (t *Tab) handleInput(it inputItem) error {
 			return nil
 		}
 		return t.call("Input.insertText", map[string]any{"text": m.Text}, nil)
+	case "touch":
+		typ, ok := touchTypes[m.Kind]
+		if !ok {
+			return nil
+		}
+		points := make([]map[string]any, 0, len(m.Points))
+		for _, p := range m.Points {
+			points = append(points, map[string]any{"x": p.X, "y": p.Y, "id": p.ID, "radiusX": 8, "radiusY": 8, "force": 1})
+		}
+		return t.call("Input.dispatchTouchEvent", map[string]any{"type": typ, "touchPoints": points, "modifiers": m.Modifiers}, nil)
+	case "pick":
+		el, err := t.elementAt(m.X, m.Y)
+		if it.c != nil {
+			it.c.Send(protocol.BrowserPicked{T: "picked", ID: m.ID, Element: el})
+		}
+		return err
 	case "copy":
 		var r struct {
 			Result struct {
@@ -479,29 +542,87 @@ func checkURL(raw string) (string, error) {
 	return u.String(), nil
 }
 
-func (t *Tab) setViewport(vp Viewport) error {
-	if t.vpSet && vp == t.vp && t.casting {
-		return nil
+type metrics struct {
+	width, height int
+	dpr           float64
+	mobile        bool
+}
+
+type castParams struct {
+	maxWidth, maxHeight, quality int
+}
+
+// applyViewport sizes the page for the viewport setting (or, in fill mode,
+// the latest viewer) and screencasts it while anyone watches.
+func (t *Tab) applyViewport() error {
+	m := metrics{t.vp.Width, t.vp.Height, t.vp.DPR, t.vp.Mobile}
+	if t.setting.Mode != "fill" {
+		m.width, m.height, m.mobile = t.setting.Width, t.setting.Height, t.setting.Mobile
 	}
-	if !t.vpSet || vp.Width != t.vp.Width || vp.Height != t.vp.Height || vp.DPR != t.vp.DPR {
+	if !t.metricsSet || m != t.metrics {
 		if err := t.call("Emulation.setDeviceMetricsOverride", map[string]any{
-			"width": vp.Width, "height": vp.Height, "deviceScaleFactor": vp.DPR, "mobile": false,
+			"width": m.width, "height": m.height, "deviceScaleFactor": m.dpr, "mobile": m.mobile,
 		}, nil); err != nil {
 			return err
 		}
+		if !t.metricsSet || m.mobile != t.metrics.mobile {
+			if err := t.emulateMobile(m.mobile); err != nil {
+				return err
+			}
+		}
+		t.metrics, t.metricsSet = m, true
 	}
-	t.vp, t.vpSet = vp, true
+	shown := t.setting
+	if shown.Mode == "fill" {
+		shown.Width, shown.Height, shown.Mobile = m.width, m.height, m.mobile
+	}
+	t.updateState(func(s *protocol.BrowserState) { s.Viewport = shown })
+
+	if !t.watched() {
+		return nil
+	}
+	cast := castParams{
+		maxWidth:  int(math.Ceil(float64(m.width) * m.dpr)),
+		maxHeight: int(math.Ceil(float64(m.height) * m.dpr)),
+		quality:   t.vp.Quality,
+	}
+	if t.casting && cast == t.cast {
+		return nil
+	}
 	if t.casting {
 		_ = t.call("Page.stopScreencast", nil, nil)
 	}
-	t.casting = true
+	t.casting, t.cast = true, cast
 	return t.call("Page.startScreencast", map[string]any{
 		"format":        "jpeg",
-		"quality":       vp.Quality,
-		"maxWidth":      int(math.Ceil(float64(vp.Width) * vp.DPR)),
-		"maxHeight":     int(math.Ceil(float64(vp.Height) * vp.DPR)),
+		"quality":       cast.quality,
+		"maxWidth":      cast.maxWidth,
+		"maxHeight":     cast.maxHeight,
 		"everyNthFrame": 1,
 	}, nil)
+}
+
+// emulateMobile turns touch input and a phone's user agent on or off. Pages
+// pick the new user agent up on their next load.
+func (t *Tab) emulateMobile(on bool) error {
+	if err := t.call("Emulation.setTouchEmulationEnabled", map[string]any{"enabled": on, "maxTouchPoints": 5}, nil); err != nil {
+		return err
+	}
+	ua := t.br.userAgent
+	if on {
+		ua = mobileUA(ua)
+	}
+	return t.call("Emulation.setUserAgentOverride", map[string]any{"userAgent": ua}, nil)
+}
+
+// mobileUA turns a desktop Chrome user agent into Chrome for Android's.
+func mobileUA(ua string) string {
+	if i := strings.Index(ua, "("); i >= 0 {
+		if j := strings.Index(ua[i:], ")"); j >= 0 {
+			ua = ua[:i] + "(Linux; Android 10; K)" + ua[i+j+1:]
+		}
+	}
+	return strings.Replace(ua, " Safari/", " Mobile Safari/", 1)
 }
 
 // --- frames -----------------------------------------------------------------
@@ -588,6 +709,7 @@ func (t *Tab) waitDrain() {
 // --- events -----------------------------------------------------------------
 
 func (t *Tab) handleEvent(e event) {
+	t.diag.note(e.method, e.params)
 	switch e.method {
 	case "Page.screencastFrame":
 		var p struct {
@@ -711,6 +833,8 @@ func (t *Tab) handleEvent(e event) {
 			}
 		case "t":
 			t.updateState(func(s *protocol.BrowserState) { s.Title = value })
+		case "f":
+			t.updateState(func(s *protocol.BrowserState) { s.Editing = value == "1" })
 		}
 	}
 }

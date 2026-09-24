@@ -64,8 +64,37 @@ func NewManager(dir string) *Manager {
 func (m *Manager) Attach(ctx context.Context, key string, c Client, vp Viewport) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	t, err := m.tabLocked(ctx, key)
+	if err != nil {
+		return err
+	}
+	t.attach(c, vp)
+	return nil
+}
+
+// Use returns key's tab for an agent to drive, starting the browser and the
+// tab as needed. Each use postpones closing an unwatched browser.
+func (m *Manager) Use(ctx context.Context, key string) (*Tab, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, err := m.tabLocked(ctx, key)
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range m.tabs {
+		if t.watched() {
+			return t, nil
+		}
+	}
+	m.idle = time.AfterFunc(idleTimeout, m.idleClose)
+	return t, nil
+}
+
+// tabLocked returns key's tab, starting the browser and the tab as needed,
+// and stops the idle timer.
+func (m *Manager) tabLocked(ctx context.Context, key string) (*Tab, error) {
 	if m.shutdown {
-		return errors.New("shutting down")
+		return nil, errors.New("shutting down")
 	}
 	if m.idle != nil {
 		m.idle.Stop()
@@ -75,7 +104,7 @@ func (m *Manager) Attach(ctx context.Context, key string, c Client, vp Viewport)
 		var br *chrome
 		br, err := launchChrome(ctx, filepath.Join(m.dir, "profile"), m.route, func(error) { m.exited(br) })
 		if err != nil {
-			return err
+			return nil, err
 		}
 		m.chrome = br
 	}
@@ -83,12 +112,11 @@ func (m *Manager) Attach(ctx context.Context, key string, c Client, vp Viewport)
 	if t == nil {
 		var err error
 		if t, err = m.openTab(ctx, key); err != nil {
-			return err
+			return nil, err
 		}
 		m.tabs[key] = t
 	}
-	t.attach(c, vp)
-	return nil
+	return t, nil
 }
 
 // Detach removes a viewer; the browser quits once nobody has watched for a while.
@@ -220,6 +248,7 @@ func (m *Manager) openTab(ctx context.Context, key string) (*Tab, error) {
 		return nil, err
 	}
 	go t.run()
+	t.enqueue(nil, protocol.BrowserClientMsg{T: "apply"})
 	if u := m.lastURL[key]; u != "" && u != "about:blank" {
 		t.enqueue(nil, protocol.BrowserClientMsg{T: "navigate", URL: u})
 	}

@@ -4,8 +4,8 @@
  * Browser channel `browser:<projectId>`: a Chromium tab on the device, shown
  * as a JPEG screencast. JSON text frames both ways; each daemon `frame` header
  * is followed by the JPEG as binary chunks totalling `size` bytes. The client
- * sends `attach` first. The last client to attach or resize sets the tab's
- * viewport.
+ * sends `attach` first. While the tab's viewport mode is `fill`, the last
+ * client to attach or resize sets its size.
  */
 export const BROWSER_CHANNEL_PREFIX = "browser:";
 
@@ -20,6 +20,50 @@ export interface BrowserViewport {
   dpr: number;
   /** JPEG quality, 20-95. */
   quality: number;
+  /** A touch device: emulate one while the tab fills the view. */
+  mobile?: boolean;
+}
+
+export type BrowserViewportMode = "fill" | "preset" | "freeform";
+
+/** How the tab's viewport is sized. */
+export interface BrowserViewportSetting {
+  mode: BrowserViewportMode;
+  /** Preset id, for mode `preset`. */
+  preset?: string;
+  /** Emulated size in CSS pixels; for `fill`, the viewer's. */
+  width: number;
+  height: number;
+  /** Touch input and mobile layout rules. */
+  mobile: boolean;
+}
+
+export interface BrowserTouchPoint {
+  id: number;
+  x: number;
+  y: number;
+}
+
+/** A page element, for annotations and agent tools. Rect in viewport CSS pixels. */
+export interface BrowserElement {
+  tag: string;
+  id?: string;
+  classes?: string[];
+  selector: string;
+  role?: string;
+  /** Accessible name, or text. */
+  name?: string;
+  text?: string;
+  attrs?: Record<string, string>;
+  /** React component chain, innermost first ("Button < Toolbar < App"). */
+  component?: string;
+  /** file:line, when React exposes it. */
+  source?: string;
+  styles?: Record<string, string>;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 export type BrowserClientMsg =
@@ -59,7 +103,21 @@ export type BrowserClientMsg =
   /** Inserts text as if typed (IME, paste, soft keyboards). */
   | { t: "text"; text: string }
   /** Asks for the page's selection; answered with `clipboard`. */
-  | { t: "copy" };
+  | { t: "copy" }
+  | {
+      t: "viewport";
+      mode: BrowserViewportMode;
+      preset?: string;
+      orientation?: "portrait" | "landscape";
+      width?: number;
+      height?: number;
+    }
+  /** "" follows the system. */
+  | { t: "appearance"; colorScheme: "light" | "dark" | "" }
+  /** `points`: the touches still down (for `end`, the ones that stay down). */
+  | { t: "touch"; kind: "start" | "move" | "end" | "cancel"; points?: BrowserTouchPoint[]; modifiers?: number }
+  /** Answered with `picked`: the element at x/y. */
+  | { t: "pick"; id: number; x: number; y: number };
 
 export interface BrowserState {
   url: string;
@@ -67,6 +125,11 @@ export interface BrowserState {
   loading: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
+  /** Emulated prefers-color-scheme; "" for none. Absent on older daemons. */
+  colorScheme?: "light" | "dark" | "";
+  viewport?: BrowserViewportSetting;
+  /** A text field in the page has focus. */
+  editing?: boolean;
 }
 
 export type BrowserDaemonMsg =
@@ -78,4 +141,7 @@ export type BrowserDaemonMsg =
   | { t: "clipboard"; text: string }
   /** Something the stream can't show, like a dialog answered automatically. */
   | { t: "notice"; message: string }
-  | { t: "error"; message: string };
+  | { t: "error"; message: string }
+  | { t: "picked"; id: number; element: BrowserElement | null }
+  /** What an agent is doing in the tab, at x/y when it has a position. */
+  | { t: "agent"; action: string; x?: number; y?: number; label?: string };

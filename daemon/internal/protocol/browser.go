@@ -9,10 +9,15 @@ package protocol
 const BrowserChannelPrefix = "browser:"
 
 // BrowserClientMsg is a frame from the browser, discriminated by T:
-//   - attach {width, height, dpr, quality}: must come first; the viewport in
-//     CSS pixels, dpr 1-2, quality 20-95. The last client to attach or resize
-//     sets the tab's size.
-//   - resize {width, height, dpr, quality}
+//   - attach {width, height, dpr, quality, mobile}: must come first; the
+//     client's view size in CSS pixels, dpr 1-2, quality 20-95, and whether
+//     it's a touch device. The last client to attach or resize sets the
+//     tab's size while its viewport mode is "fill".
+//   - resize {width, height, dpr, quality, mobile}
+//   - viewport {mode, preset, orientation, width, height}: fill the viewers'
+//     view (mode "fill"), emulate a device (mode "preset", preset id and
+//     orientation portrait|landscape), or a fixed size (mode "freeform")
+//   - appearance {colorScheme}: light | dark | "" for the system's
 //   - navigate {url}: http, https or about:blank
 //   - back, forward, reload, stop
 //   - mouse {kind: move|down|up|wheel, x, y, button, buttons, clickCount,
@@ -22,6 +27,10 @@ const BrowserChannelPrefix = "browser:"
 //     modifiers}: text is set for keys that insert it
 //   - text {text}: inserts text as if typed (IME, paste, soft keyboards)
 //   - copy: answers with clipboard {text}, the page's current selection
+//   - touch {kind: start|move|end|cancel, points, modifiers}: points are the
+//     touches still down (for end, the ones that stay down)
+//   - pick {id, x, y}: answers with picked {id, element}, the element at x/y
+//     (null if none), for annotations
 //
 // Modifiers is a bitmask: Alt 1, Control 2, Meta 4, Shift 8.
 type BrowserClientMsg struct {
@@ -46,6 +55,51 @@ type BrowserClientMsg struct {
 	Text       string  `json:"text,omitempty"`
 	Location   int     `json:"location,omitempty"`
 	Repeat     bool    `json:"repeat,omitempty"`
+
+	Mobile      bool                `json:"mobile,omitempty"`
+	Mode        string              `json:"mode,omitempty"`
+	Preset      string              `json:"preset,omitempty"`
+	Orientation string              `json:"orientation,omitempty"`
+	ColorScheme string              `json:"colorScheme,omitempty"`
+	Points      []BrowserTouchPoint `json:"points,omitempty"`
+	ID          int                 `json:"id,omitempty"`
+}
+
+type BrowserTouchPoint struct {
+	ID int     `json:"id"`
+	X  float64 `json:"x"`
+	Y  float64 `json:"y"`
+}
+
+// BrowserViewportSetting is how a tab's viewport is sized.
+type BrowserViewportSetting struct {
+	Mode   string `json:"mode"`             // fill | preset | freeform
+	Preset string `json:"preset,omitempty"` // preset id, for mode preset
+	// Width and Height are the emulated size in CSS pixels; for fill, the
+	// viewer's.
+	Width  int  `json:"width"`
+	Height int  `json:"height"`
+	Mobile bool `json:"mobile"` // touch and mobile layout rules
+}
+
+// BrowserElement describes a page element, for annotations and agent tools.
+type BrowserElement struct {
+	Tag       string            `json:"tag"`
+	ID        string            `json:"id,omitempty"`
+	Classes   []string          `json:"classes,omitempty"`
+	Selector  string            `json:"selector"`
+	Role      string            `json:"role,omitempty"`
+	Name      string            `json:"name,omitempty"` // accessible name, or text
+	Text      string            `json:"text,omitempty"`
+	Attrs     map[string]string `json:"attrs,omitempty"`
+	Component string            `json:"component,omitempty"` // React component chain, innermost first
+	Source    string            `json:"source,omitempty"`    // file:line, when React exposes it
+	Styles    map[string]string `json:"styles,omitempty"`
+	// Rect in CSS pixels of the viewport.
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
 }
 
 // Frames from the daemon, discriminated by T.
@@ -67,6 +121,30 @@ type (
 		Loading      bool   `json:"loading"`
 		CanGoBack    bool   `json:"canGoBack"`
 		CanGoForward bool   `json:"canGoForward"`
+		// ColorScheme is the emulated prefers-color-scheme, "" for none.
+		ColorScheme string                 `json:"colorScheme"`
+		Viewport    BrowserViewportSetting `json:"viewport"`
+		// Editing is whether a text field in the page has focus, so touch
+		// clients can offer their keyboard.
+		Editing bool `json:"editing"`
+	}
+
+	// BrowserPicked answers pick.
+	BrowserPicked struct {
+		T       string          `json:"t"` // "picked"
+		ID      int             `json:"id"`
+		Element *BrowserElement `json:"element"`
+	}
+
+	// BrowserAgent shows what an agent is doing in the tab: Action is
+	// click | type | press | scroll | navigate | ..., at X/Y when it has a
+	// position.
+	BrowserAgent struct {
+		T      string  `json:"t"` // "agent"
+		Action string  `json:"action"`
+		X      float64 `json:"x,omitempty"`
+		Y      float64 `json:"y,omitempty"`
+		Label  string  `json:"label,omitempty"`
 	}
 
 	// BrowserCursor is the CSS cursor under the pointer.
