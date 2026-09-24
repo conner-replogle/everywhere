@@ -1,4 +1,4 @@
-import { createFileRoute, Link, Outlet } from "@tanstack/react-router";
+import { createFileRoute, Link, Outlet, useLocation, useParams } from "@tanstack/react-router";
 import { LoaderIcon, PanelLeftIcon, RotateCcwIcon, WifiOffIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { CenteredMessage } from "@/components/centered-message";
@@ -26,8 +26,11 @@ function DeviceLayout() {
   const [debugOpen, setDebugOpen] = useDebugPanelState();
 
   // Close the mobile drawer on navigation within the device.
-  const pathname = Route.useMatch({ select: (m) => m.pathname });
+  const pathname = useLocation({ select: (l) => l.pathname });
   useEffect(() => setSidebarOpen(false), [pathname]);
+  // On phones the device home is the project list itself, not an empty page behind a drawer.
+  const atHome = !useParams({ strict: false }).threadId;
+  const sidebarAsPage = atHome && conn.state === "connected";
 
   if (devices && !device) {
     return (
@@ -46,8 +49,11 @@ function DeviceLayout() {
       <div className="relative flex h-full min-h-0">
         <DeviceSidebar
           className={cn(
-            "w-64 shrink-0 max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-30 max-md:shadow-2xl max-md:shadow-black/60",
-            !sidebarOpen && "max-md:hidden",
+            "w-64 shrink-0",
+            sidebarAsPage
+              ? "max-md:w-full max-md:border-r-0"
+              : "max-md:absolute max-md:inset-y-0 max-md:left-0 max-md:z-30 max-md:w-[min(20rem,85%)] max-md:shadow-2xl max-md:shadow-black/60",
+            !sidebarOpen && !sidebarAsPage && "max-md:hidden",
           )}
         />
         {sidebarOpen && (
@@ -58,7 +64,7 @@ function DeviceLayout() {
             onClick={() => setSidebarOpen(false)}
           />
         )}
-        <section className="flex min-w-0 flex-1 flex-col">
+        <section className={cn("flex min-w-0 flex-1 flex-col", sidebarAsPage && "max-md:hidden")}>
           <Button
             variant="ghost"
             size="icon-sm"

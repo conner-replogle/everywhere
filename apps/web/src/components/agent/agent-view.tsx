@@ -43,6 +43,7 @@ export function AgentView({
   // Follow new output while the user is at the bottom.
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
+  const lastTop = useRef(0);
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (el && atBottom.current) el.scrollTop = el.scrollHeight;
@@ -52,10 +53,16 @@ export function AgentView({
     <div className="flex h-full min-h-0 flex-col">
       <div
         ref={scrollRef}
-        className="min-h-0 flex-1 overflow-y-auto"
+        className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
         onScroll={(e) => {
           const el = e.currentTarget;
-          atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+          const gap = el.scrollHeight - el.scrollTop - el.clientHeight;
+          // Any upward scroll unpins, however small: a touch drag moves a few pixels per event,
+          // and a distance threshold alone would snap it back to the bottom on every streamed token.
+          if (gap <= 1) atBottom.current = true;
+          else if (el.scrollTop < lastTop.current) atBottom.current = false;
+          else if (gap < 40) atBottom.current = true;
+          lastTop.current = el.scrollTop;
         }}
       >
         <div className="mx-auto flex max-w-3xl flex-col gap-3 px-4 py-4">

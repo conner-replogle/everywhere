@@ -170,7 +170,7 @@ export function DeviceSidebar({ className }: { className?: string }) {
             const list = threadsByProject.get(p.id) ?? [];
             return (
               <li key={p.id}>
-                <div className="group flex h-7 items-center rounded-md pr-1 hover:bg-accent/60">
+                <div className="group flex h-7 items-center rounded-md pr-1 hover:bg-accent/60 pointer-coarse:h-10">
                   <button
                     type="button"
                     onClick={() => toggle(p.id)}
@@ -199,7 +199,7 @@ export function DeviceSidebar({ className }: { className?: string }) {
                       <Button
                         variant="ghost"
                         size="icon-sm"
-                        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
+                        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 pointer-coarse:size-8 pointer-coarse:opacity-100"
                         aria-label={`New thread in ${p.name}`}
                         title="New thread"
                       >
@@ -215,7 +215,7 @@ export function DeviceSidebar({ className }: { className?: string }) {
                       <Button
                         variant="ghost"
                         size="icon-sm"
-                        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
+                        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 pointer-coarse:size-8 pointer-coarse:opacity-100"
                         aria-label={`Actions for ${p.name}`}
                       >
                         <MoreHorizontalIcon />
@@ -266,7 +266,7 @@ export function DeviceSidebar({ className }: { className?: string }) {
                             key={kind}
                             type="button"
                             onClick={() => newThread(p.id, kind)}
-                            className="flex h-6 items-center gap-1.5 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground"
+                            className="flex h-6 items-center gap-1.5 rounded-md px-1.5 text-xs pointer-coarse:h-9 pointer-coarse:px-2.5 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
                           >
                             <PlusIcon className="size-3" />
                             {kind === "claude" ? "Claude" : "Terminal"}
@@ -387,7 +387,7 @@ function ThreadRow({
   return (
     <li
       className={cn(
-        "group flex h-7 items-center rounded-md pr-1",
+        "group flex h-7 items-center rounded-md pr-1 pointer-coarse:h-10",
         active ? "bg-accent text-accent-foreground" : "hover:bg-accent/60",
       )}
     >
@@ -409,7 +409,7 @@ function ThreadRow({
           <Button
             variant="ghost"
             size="icon-sm"
-            className="ml-1 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100"
+            className="ml-1 opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 pointer-coarse:size-8 pointer-coarse:opacity-100"
             aria-label={`Actions for ${t.name}`}
           >
             <MoreHorizontalIcon />

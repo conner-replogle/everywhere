@@ -127,6 +127,7 @@ export function TerminalView({
         });
       });
       ro.observe(el);
+      const stopTouchScroll = touchScroll(term, el);
 
       termRef.current = term;
       setReady(true);
@@ -135,6 +136,7 @@ export function TerminalView({
       cleanup = () => {
         cancelAnimationFrame(raf);
         ro.disconnect();
+        stopTouchScroll();
         onData.dispose();
         onResize.dispose();
         term.dispose();
@@ -253,6 +255,117 @@ export function TerminalView({
       </div>
     </div>
   );
+}
+
+/**
+ * xterm doesn't scroll on touch. One-finger drags move through scrollback, or,
+ * when an app owns the screen (mouse tracking, alternate buffer), become wheel
+ * events that xterm forwards to it. A flick keeps going and slows down like
+ * native scrolling. Taps still reach xterm and bring up the keyboard.
+ */
+function touchScroll(term: Terminal, el: HTMLElement): () => void {
+  // iOS's normal deceleration: velocity keeps this fraction per millisecond.
+  const FRICTION = 0.998;
+  const MIN_FLING = 0.1; // px/ms; slower releases just stop
+  const SAMPLE_MS = 100; // velocity is measured over the last part of the drag
+
+  let lastY = 0;
+  let lastX = 0;
+  let dragging = false;
+  let pending = 0; // pixels not yet worth a whole row
+  let samples: { t: number; y: number }[] = [];
+  let raf = 0;
+  let flingV = 0; // current fling velocity, px/ms
+  let carry = 0; // what was left of a fling when a new touch caught it
+
+  const scrollBy = (dy: number) => {
+    if (term.buffer.active.type === "normal" && term.modes.mouseTrackingMode === "none") {
+      const rowHeight = el.clientHeight / term.rows;
+      pending += dy;
+      const lines = Math.trunc(pending / rowHeight);
+      if (lines !== 0) {
+        pending -= lines * rowHeight;
+        term.scrollLines(lines);
+      }
+    } else {
+      term.element?.dispatchEvent(
+        new WheelEvent("wheel", {
+          deltaY: dy,
+          deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+          clientX: lastX,
+          clientY: lastY,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    }
+  };
+
+  const fling = (velocity: number) => {
+    flingV = velocity;
+    let prev = performance.now();
+    const step = (now: number) => {
+      const dt = Math.min(now - prev, 50);
+      prev = now;
+      scrollBy(flingV * dt);
+      flingV *= FRICTION ** dt;
+      if (Math.abs(flingV) > 0.02) raf = requestAnimationFrame(step);
+      else raf = flingV = 0;
+    };
+    raf = requestAnimationFrame(step);
+  };
+
+  const onStart = (e: TouchEvent) => {
+    // A touch catches a fling, as on native lists.
+    cancelAnimationFrame(raf);
+    carry = flingV;
+    raf = flingV = 0;
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0]!;
+    lastY = t.clientY;
+    lastX = t.clientX;
+    dragging = false;
+    pending = 0;
+    samples = [{ t: e.timeStamp, y: t.clientY }];
+  };
+  const onMove = (e: TouchEvent) => {
+    if (e.touches.length !== 1) return;
+    const t = e.touches[0]!;
+    const dy = lastY - t.clientY;
+    if (!dragging && Math.abs(dy) < 6) return;
+    dragging = true;
+    lastY = t.clientY;
+    lastX = t.clientX;
+    e.preventDefault();
+    samples.push({ t: e.timeStamp, y: t.clientY });
+    while (samples.length > 2 && e.timeStamp - samples[0]!.t > SAMPLE_MS) samples.shift();
+    scrollBy(dy);
+  };
+  const onEnd = (e: TouchEvent) => {
+    if (!dragging || e.touches.length > 0) return;
+    dragging = false;
+    const first = samples[0];
+    const last = samples[samples.length - 1];
+    // A finger that paused before lifting shouldn't fling.
+    if (!first || !last || e.timeStamp - last.t > SAMPLE_MS || last.t === first.t) return;
+    let v = (first.y - last.y) / (last.t - first.t);
+    if (Math.abs(v) < MIN_FLING) return;
+    // Flicking again in the same direction builds on the fling still in motion.
+    if (Math.sign(v) === Math.sign(carry)) v += carry;
+    fling(v);
+  };
+
+  el.addEventListener("touchstart", onStart, { passive: true });
+  el.addEventListener("touchmove", onMove, { passive: false });
+  el.addEventListener("touchend", onEnd, { passive: true });
+  el.addEventListener("touchcancel", onEnd, { passive: true });
+  return () => {
+    cancelAnimationFrame(raf);
+    el.removeEventListener("touchstart", onStart);
+    el.removeEventListener("touchmove", onMove);
+    el.removeEventListener("touchend", onEnd);
+    el.removeEventListener("touchcancel", onEnd);
+  };
 }
 
 function Banner({ tone, children }: { tone: "info" | "error"; children: React.ReactNode }) {

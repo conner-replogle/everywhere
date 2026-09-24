@@ -16,6 +16,21 @@ declare module "@tanstack/react-router" {
   }
 }
 
+// iOS Safari overlays the soft keyboard instead of resizing the page (Android honors
+// interactive-widget in index.html). Size the app to what's visible so the composer
+// and the terminal's cursor line stay above the keyboard.
+const vv = window.visualViewport;
+if (vv) {
+  const sync = () => {
+    if (Math.abs(vv.scale - 1) > 0.01) return; // pinch-zoomed: leave the layout alone
+    document.documentElement.style.setProperty("--app-height", `${vv.height}px`);
+    if (window.scrollY !== 0) window.scrollTo(0, 0);
+  };
+  vv.addEventListener("resize", sync);
+  vv.addEventListener("scroll", sync);
+  sync();
+}
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <RouterProvider router={router} />

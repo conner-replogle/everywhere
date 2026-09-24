@@ -44,20 +44,20 @@ function AppLayout() {
 
   return (
     <div className="flex h-full flex-col">
-      <header className="flex h-10 shrink-0 items-center gap-4 border-b bg-sidebar px-3">
-        <Link to="/" className="rounded-sm focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none">
+      <header className="flex h-10 shrink-0 items-center gap-2 border-b bg-sidebar px-3 sm:gap-4">
+        <Link to="/" className="shrink-0 rounded-sm focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none">
           <Logo className="text-[13px]" />
         </Link>
-        <nav className="flex items-center gap-0.5">
+        <nav className="flex shrink-0 items-center gap-0.5">
           <NavLink to="/">Devices</NavLink>
           <NavLink to="/settings">Settings</NavLink>
         </nav>
-        <div className="ml-auto flex items-center gap-3">
+        <div className="ml-auto flex min-w-0 items-center gap-3">
           <HubStatus />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="sm" className="gap-1 text-foreground">
-                {user.username}
+              <Button variant="ghost" size="sm" className="min-w-0 shrink gap-1 text-foreground">
+                <span className="truncate">{user.username}</span>
                 <ChevronDownIcon className="text-muted-foreground" />
               </Button>
             </DropdownMenuTrigger>
@@ -77,7 +77,7 @@ function AppLayout() {
           </DropdownMenu>
         </div>
       </header>
-      <main className="min-h-0 flex-1">
+      <main className="min-h-0 flex-1 overflow-y-auto">
         <Outlet />
       </main>
     </div>
@@ -111,8 +111,8 @@ function HubStatus() {
   if (!down || !show) return null;
   return (
     <span className={cn("flex items-center gap-1.5 text-xs text-warn")} role="status">
-      <span className="size-1.5 animate-pulse rounded-full bg-warn" />
-      Reconnecting to server…
+      <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-warn" />
+      <span className="max-sm:sr-only">Reconnecting to server…</span>
     </span>
   );
 }
