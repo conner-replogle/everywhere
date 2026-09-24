@@ -69,6 +69,10 @@ type Manager struct {
 	IdleTimeout time.Duration
 	// WorktreeDir holds the worktrees of threads that run in one.
 	WorktreeDir string
+	// ThreadArgs, if set, gives a thread's claude process extra CLI flags,
+	// like an MCP server of the daemon's own with a token for that thread.
+	// release is called once that process has ended.
+	ThreadArgs func(threadID, projectID string) (args []string, release func(), err error)
 
 	attachments attachmentStore
 

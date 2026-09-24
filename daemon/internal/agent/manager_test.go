@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -425,6 +426,46 @@ func TestCrashThenResume(t *testing.T) {
 		t.Fatalf("restarted with %+v", p2.opts)
 	}
 	h.waitStatus(c, "working")
+}
+
+func TestThreadArgsPerProcess(t *testing.T) {
+	h := newHarness(t)
+	var mu sync.Mutex
+	granted, released := 0, 0
+	h.m.ThreadArgs = func(threadID, projectID string) ([]string, func(), error) {
+		mu.Lock()
+		defer mu.Unlock()
+		if threadID != h.thread || projectID == "" {
+			t.Errorf("ThreadArgs(%q, %q)", threadID, projectID)
+		}
+		granted++
+		n := granted
+		return []string{"--mcp-config", "cfg" + strconv.Itoa(n)}, func() {
+			mu.Lock()
+			released++
+			mu.Unlock()
+		}, nil
+	}
+	count := func() (int, int) { mu.Lock(); defer mu.Unlock(); return granted, released }
+
+	c := h.attach(0)
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "go"})
+	p := h.proc(0)
+	if got := strings.Join(p.opts.Args, " "); got != "--mcp-config cfg1" {
+		t.Fatalf("args = %q", got)
+	}
+	p.exit(errors.New("boom"))
+	eventually(t, "release after exit", func() bool { _, r := count(); return r == 1 })
+
+	// A restarted process gets its own grant, released when the thread goes.
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "again"})
+	if p2 := h.proc(1); strings.Join(p2.opts.Args, " ") != "--mcp-config cfg2" {
+		t.Fatalf("restart args = %q", p2.opts.Args)
+	}
+	h.m.Kill(h.thread)
+	if g, r := count(); g != 2 || r != 2 {
+		t.Fatalf("granted %d, released %d", g, r)
+	}
 }
 
 func TestIdleProcessIsStopped(t *testing.T) {

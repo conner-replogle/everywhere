@@ -69,6 +69,7 @@ type session struct {
 
 	proc        process
 	procMsgs    <-chan claude.Message
+	releaseArgs func() // from Manager.ThreadArgs, for the running process
 	clients     map[Client]bool
 	state       protocol.AgentState
 	pending     map[string]*claude.PermissionRequest
@@ -173,6 +174,7 @@ func (s *session) run() {
 				s.closeProc()
 				for range s.procMsgs {
 				}
+				s.release()
 			}
 			for c := range s.clients {
 				c.Send(errorMsg("this thread was closed"))
@@ -303,6 +305,14 @@ func (s *session) ensureProc() error {
 	if err != nil {
 		return fail(err)
 	}
+	var extra []string
+	if s.m.ThreadArgs != nil {
+		// Without them claude still works, just without the daemon's tools.
+		if extra, s.releaseArgs, err = s.m.ThreadArgs(s.threadID, a.ProjectID); err != nil {
+			slog.Warn("preparing claude's extra flags", "thread", s.threadID, "err", err)
+			extra, s.releaseArgs = nil, nil
+		}
+	}
 	p, err := s.m.start(ctx, claude.Options{
 		Dir:            dir,
 		Model:          a.Model,
@@ -312,8 +322,10 @@ func (s *session) ensureProc() error {
 		Settings:       sessionSettings(a.Effort, a.Thinking),
 		// Predicted next prompts, shown as a hint in the composer.
 		PromptSuggestions: true,
+		Args:              extra,
 	})
 	if err != nil {
+		s.release()
 		return fail(err)
 	}
 	s.proc, s.procMsgs = p, p.Messages()
@@ -864,6 +876,7 @@ func (s *session) onPermission(req *claude.PermissionRequest) {
 func (s *session) onExit() {
 	err := s.proc.Err()
 	s.proc, s.procMsgs = nil, nil
+	s.release()
 	expected := s.stopping || s.interrupted
 	if s.turnActive {
 		ev := protocol.AgentEvent{Type: "turn", Status: "interrupted"}
@@ -928,6 +941,14 @@ func (s *session) takeStream(msgID, kind string) string {
 		}
 	}
 	return ""
+}
+
+// release gives back what ThreadArgs handed out for the ended process.
+func (s *session) release() {
+	if s.releaseArgs != nil {
+		s.releaseArgs()
+		s.releaseArgs = nil
+	}
 }
 
 func (s *session) closeProc() {

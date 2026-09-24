@@ -15,9 +15,11 @@ import (
 
 	"github.com/conner-replogle/everywhere/daemon/internal/agent"
 	"github.com/conner-replogle/everywhere/daemon/internal/browser"
+	"github.com/conner-replogle/everywhere/daemon/internal/mcp"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/store"
 	"github.com/conner-replogle/everywhere/daemon/internal/term"
+	"github.com/conner-replogle/everywhere/daemon/internal/version"
 )
 
 // Signaler sends a signaling message to a browser connection via the hub.
@@ -34,6 +36,8 @@ type Server struct {
 	terms    *term.Manager
 	agents   *agent.Manager
 	browsers *browser.Manager
+	mcp      *mcp.Server // the daemon's own tools for claude threads
+	mcpDir   string      // their per-process MCP configs
 	info     protocol.DeviceInfo
 	api      *webrtc.API
 
@@ -107,6 +111,10 @@ func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string) *Serve
 	s.terms = term.NewManager(st, threadsChanged)
 	s.agents = agent.NewManager(st, dataDir, threadsChanged)
 	s.browsers = browser.NewManager(filepath.Join(dataDir, "browser"))
+	s.mcp = mcp.NewServer("everywhere", version.Version, browser.Tools(s.browsers))
+	s.mcpDir = filepath.Join(dataDir, "mcp")
+	clearMCPConfigs(s.mcpDir)
+	s.agents.ThreadArgs = s.claudeArgs
 	return s
 }
 
@@ -146,6 +154,7 @@ func (s *Server) Shutdown() {
 	}
 	s.terms.Shutdown()
 	s.agents.Shutdown()
+	s.mcp.Close()
 	s.browsers.Shutdown()
 }
 
