@@ -6,6 +6,7 @@ import { CenteredMessage } from "@/components/centered-message";
 import { useDevice } from "@/components/device-context";
 import { TerminalView, type WriterState } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
+import { sendToComposer } from "@/lib/composer-inbox";
 import { cn } from "@/lib/utils";
 
 // Loaded on demand so terminal-only use skips the markdown stack.
@@ -111,6 +112,16 @@ function ThreadPage() {
                 generation={conn.generation}
                 remoteOs={info.data?.os}
                 onClose={() => setBrowserOpen(false)}
+                onAnnotate={
+                  claude
+                    ? (draft) => {
+                        if (!sendToComposer(threadId, draft)) return false;
+                        // On a phone the browser covers the chat; show the draft.
+                        if (window.matchMedia("(max-width: 767px)").matches) setBrowserOpen(false);
+                        return true;
+                      }
+                    : undefined
+                }
               />
             </Suspense>
           </div>

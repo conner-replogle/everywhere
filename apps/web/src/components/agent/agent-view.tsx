@@ -11,6 +11,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { type AgentThread, useAgentThread } from "@/lib/agent";
+import { listenComposer } from "@/lib/composer-inbox";
 import { type DevicePeer, useRpc } from "@/lib/peer";
 import { cn } from "@/lib/utils";
 import {
@@ -227,6 +228,18 @@ function Composer({
   const ready = agent.attached && agent.synced;
   const suggestion = !busy && text === "" ? state?.suggestion : undefined;
   const model = models.find((m) => m.value === (state?.model || "default"));
+
+  // Drafts from the thread's other panels, like browser annotations.
+  const addFiles = files.add;
+  useEffect(
+    () =>
+      listenComposer(threadId, (d) => {
+        if (d.files.length) addFiles(d.files);
+        if (d.text) setText((t) => (t.trim() ? `${t.trimEnd()}\n\n${d.text}` : d.text));
+        ref.current?.focus();
+      }),
+    [threadId, addFiles],
+  );
 
   const pickCommand = (c: AgentCommand) => {
     setText(`/${c.name} `);
