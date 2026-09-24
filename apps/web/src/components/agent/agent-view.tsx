@@ -35,12 +35,15 @@ export const MODES: { value: PermissionMode; label: string; hint: string }[] = [
   { value: "bypassPermissions", label: "Bypass permissions", hint: "Never asks. Only for sandboxes" },
 ];
 
+const BROWSER_TOOL = /^mcp__everywhere__browser_/;
+
 export function AgentView({
   peer,
   threadId,
   projectId,
   generation,
   cwd,
+  onBrowserUse,
 }: {
   peer: DevicePeer;
   threadId: string;
@@ -48,9 +51,25 @@ export function AgentView({
   generation: number;
   /** The project directory, for showing paths relative to it. */
   cwd?: string;
+  /** Called when claude starts driving the project's browser. */
+  onBrowserUse?: () => void;
 }) {
   const agent = useAgentThread(peer, threadId, generation);
   const { state } = agent;
+
+  // Show the browser when claude uses it, but not for history being replayed.
+  const seenSeq = useRef(0);
+  const onBrowserUseRef = useRef(onBrowserUse);
+  onBrowserUseRef.current = onBrowserUse;
+  useEffect(() => {
+    const fresh = agent.events.filter((e) => e.seq > seenSeq.current);
+    if (!fresh.length) return;
+    seenSeq.current = fresh[fresh.length - 1]!.seq;
+    const used = fresh.some(
+      (e) => e.event.type === "tool" && BROWSER_TOOL.test(e.event.name) && Date.now() - e.at < 30_000,
+    );
+    if (used) onBrowserUseRef.current?.();
+  }, [agent.events]);
   const { info } = useDevice();
   const features = info.data?.features ?? [];
   // Before the thread has run, models and commands come from a probe of the device's claude.

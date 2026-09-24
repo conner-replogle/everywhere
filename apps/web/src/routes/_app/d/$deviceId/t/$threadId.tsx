@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import type { AgentStatus } from "@everywhere/protocol";
 import { GlobeIcon } from "lucide-react";
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useRef, useState } from "react";
 import { CenteredMessage } from "@/components/centered-message";
 import { useDevice } from "@/components/device-context";
 import { TerminalView, type WriterState } from "@/components/terminal-view";
@@ -15,6 +15,9 @@ const BrowserView = lazy(() => import("@/components/browser/browser-view").then(
 
 const BROWSER_OPEN_KEY = "ew.browser.open";
 
+/** Below md the browser covers the chat instead of sitting beside it. */
+const narrowScreen = () => window.matchMedia("(max-width: 767px)").matches;
+
 export const Route = createFileRoute("/_app/d/$deviceId/t/$threadId")({
   component: ThreadPage,
 });
@@ -24,7 +27,9 @@ function ThreadPage() {
   const { peer, conn, threads, projects, info } = useDevice();
   const [writer, setWriter] = useState<WriterState>("pending");
   const [browserOpen, setBrowserOpenState] = useState(() => localStorage.getItem(BROWSER_OPEN_KEY) === "1");
+  const browserClosedAt = useRef(0);
   const setBrowserOpen = (open: boolean) => {
+    if (!open) browserClosedAt.current = Date.now();
     setBrowserOpenState(open);
     if (open) localStorage.setItem(BROWSER_OPEN_KEY, "1");
     else localStorage.removeItem(BROWSER_OPEN_KEY);
@@ -91,6 +96,11 @@ function ThreadPage() {
                 projectId={thread.projectId}
                 generation={conn.generation}
                 cwd={project?.path}
+                onBrowserUse={() => {
+                  // Beside the chat only, and not right after the user closed it.
+                  if (narrowScreen() || Date.now() - browserClosedAt.current < 120_000) return;
+                  setBrowserOpen(true);
+                }}
               />
             </Suspense>
           ) : (
@@ -117,7 +127,7 @@ function ThreadPage() {
                     ? (draft) => {
                         if (!sendToComposer(threadId, draft)) return false;
                         // On a phone the browser covers the chat; show the draft.
-                        if (window.matchMedia("(max-width: 767px)").matches) setBrowserOpen(false);
+                        if (narrowScreen()) setBrowserOpen(false);
                         return true;
                       }
                     : undefined
