@@ -81,6 +81,19 @@ func TestLive(t *testing.T) {
 	if s.SessionID == "" || s.Account == nil || len(s.Models) == 0 {
 		t.Fatalf("state missing session/account/models: %+v", s)
 	}
+	// claude names the thread; the prompt's first line was only a stand-in.
+	stand := "Use the Write tool to create notes.txt containing: remember the…"
+	var name string
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		if t, _ := st.GetThread(th.ID); t.Name != stand && !defaultThreadName.MatchString(t.Name) {
+			name = t.Name
+			break
+		}
+	}
+	t.Logf("title: %q", name)
+	if name == "" {
+		t.Error("claude didn't name the thread")
+	}
 
 	// Stop the process as the idle reaper would; the next prompt resumes.
 	m.mu.Lock()

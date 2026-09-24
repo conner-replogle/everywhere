@@ -300,6 +300,22 @@ func (s *Store) RenameThread(id, name string) (protocol.Thread, error) {
 	return s.GetThread(id)
 }
 
+// ReplaceThreadName renames a thread only if its name is still from, so a
+// generated name never overwrites one the user chose. It reports whether it
+// renamed.
+func (s *Store) ReplaceThreadName(id, from, to string) (bool, error) {
+	to = strings.TrimSpace(to)
+	if to == "" {
+		return false, errors.New("name is required")
+	}
+	res, err := s.db.Exec("UPDATE threads SET name = ? WHERE id = ? AND name = ?", to, id, from)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 func (s *Store) DeleteThread(id string) error {
 	return s.execOne("DELETE FROM threads WHERE id = ?", id)
 }

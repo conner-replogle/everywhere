@@ -32,6 +32,7 @@ type Client interface {
 type Store interface {
 	GetThread(id string) (protocol.Thread, error)
 	RenameThread(id, name string) (protocol.Thread, error)
+	ReplaceThreadName(id, from, to string) (bool, error)
 	AgentThread(threadID string) (store.AgentThread, error)
 	SetAgentSessionID(threadID, sessionID string) error
 	SetAgentModel(threadID, model string) error
@@ -58,6 +59,7 @@ type process interface {
 	SetPermissionMode(context.Context, string) error
 	SetModel(context.Context, string) error
 	ContextUsage(context.Context) (claude.ContextUsage, error)
+	GenerateTitle(ctx context.Context, description string, persist bool) (string, error)
 	ApplyFlagSettings(context.Context, map[string]any) error
 	Usage(context.Context) (claude.Usage, error)
 	Close()

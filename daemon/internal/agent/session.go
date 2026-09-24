@@ -35,6 +35,12 @@ const (
 	maxInputBytes  = 64 << 10 // per tool input
 	maxInputString = 16 << 10 // per string inside an oversized tool input
 	maxTitleRunes  = 60
+	titleTimeout   = 30 * time.Second
+	// A first prompt shorter than this rarely says what the thread is about
+	// ("fix this"), so it's named again once claude has replied.
+	vagueWords = 6
+	// How much of the first prompt and reply a renaming sees.
+	maxTitleContext = 4000
 
 	workspaceLocal    = "local"
 	workspaceWorktree = "worktree"
@@ -79,6 +85,14 @@ type session struct {
 	msgID       string
 	idle        *time.Timer
 	titled      bool
+	// autoName is the name the daemon gave the thread, while it has it. A
+	// generated title only replaces this, never a name the user chose.
+	autoName string
+	// refineTitle is the first prompt, while the thread should be named
+	// again when its first turn ends.
+	refineTitle string
+	titleGen    int    // bumped per title request, so only the latest applies
+	firstReply  string // claude's last top-level text in the current turn
 }
 
 func newSession(m *Manager, threadID string, a store.AgentThread) *session {
@@ -283,10 +297,11 @@ func (s *session) send(text string, attachmentIDs []string) error {
 		ev.Attachments = append(ev.Attachments, f.AgentAttachment)
 	}
 	s.emit(ev)
-	if text != "" {
-		s.maybeTitle(text)
+	err = s.proc.Send(claude.UserMessage{UUID: id, Content: content})
+	if err == nil {
+		s.maybeTitle(text, files)
 	}
-	return s.proc.Send(claude.UserMessage{UUID: id, Content: content})
+	return err
 }
 
 // continueTurn restarts a turn that a daemon update interrupted.
@@ -607,9 +622,10 @@ func (s *session) notePermissionMode(mode string) {
 	}
 }
 
-// maybeTitle names a thread after its first prompt, unless the user already
-// renamed it.
-func (s *session) maybeTitle(text string) {
+// maybeTitle names a new thread after its first prompt, unless the user
+// already renamed it: at once after the prompt's first line, then with
+// the title claude generates for it.
+func (s *session) maybeTitle(text string, files []storedAttachment) {
 	if s.titled {
 		return
 	}
@@ -618,13 +634,98 @@ func (s *session) maybeTitle(text string) {
 	if err != nil || !defaultThreadName.MatchString(t.Name) {
 		return
 	}
-	title, _, _ := strings.Cut(text, "\n")
+	title, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
+	if title == "" && len(files) > 0 {
+		title = files[0].Name
+	}
+	if title == "" {
+		return
+	}
 	if r := []rune(title); len(r) > maxTitleRunes {
 		title = strings.TrimSpace(string(r[:maxTitleRunes-1])) + "…"
 	}
-	if _, err := s.m.store.RenameThread(s.threadID, title); err == nil {
-		s.m.onChange()
+	s.autoName = t.Name
+	s.setAutoName(title)
+
+	desc := text
+	if len(files) > 0 {
+		names := make([]string, len(files))
+		for i, f := range files {
+			names[i] = f.Name
+		}
+		desc = strings.TrimSpace(desc + "\n\nAttached: " + strings.Join(names, ", "))
 	}
+	if len(strings.Fields(text)) < vagueWords {
+		s.refineTitle = desc
+	}
+	s.generateTitle(desc, true, func() { s.refineTitle = desc })
+}
+
+// generateTitle asks claude for a title off the session goroutine and
+// applies it if nothing newer was asked for; failed runs if it gave none.
+func (s *session) generateTitle(desc string, persist bool, failed func()) {
+	proc := s.proc
+	if proc == nil || s.autoName == "" {
+		return
+	}
+	s.titleGen++
+	gen := s.titleGen
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), titleTimeout)
+		defer cancel()
+		title, err := proc.GenerateTitle(ctx, clipRunes(desc, maxTitleContext), persist)
+		if err != nil {
+			slog.Debug("claude title", "thread", s.threadID, "err", err)
+		}
+		s.do(func() {
+			if gen != s.titleGen {
+				return
+			}
+			if title = strings.TrimSpace(title); title == "" {
+				failed()
+				return
+			}
+			s.setAutoName(title)
+		})
+	}()
+}
+
+// setAutoName renames the thread if it still has the daemon's name.
+func (s *session) setAutoName(name string) {
+	if s.autoName == "" || name == s.autoName {
+		return
+	}
+	ok, err := s.m.store.ReplaceThreadName(s.threadID, s.autoName, name)
+	if err != nil {
+		slog.Warn("naming thread", "thread", s.threadID, "err", err)
+		return
+	}
+	if !ok {
+		s.autoName, s.refineTitle = "", "" // the user renamed it
+		return
+	}
+	s.autoName = name
+	s.m.onChange()
+}
+
+// maybeRefineTitle names the thread again from its first prompt and reply,
+// once the first turn has ended, if the prompt alone wasn't enough.
+func (s *session) maybeRefineTitle(completed bool) {
+	prompt := s.refineTitle
+	if prompt == "" || !completed || s.firstReply == "" {
+		return
+	}
+	s.refineTitle = ""
+	half := maxTitleContext / 2
+	desc := clipRunes(prompt, half) + "\n\n" + clipRunes(s.firstReply, half)
+	s.generateTitle(desc, false, func() {})
+}
+
+func clipRunes(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n])
+	}
+	return s
 }
 
 // --- claude output ------------------------------------------------------------
@@ -804,6 +905,9 @@ func (s *session) onAssistant(msg claude.Message) {
 		case "text":
 			ev.Type, ev.Text = "assistant", b.Text
 			ev.StreamKey = s.takeStream(f.Message.ID, "text")
+			if msg.ParentToolUseID == "" && strings.TrimSpace(b.Text) != "" {
+				s.firstReply = b.Text
+			}
 		case "thinking":
 			ev.Type, ev.Text = "thinking", b.Thinking
 			ev.StreamKey = s.takeStream(f.Message.ID, "thinking")
@@ -874,6 +978,7 @@ func (s *session) onResult(msg claude.Message) {
 		}
 	}
 	s.endTurn(ev)
+	s.maybeRefineTitle(ev.Status == "completed")
 	s.refreshContext()
 }
 
@@ -925,6 +1030,7 @@ func (s *session) onExit() {
 
 func (s *session) beginTurn() {
 	s.turnActive, s.interrupted = true, false
+	s.firstReply = ""
 	s.state.Suggestion = ""
 	s.emit(protocol.AgentEvent{Type: "turn", Status: "started"})
 }

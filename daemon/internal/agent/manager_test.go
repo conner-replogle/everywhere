@@ -32,6 +32,19 @@ type fakeProc struct {
 	flags      []map[string]any
 	closed     bool
 	exitErr    error
+	titles     func(desc string, persist bool) (string, error)
+	titleReqs  []titleReq
+}
+
+type titleReq struct {
+	desc    string
+	persist bool
+}
+
+func (p *fakeProc) titleRequests() []titleReq {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]titleReq(nil), p.titleReqs...)
 }
 
 func (p *fakeProc) Messages() <-chan claude.Message { return p.msgs }
@@ -90,6 +103,16 @@ func (p *fakeProc) Usage(context.Context) (claude.Usage, error) {
 }
 func (p *fakeProc) ContextUsage(context.Context) (claude.ContextUsage, error) {
 	return claude.ContextUsage{TotalTokens: 30_000, MaxTokens: 200_000}, nil
+}
+func (p *fakeProc) GenerateTitle(_ context.Context, desc string, persist bool) (string, error) {
+	p.mu.Lock()
+	p.titleReqs = append(p.titleReqs, titleReq{desc, persist})
+	titles := p.titles
+	p.mu.Unlock()
+	if titles == nil {
+		return "", nil
+	}
+	return titles(desc, persist)
 }
 func (p *fakeProc) Close() { p.exit(nil) }
 
@@ -222,6 +245,7 @@ type harness struct {
 	thread string
 	mu     sync.Mutex
 	procs  []*fakeProc
+	titles func(desc string, persist bool) (string, error)
 }
 
 func newHarness(t *testing.T) *harness {
@@ -238,7 +262,7 @@ func newHarness(t *testing.T) *harness {
 	h := &harness{t: t, st: st, thread: th.ID}
 	h.m = NewManager(st, t.TempDir(), func() {})
 	h.m.start = func(_ context.Context, o claude.Options) (process, error) {
-		p := &fakeProc{opts: o, msgs: make(chan claude.Message, 100)}
+		p := &fakeProc{opts: o, msgs: make(chan claude.Message, 100), titles: h.titles}
 		h.mu.Lock()
 		h.procs = append(h.procs, p)
 		h.mu.Unlock()
@@ -384,6 +408,86 @@ func TestAttachLimitAndHistory(t *testing.T) {
 	}
 	if e := pages[1].Events; len(e) != 1 || e[0].Seq != 1 || pages[1].More {
 		t.Fatalf("page before 2: %+v", pages[1])
+	}
+}
+
+func (h *harness) threadName() string {
+	th, err := h.st.GetThread(h.thread)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return th.Name
+}
+
+func TestTitleFromClaude(t *testing.T) {
+	h := newHarness(t)
+	h.titles = func(desc string, persist bool) (string, error) {
+		if !persist {
+			t.Errorf("a clear prompt was named again: %q", desc)
+		}
+		return "Hub websocket reconnect", nil
+	}
+	c := h.attach(0)
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "the websocket in hub.go drops after a wifi change\nand never reconnects"})
+	p := h.proc(0)
+	eventually(t, "claude's title", func() bool { return h.threadName() == "Hub websocket reconnect" })
+	if r := p.titleRequests(); len(r) != 1 || !strings.HasPrefix(r[0].desc, "the websocket in hub.go") {
+		t.Fatalf("title requests %+v", r)
+	}
+	p.emit(`{"type":"assistant","uuid":"u1","message":{"id":"m1","content":[{"type":"text","text":"On it."}]}}`)
+	p.emit(`{"type":"result","subtype":"success"}`)
+	h.waitStatus(c, "idle")
+	// Later prompts don't rename.
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "and add a test"})
+	eventually(t, "second prompt sent", func() bool { p.mu.Lock(); defer p.mu.Unlock(); return len(p.sent) == 2 })
+	if n := len(p.titleRequests()); n != 1 {
+		t.Fatalf("%d title requests", n)
+	}
+}
+
+func TestVagueTitleRefinedAfterReply(t *testing.T) {
+	h := newHarness(t)
+	h.titles = func(desc string, persist bool) (string, error) {
+		if persist {
+			return "", nil // too little to go on
+		}
+		return "Login redirect loop", nil
+	}
+	c := h.attach(0)
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "fix this"})
+	p := h.proc(0)
+	eventually(t, "stand-in name", func() bool { return h.threadName() == "fix this" })
+	p.emit(`{"type":"assistant","uuid":"u1","message":{"id":"m1","content":[{"type":"text","text":"The login page redirects to itself because the session cookie is never set."}]}}`)
+	p.emit(`{"type":"result","subtype":"success"}`)
+	eventually(t, "refined title", func() bool { return h.threadName() == "Login redirect loop" })
+	r := p.titleRequests()
+	if len(r) != 2 || r[1].persist || !strings.Contains(r[1].desc, "fix this") || !strings.Contains(r[1].desc, "session cookie") {
+		t.Fatalf("title requests %+v", r)
+	}
+}
+
+func TestTitleNeverOverwritesRename(t *testing.T) {
+	h := newHarness(t)
+	release := make(chan struct{})
+	h.titles = func(string, bool) (string, error) {
+		<-release
+		return "Generated name", nil
+	}
+	c := h.attach(0)
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "the websocket in hub.go drops after a wifi change"})
+	p := h.proc(0)
+	eventually(t, "title requested", func() bool {
+		return h.threadName() != "" && len(p.titleRequests()) == 1
+	})
+	if _, err := h.st.RenameThread(h.thread, "My name"); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	p.emit(`{"type":"result","subtype":"success"}`)
+	h.waitStatus(c, "idle")
+	time.Sleep(50 * time.Millisecond)
+	if n := h.threadName(); n != "My name" {
+		t.Fatalf("name %q after the user renamed it", n)
 	}
 }
 

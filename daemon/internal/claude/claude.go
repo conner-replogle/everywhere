@@ -278,6 +278,28 @@ func (s *Session) ContextUsage(ctx context.Context) (ContextUsage, error) {
 	return u, err
 }
 
+// GenerateTitle asks claude to name the session after description. With
+// persist, claude saves the title to the transcript, and for the session's
+// first prompt returns the title it generated (or is generating) for it
+// instead of making another. "" means claude had nothing to go on.
+func (s *Session) GenerateTitle(ctx context.Context, description string, persist bool) (string, error) {
+	resp, err := s.control(ctx, map[string]any{
+		"subtype":     "generate_session_title",
+		"description": description,
+		"persist":     persist,
+	})
+	if err != nil {
+		return "", err
+	}
+	var r struct {
+		Title *string `json:"title"`
+	}
+	if err := json.Unmarshal(resp, &r); err != nil || r.Title == nil {
+		return "", err
+	}
+	return *r.Title, nil
+}
+
 func (s *Session) SetModel(ctx context.Context, model string) error {
 	_, err := s.control(ctx, map[string]any{"subtype": "set_model", "model": model})
 	return err
