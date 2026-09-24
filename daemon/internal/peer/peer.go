@@ -108,7 +108,7 @@ func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string) *Serve
 		peers: map[string]*peer{},
 	}
 	threadsChanged := func() { s.broadcast(protocol.EventThreadsChanged) }
-	s.terms = term.NewManager(st, threadsChanged)
+	s.terms = term.NewManager(shells{s}, threadsChanged)
 	s.agents = agent.NewManager(st, dataDir, threadsChanged)
 	s.browsers = browser.NewManager(filepath.Join(dataDir, "browser"))
 	s.mcp = mcp.NewServer("everywhere", version.Version, browser.Tools(s.browsers))
@@ -244,6 +244,8 @@ func (s *Server) answer(from, sid, sdp string) error {
 			s.serveBrowser(p, dc, strings.TrimPrefix(label, protocol.BrowserChannelPrefix))
 		case strings.HasPrefix(label, protocol.UploadChannelPrefix):
 			s.serveUpload(dc, strings.TrimPrefix(label, protocol.UploadChannelPrefix))
+		case strings.HasPrefix(label, protocol.FileChannelPrefix):
+			s.serveFile(dc)
 		default:
 			_ = dc.Close()
 		}

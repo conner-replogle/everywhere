@@ -12,6 +12,9 @@ something you run in a terminal. Harness-specific support comes later.
 - **Thread**: a named, persistent slot inside a project, either a
   **terminal** (a shell, spawned lazily when a client opens the thread) or a
   **claude** thread (a Claude Code conversation; see Claude threads).
+- **Tab**: a view opened inside a thread next to the thread itself: a
+  terminal, a claude conversation, the project's browser, or a files view.
+  See Tabs.
 - **Client**: a browser tab on the website (later: desktop/mobile apps, which
   are viewers only).
 - **Writer**: the one client allowed to type into / resize a thread. Everyone
@@ -144,6 +147,7 @@ everywhere status | version | update | uninstall
 projects (id, name, path UNIQUE, created_at)                -- home project seeded on first run
 threads  (id, project_id, kind, name, created_at, last_opened_at, had_session BOOL,
           agent_session_id, agent_model, agent_permission_mode)
+           parent_id (tabs), tab_state
 agent_events (thread_id, seq, at, event JSON)               -- claude thread log
 ```
 
@@ -182,6 +186,30 @@ Migrations are append-only and tracked in `PRAGMA user_version`.
     is promoted.
   - When the shell exits, clients get `exited`. The next attach respawns it.
     Only Delete removes a thread.
+
+### Tabs
+
+A tab is a `threads` row with `parent_id` set to its thread (tabs don't nest;
+feature `tabs`). Its kind is terminal, claude, browser or files. Terminal and
+claude tabs are threads in their own right, on their own `term:` / `agent:`
+channels, and run where their thread runs: a tab of a claude thread in a
+worktree works in that worktree (a claude tab records it as its own, and
+closing the tab never removes it). `threads.list` leaves tabs out.
+
+- `tabs.list {threadId}`, `tabs.create {threadId, kind, name?}`,
+  `tabs.close {id}` (deletes it, stopping its shell or claude),
+  `tabs.setState {id, state}` (the view's own state, e.g. the files view's
+  open file). Rename with `threads.rename`. Archiving or deleting a thread
+  does the same to its tabs.
+- `threads.workdir {id}`: where the thread works (worktree or project).
+- `fs.list {path}`: a directory's entries with sizes, directories first.
+- **`file:<id>` channel**, one per read: `{t:"read", path}` →
+  `{t:"start", size, modTime}`, binary chunks, `{t:"end"}` or `{t:"error"}`.
+  Files over 25 MB are refused.
+- A browser tab shows the project's one browser page, the same one claude's
+  browser tools drive, so a thread has at most one. It opens by itself when
+  claude starts using the browser, unless the user closed it in the last two
+  minutes.
 
 ### Install (`curl -fsSL https://ai.replogle.dev/i/<token> | sh`)
 
@@ -257,6 +285,7 @@ same one the Agent SDK uses (`internal/claude`):
 /d/$deviceId                    project + thread sidebar (via control channel)
 /d/$deviceId/t/$threadId        terminal: xterm.js (WebGL, fit addon), writer banner + Take over
                                 claude: timeline, permission/question/plan cards, composer
+                                tab strip: the thread, then its tabs; ?tab=<id> picks one
 /settings/devices               add device (shows install command), rename, revoke
 ```
 

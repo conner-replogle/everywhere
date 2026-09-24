@@ -53,6 +53,7 @@ export const CONTROL_CHANNEL = "control";
 export const TERM_CHANNEL_PREFIX = "term:";
 export const AGENT_CHANNEL_PREFIX = "agent:";
 export const UPLOAD_CHANNEL_PREFIX = "upload:";
+export const FILE_CHANNEL_PREFIX = "file:";
 
 export * from "./browser";
 
@@ -71,8 +72,9 @@ export interface DeviceInfo {
  * device.update. worktrees: claude threads in their own git worktree, and
  * git.info. attachments: upload channels and attachments on send. history:
  * the agent attach limit and history paging. archive: threads.archive.
+ * tabs: tabs.*, threads.workdir, fs.list and file channels.
  */
-export type DeviceFeature = "claude" | "update" | "worktrees" | "attachments" | "history" | "archive";
+export type DeviceFeature = "claude" | "update" | "worktrees" | "attachments" | "history" | "archive" | "tabs";
 
 export interface UpdateInfo {
   current: string;
@@ -120,6 +122,43 @@ export interface Thread {
   archivedAt?: number;
 }
 
+/** What a tab shows: a thread kind, the project's browser, or its files. */
+export type TabKind = ThreadKind | "browser" | "files";
+
+/**
+ * A tab opened inside a thread. Terminal and claude tabs are threads of
+ * their own, run where their thread runs (its worktree, if it has one).
+ */
+export interface Tab extends Omit<Thread, "kind" | "archivedAt"> {
+  kind: TabKind;
+  /** The thread the tab belongs to. */
+  parentId: string;
+  /** The tab's UI state, as its view saved it (tabs.setState). */
+  tabState?: string;
+}
+
+/** Where a thread works (threads.workdir). */
+export interface Workdir {
+  path: string;
+  /** path is a git worktree (the thread's, or the one of the thread it's a tab of). */
+  worktree: boolean;
+}
+
+export interface FsEntry {
+  name: string;
+  dir: boolean;
+  size: number;
+  /** Unix ms. */
+  modTime: number;
+}
+
+export interface FsListing {
+  path: string;
+  parent: string | null;
+  /** Directories first, then files, by name. */
+  entries: FsEntry[];
+}
+
 export interface DirListing {
   path: string;
   parent: string | null;
@@ -165,7 +204,14 @@ export interface RpcMethods {
   "threads.archive": [{ id: string; archived: boolean }, Thread];
   /** keepWorktree: leave a claude thread's worktree on disk (its branch is always kept). */
   "threads.delete": [{ id: string; keepWorktree?: boolean }, Record<string, never>];
+  "threads.workdir": [{ id: string }, Workdir];
+  "tabs.list": [{ threadId: string }, Tab[]];
+  "tabs.create": [{ threadId: string; kind: TabKind; name?: string }, Tab];
+  /** Deletes the tab, stopping its shell or claude. Rename one with threads.rename. */
+  "tabs.close": [{ id: string }, Record<string, never>];
+  "tabs.setState": [{ id: string; state: string }, Record<string, never>];
   "fs.listDirs": [{ path: string }, DirListing];
+  "fs.list": [{ path: string }, FsListing];
   "git.info": [{ projectId: string }, GitInfo];
   /** Claude Code's models and account, before any thread has started. */
   "agent.info": [Record<string, never>, AgentInfo];
@@ -184,6 +230,18 @@ export type RpcResponse =
   | { id: number; error: { message: string } };
 
 export type RpcEvent = { event: "projects.changed" } | { event: "threads.changed" };
+
+/**
+ * File channel `file:<id>`, one per read. The client sends `read`; the daemon
+ * answers `start`, the file as binary chunks, then `end`, or `error` at any
+ * point. Files over 25 MB are refused.
+ */
+export type FileClientMsg = { t: "read"; path: string };
+
+export type FileDaemonMsg =
+  | { t: "start"; path: string; size: number; modTime: number }
+  | { t: "end" }
+  | { t: "error"; message: string };
 
 /**
  * Terminal channel `term:<threadId>`. Binary messages are raw PTY bytes in

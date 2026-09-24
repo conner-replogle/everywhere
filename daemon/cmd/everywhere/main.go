@@ -149,7 +149,7 @@ func daemon(args []string) error {
 	home, _ := os.UserHomeDir()
 	srv := peer.NewServer(st, protocol.DeviceInfo{
 		Hostname: hostname, Home: home, OS: runtime.GOOS, Arch: runtime.GOARCH, Version: version.Version,
-		Features: []string{protocol.FeatureClaude, protocol.FeatureUpdate, protocol.FeatureWorktrees, protocol.FeatureAttachments, protocol.FeatureHistory, protocol.FeatureArchive},
+		Features: []string{protocol.FeatureClaude, protocol.FeatureUpdate, protocol.FeatureWorktrees, protocol.FeatureAttachments, protocol.FeatureHistory, protocol.FeatureArchive, protocol.FeatureTabs},
 	}, config.DataDir())
 	defer srv.Shutdown()
 	srv.ICEServers = (&ice.Provider{Server: cfg.Server, Credential: credential}).Servers

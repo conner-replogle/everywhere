@@ -212,3 +212,67 @@ func TestAgentThreads(t *testing.T) {
 		t.Errorf("events survived thread delete: %d", len(events))
 	}
 }
+
+func TestTabs(t *testing.T) {
+	s := open(t)
+	p, err := s.CreateProject(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	th, err := s.CreateThread(p.ID, "", protocol.ThreadClaude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAgentWorktree(th.ID, "/wt/x", "everywhere/x"); err != nil {
+		t.Fatal(err)
+	}
+	for _, kind := range []string{protocol.ThreadTerminal, protocol.ThreadClaude, protocol.ThreadBrowser, protocol.ThreadFiles} {
+		if _, err := s.CreateTab(th.ID, kind, ""); err != nil {
+			t.Fatalf("CreateTab(%s): %v", kind, err)
+		}
+	}
+	if _, err := s.CreateTab(th.ID, "bogus", ""); err == nil {
+		t.Error("unknown kind accepted")
+	}
+	tabs, err := s.ListTabs(th.ID)
+	if err != nil || len(tabs) != 4 {
+		t.Fatalf("ListTabs = %d %v", len(tabs), err)
+	}
+	if _, err := s.CreateTab(tabs[0].ID, protocol.ThreadTerminal, ""); err == nil {
+		t.Error("tab of a tab accepted")
+	}
+	threads, _ := s.ListThreads(p.ID)
+	if len(threads) != 1 || threads[0].ID != th.ID {
+		t.Errorf("ListThreads includes tabs: %+v", threads)
+	}
+
+	// The claude tab shares the thread's worktree; the thread's own isn't shared.
+	claudeTab := tabs[1]
+	a, err := s.AgentThread(claudeTab.ID)
+	if err != nil || a.Workspace != "worktree" || a.Worktree != "/wt/x" || a.Branch != "everywhere/x" || !a.SharedWorktree {
+		t.Errorf("claude tab agent = %+v %v", a, err)
+	}
+	if a, _ := s.AgentThread(th.ID); a.SharedWorktree {
+		t.Error("thread's own worktree reported shared")
+	}
+	if _, wt, err := s.ThreadWorkdir(tabs[0].ID); err != nil || wt != "/wt/x" {
+		t.Errorf("terminal tab worktree = %q %v", wt, err)
+	}
+
+	if err := s.SetTabState(tabs[3].ID, `{"file":"a"}`); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetThread(tabs[3].ID); got.TabState != `{"file":"a"}` || got.ParentID != th.ID {
+		t.Errorf("tab = %+v", got)
+	}
+	if err := s.SetTabState(th.ID, "x"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("SetTabState on a thread: %v", err)
+	}
+
+	if err := s.DeleteThread(th.ID); err != nil {
+		t.Fatal(err)
+	}
+	if tabs, _ := s.ListTabs(th.ID); len(tabs) != 0 {
+		t.Errorf("tabs survive their thread: %+v", tabs)
+	}
+}

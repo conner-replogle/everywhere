@@ -78,6 +78,14 @@ ALTER TABLE threads ADD COLUMN agent_thinking INTEGER NOT NULL DEFAULT 1;
 	`
 ALTER TABLE threads ADD COLUMN archived_at INTEGER;
 `,
+	// 6: tabs. A tab is a thread with a parent: a terminal, claude, browser
+	// or files view opened inside another thread. tab_state is the tab's own
+	// UI state (the files view's open file).
+	`
+ALTER TABLE threads ADD COLUMN parent_id TEXT REFERENCES threads(id) ON DELETE CASCADE;
+ALTER TABLE threads ADD COLUMN tab_state TEXT;
+CREATE INDEX threads_parent ON threads(parent_id);
+`,
 }
 
 type Store struct {
@@ -219,14 +227,14 @@ func (s *Store) DeleteProject(id string) error {
 
 // --- threads ----------------------------------------------------------------
 
-const threadCols = "id, project_id, kind, name, created_at, last_opened_at, agent_worktree, archived_at"
+const threadCols = "id, project_id, kind, name, created_at, last_opened_at, agent_worktree, archived_at, parent_id, tab_state"
 
 func scanThread(sc interface{ Scan(...any) error }) (protocol.Thread, error) {
 	var t protocol.Thread
 	var opened, archived sql.NullInt64
-	var worktree sql.NullString
-	err := sc.Scan(&t.ID, &t.ProjectID, &t.Kind, &t.Name, &t.CreatedAt, &opened, &worktree, &archived)
-	t.Worktree = worktree.String
+	var worktree, parent, state sql.NullString
+	err := sc.Scan(&t.ID, &t.ProjectID, &t.Kind, &t.Name, &t.CreatedAt, &opened, &worktree, &archived, &parent, &state)
+	t.Worktree, t.ParentID, t.TabState = worktree.String, parent.String, state.String
 	if opened.Valid {
 		t.LastOpenedAt = &opened.Int64
 	}
@@ -236,16 +244,25 @@ func scanThread(sc interface{ Scan(...any) error }) (protocol.Thread, error) {
 	return t, err
 }
 
-// ListThreads lists threads, optionally for one project. Running is left false
-// for the caller to fill in.
+// ListThreads lists threads, optionally for one project, without their tabs.
+// Running is left false for the caller to fill in.
 func (s *Store) ListThreads(projectID string) ([]protocol.Thread, error) {
-	q := "SELECT " + threadCols + " FROM threads"
+	q := "SELECT " + threadCols + " FROM threads WHERE parent_id IS NULL"
 	args := []any{}
 	if projectID != "" {
-		q += " WHERE project_id = ?"
+		q += " AND project_id = ?"
 		args = append(args, projectID)
 	}
-	rows, err := s.db.Query(q+" ORDER BY created_at", args...)
+	return s.queryThreads(q+" ORDER BY created_at", args...)
+}
+
+// ListTabs lists a thread's tabs, oldest first.
+func (s *Store) ListTabs(threadID string) ([]protocol.Thread, error) {
+	return s.queryThreads("SELECT "+threadCols+" FROM threads WHERE parent_id = ? ORDER BY created_at, rowid", threadID)
+}
+
+func (s *Store) queryThreads(q string, args ...any) ([]protocol.Thread, error) {
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -294,6 +311,46 @@ func (s *Store) CreateThread(projectID, name, kind string) (protocol.Thread, err
 	_, err := s.db.Exec("INSERT INTO threads (id, project_id, kind, name, created_at) VALUES (?, ?, ?, ?, ?)",
 		t.ID, t.ProjectID, t.Kind, t.Name, t.CreatedAt)
 	return t, err
+}
+
+// CreateTab opens a tab of the given kind in a thread (not in another tab).
+// The name defaults to the kind, capitalized. A claude tab in a thread that runs in a
+// worktree shares that worktree.
+func (s *Store) CreateTab(threadID, kind, name string) (protocol.Thread, error) {
+	switch kind {
+	case protocol.ThreadTerminal, protocol.ThreadClaude, protocol.ThreadBrowser, protocol.ThreadFiles:
+	default:
+		return protocol.Thread{}, fmt.Errorf("unknown tab kind %q", kind)
+	}
+	parent, err := s.GetThread(threadID)
+	if err != nil {
+		return protocol.Thread{}, err
+	}
+	if parent.ParentID != "" {
+		return protocol.Thread{}, errors.New("tabs can't have tabs")
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = strings.ToUpper(kind[:1]) + kind[1:]
+	}
+	t := protocol.Thread{ID: newID(), ProjectID: parent.ProjectID, ParentID: parent.ID, Kind: kind, Name: name, CreatedAt: now()}
+	_, err = s.db.Exec(`
+INSERT INTO threads (id, project_id, parent_id, kind, name, created_at, agent_workspace, agent_worktree, agent_branch)
+SELECT ?, ?, ?, ?, ?, ?,
+       CASE WHEN ? = 'claude' AND agent_worktree IS NOT NULL THEN 'worktree' ELSE 'local' END,
+       CASE WHEN ? = 'claude' THEN agent_worktree END,
+       CASE WHEN ? = 'claude' THEN agent_branch END
+FROM threads WHERE id = ?`,
+		t.ID, t.ProjectID, t.ParentID, t.Kind, t.Name, t.CreatedAt, kind, kind, kind, parent.ID)
+	if kind == protocol.ThreadClaude && err == nil {
+		t.Worktree = parent.Worktree
+	}
+	return t, err
+}
+
+// SetTabState stores a tab's UI state.
+func (s *Store) SetTabState(id, state string) error {
+	return s.execOne("UPDATE threads SET tab_state = NULLIF(?, '') WHERE id = ? AND parent_id IS NOT NULL", state, id)
 }
 
 func (s *Store) RenameThread(id, name string) (protocol.Thread, error) {
@@ -352,6 +409,27 @@ func (s *Store) ThreadShell(threadID string) (dir string, hadSession bool, err e
 	return dir, hadSession, err
 }
 
+// ThreadWorkdir is where a thread works: its own worktree (claude), its
+// parent's (a tab of a claude thread in a worktree), or the project
+// directory. The worktree is "" for the project directory.
+func (s *Store) ThreadWorkdir(threadID string) (dir, worktree string, err error) {
+	var own, parent sql.NullString
+	err = s.db.QueryRow(`
+SELECT p.path, t.agent_worktree, par.agent_worktree FROM threads t
+JOIN projects p ON p.id = t.project_id
+LEFT JOIN threads par ON par.id = t.parent_id
+WHERE t.id = ?`, threadID,
+	).Scan(&dir, &own, &parent)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = ErrNotFound
+	}
+	worktree = own.String
+	if worktree == "" {
+		worktree = parent.String
+	}
+	return dir, worktree, err
+}
+
 // MarkSpawned implements term.Resolver.
 func (s *Store) MarkSpawned(threadID string) error {
 	_, err := s.db.Exec("UPDATE threads SET had_session = 1, last_opened_at = ? WHERE id = ?", now(), threadID)
@@ -379,6 +457,9 @@ type AgentThread struct {
 	Context  json.RawMessage // last known context usage, or nil
 	Effort   string          // "" means the model's default
 	Thinking bool
+	// SharedWorktree means Worktree is the one of the thread this is a tab
+	// of, so it stays when the tab closes.
+	SharedWorktree bool
 }
 
 func (s *Store) AgentThread(threadID string) (AgentThread, error) {
@@ -388,10 +469,11 @@ func (s *Store) AgentThread(threadID string) (AgentThread, error) {
 	err := s.db.QueryRow(`
 SELECT t.project_id, p.path, t.kind, t.agent_session_id, t.agent_model, t.agent_permission_mode,
        t.agent_workspace, t.agent_base_branch, t.agent_worktree, t.agent_branch, t.agent_continue, t.agent_context,
-       t.agent_effort, t.agent_thinking
-FROM threads t JOIN projects p ON p.id = t.project_id WHERE t.id = ?`, threadID,
+       t.agent_effort, t.agent_thinking, COALESCE(t.agent_worktree = par.agent_worktree, 0)
+FROM threads t JOIN projects p ON p.id = t.project_id LEFT JOIN threads par ON par.id = t.parent_id
+WHERE t.id = ?`, threadID,
 	).Scan(&a.ProjectID, &a.Dir, &kind, &session, &model, &a.PermissionMode,
-		&a.Workspace, &base, &worktree, &branch, &a.Continue, &ctxUsage, &effort, &a.Thinking)
+		&a.Workspace, &base, &worktree, &branch, &a.Continue, &ctxUsage, &effort, &a.Thinking, &a.SharedWorktree)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
 	}

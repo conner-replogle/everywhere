@@ -8,6 +8,9 @@ import {
   type AgentClientMsg,
   type AgentDaemonMsg,
   CONTROL_CHANNEL,
+  FILE_CHANNEL_PREFIX,
+  type FileClientMsg,
+  type FileDaemonMsg,
   type HubErrorCode,
   type IceCandidate,
   type RpcEvent,
@@ -631,6 +634,51 @@ export class DevicePeer {
       const r = await result;
       if (r.t === "error") throw new Error(r.message);
       return r.attachment;
+    } finally {
+      ch.onclose = null;
+      ch.close();
+    }
+  }
+
+  /** Reads a file on the device over its own `file:<id>` channel. */
+  async readFile(path: string, signal?: AbortSignal): Promise<{ bytes: Uint8Array<ArrayBuffer>; modTime: number }> {
+    if (!this.pc || this.snap.state !== "connected") throw new Error("Not connected to device");
+    const ch = this.pc.createDataChannel(`${FILE_CHANNEL_PREFIX}${randomSid()}`, { ordered: true });
+    ch.binaryType = "arraybuffer";
+    try {
+      return await new Promise((resolve, reject) => {
+        let bytes: Uint8Array<ArrayBuffer> | null = null;
+        let got = 0;
+        let modTime = 0;
+        signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+        ch.onopen = () => ch.send(JSON.stringify({ t: "read", path } satisfies FileClientMsg));
+        ch.onerror = () => reject(new Error("Couldn't open file channel"));
+        ch.onclose = () => reject(new Error("File read interrupted"));
+        ch.onmessage = (ev) => {
+          if (ev.data instanceof ArrayBuffer) {
+            if (!bytes) return;
+            const chunk = new Uint8Array(ev.data);
+            bytes.set(chunk.subarray(0, bytes.length - got), got);
+            got += chunk.length;
+            return;
+          }
+          let msg: FileDaemonMsg;
+          try {
+            msg = JSON.parse(ev.data as string) as FileDaemonMsg;
+          } catch {
+            return;
+          }
+          if (msg.t === "start") {
+            bytes = new Uint8Array(msg.size);
+            modTime = msg.modTime;
+          } else if (msg.t === "end") {
+            // The file may have shrunk while it was read.
+            resolve({ bytes: (bytes ?? new Uint8Array()).subarray(0, got), modTime });
+          } else {
+            reject(new Error(msg.message));
+          }
+        };
+      });
     } finally {
       ch.onclose = null;
       ch.close();

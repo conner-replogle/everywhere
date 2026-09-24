@@ -63,6 +63,8 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		Path         string `json:"path"`
 		ProjectID    string `json:"projectId"`
 		Kind         string `json:"kind"`
+		ThreadID     string `json:"threadId"`
+		State        string `json:"state"`
 		KeepWorktree bool   `json:"keepWorktree"`
 		Archived     bool   `json:"archived"`
 		Force        bool   `json:"force"`
@@ -100,7 +102,7 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		}
 		return p, err
 	case "projects.delete":
-		threads, err := s.store.ListThreads(params.ID)
+		threads, err := s.withTabs(s.store.ListThreads(params.ID))
 		if err != nil {
 			return nil, err
 		}
@@ -144,10 +146,9 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		}
 		if params.Archived {
 			// History, worktree and claude's session stay; restoring resumes it.
-			if t.Kind == protocol.ThreadClaude {
-				s.agents.Kill(t.ID)
-			} else {
-				s.terms.Kill(t.ID)
+			tabs, _ := s.store.ListTabs(t.ID)
+			for _, t := range append(tabs, t) {
+				s.stopThread(t)
 			}
 		}
 		s.fillStatus(&t)
@@ -158,16 +159,60 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		threads, err := s.withTabs([]protocol.Thread{t}, nil)
+		if err != nil {
+			return nil, err
+		}
+		agentThreads := s.agentThreads(threads)
+		if err := s.store.DeleteThread(params.ID); err != nil {
+			return nil, err
+		}
+		for _, t := range threads {
+			s.killThread(t, agentThreads[t.ID], params.KeepWorktree)
+		}
+		s.broadcast(protocol.EventThreadsChanged)
+		return empty{}, nil
+	case "threads.workdir":
+		return s.workdir(params.ID)
+
+	case "tabs.list":
+		tabs, err := s.store.ListTabs(params.ThreadID)
+		for i := range tabs {
+			s.fillStatus(&tabs[i])
+		}
+		return tabs, err
+	case "tabs.create":
+		t, err := s.store.CreateTab(params.ThreadID, params.Kind, params.Name)
+		if err == nil {
+			s.broadcast(protocol.EventThreadsChanged)
+		}
+		return t, err
+	case "tabs.close":
+		t, err := s.store.GetThread(params.ID)
+		if err != nil {
+			return nil, err
+		}
+		if t.ParentID == "" {
+			return nil, errors.New("not a tab")
+		}
 		agentThreads := s.agentThreads([]protocol.Thread{t})
 		if err := s.store.DeleteThread(params.ID); err != nil {
 			return nil, err
 		}
-		s.killThread(t, agentThreads[t.ID], params.KeepWorktree)
+		s.killThread(t, agentThreads[t.ID], false)
 		s.broadcast(protocol.EventThreadsChanged)
+		return empty{}, nil
+	case "tabs.setState":
+		// Not broadcast: only the tab's own view reads it, when it opens.
+		if err := s.store.SetTabState(params.ID, params.State); err != nil {
+			return nil, err
+		}
 		return empty{}, nil
 
 	case "fs.listDirs":
 		return listDirs(params.Path)
+	case "fs.list":
+		return listDir(params.Path)
 
 	case "git.info":
 		p, err := s.store.GetProject(params.ProjectID)
@@ -181,12 +226,76 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 
 // fillStatus sets a thread's live fields from its manager.
 func (s *Server) fillStatus(t *protocol.Thread) {
-	if t.Kind == protocol.ThreadClaude {
+	switch t.Kind {
+	case protocol.ThreadClaude:
 		t.Running, t.AgentStatus = s.agents.Status(t.ID)
-	} else {
+	case protocol.ThreadTerminal:
 		t.Running = s.terms.Running(t.ID)
 	}
 }
+
+// withTabs adds the tabs of threads to them.
+func (s *Server) withTabs(threads []protocol.Thread, err error) ([]protocol.Thread, error) {
+	if err != nil {
+		return nil, err
+	}
+	out := threads
+	for _, t := range threads {
+		tabs, err := s.store.ListTabs(t.ID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, tabs...)
+	}
+	return out, nil
+}
+
+// stopThread stops a thread's shell or claude, if it has one.
+func (s *Server) stopThread(t protocol.Thread) {
+	switch t.Kind {
+	case protocol.ThreadClaude:
+		s.agents.Kill(t.ID)
+	case protocol.ThreadTerminal:
+		s.terms.Kill(t.ID)
+	}
+}
+
+// workdir resolves where a thread works; see store.ThreadWorkdir. In a
+// worktree it's the same subdirectory the project is of its repository.
+func (s *Server) workdir(threadID string) (protocol.Workdir, error) {
+	dir, worktree, err := s.store.ThreadWorkdir(threadID)
+	if err != nil || worktree == "" {
+		return protocol.Workdir{Path: dir}, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	prefix, err := gitx.Prefix(ctx, dir)
+	if err != nil {
+		return protocol.Workdir{}, err
+	}
+	return protocol.Workdir{Path: filepath.Join(worktree, prefix), Worktree: true}, nil
+}
+
+// shells resolves where a terminal starts for the terminal manager: a tab
+// of a claude thread in a worktree starts in that worktree.
+type shells struct{ s *Server }
+
+func (r shells) ThreadShell(threadID string) (string, bool, error) {
+	dir, had, err := r.s.store.ThreadShell(threadID)
+	if err != nil {
+		return "", false, err
+	}
+	// A missing worktree is left for claude to recreate; the shell falls
+	// back to the project.
+	if wd, err := r.s.workdir(threadID); err == nil && wd.Worktree {
+		if _, err := os.Stat(wd.Path); err == nil {
+			dir = wd.Path
+		}
+	}
+	return dir, had, nil
+}
+
+func (r shells) MarkSpawned(threadID string) error { return r.s.store.MarkSpawned(threadID) }
 
 // agentThreads looks up the claude threads among threads, for cleaning up
 // after they're deleted.
@@ -209,7 +318,7 @@ func (s *Server) killThread(t protocol.Thread, a store.AgentThread, keepWorktree
 	if t.Kind == protocol.ThreadClaude {
 		s.agents.Remove(t.ID, a, keepWorktree)
 	} else {
-		s.terms.Kill(t.ID)
+		s.stopThread(t)
 	}
 }
 
@@ -263,6 +372,44 @@ func listDirs(path string) (protocol.DirListing, error) {
 			return hb
 		}
 		return strings.ToLower(a) < strings.ToLower(b)
+	})
+	return out, nil
+}
+
+// listDir lists a directory's entries, directories first.
+func listDir(path string) (protocol.FsListing, error) {
+	dir, err := store.ResolveDir(path)
+	if err != nil {
+		return protocol.FsListing{}, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return protocol.FsListing{}, err
+	}
+	out := protocol.FsListing{Path: dir, Entries: []protocol.FsEntry{}}
+	if parent := filepath.Dir(dir); parent != dir {
+		out.Parent = &parent
+	}
+	for _, e := range entries {
+		info, err := os.Stat(filepath.Join(dir, e.Name())) // follows symlinks
+		if err != nil {
+			if info, err = e.Info(); err != nil {
+				continue
+			}
+		}
+		out.Entries = append(out.Entries, protocol.FsEntry{
+			Name:    e.Name(),
+			Dir:     info.IsDir(),
+			Size:    info.Size(),
+			ModTime: info.ModTime().UnixMilli(),
+		})
+	}
+	sort.Slice(out.Entries, func(i, j int) bool {
+		a, b := out.Entries[i], out.Entries[j]
+		if a.Dir != b.Dir {
+			return a.Dir
+		}
+		return strings.ToLower(a.Name) < strings.ToLower(b.Name)
 	})
 	return out, nil
 }

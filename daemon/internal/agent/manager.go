@@ -179,7 +179,7 @@ func (m *Manager) Remove(threadID string, a store.AgentThread, keepWorktree bool
 	if err := m.attachments.remove(threadID); err != nil {
 		slog.Warn("removing attachments", "thread", threadID, "err", err)
 	}
-	if a.Worktree == "" || keepWorktree {
+	if a.Worktree == "" || keepWorktree || a.SharedWorktree {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)

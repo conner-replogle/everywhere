@@ -40,12 +40,15 @@ export function TerminalView({
   threadId,
   generation,
   onWriterChange,
+  active = true,
 }: {
   peer: DevicePeer;
   threadId: string;
   /** Peer connection generation; a new one means reopen the channel. */
   generation: number;
   onWriterChange?: (w: WriterState) => void;
+  /** False while the terminal sits in a background tab; it takes focus when shown. */
+  active?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -62,9 +65,15 @@ export function TerminalView({
 
   const reattach = useCallback(() => setAttachKey((k) => k + 1), []);
 
+  const onWriterChangeRef = useRef(onWriterChange);
+  onWriterChangeRef.current = onWriterChange;
   useEffect(() => {
-    onWriterChange?.(exitCode !== null ? "exited" : writer);
-  }, [writer, exitCode, onWriterChange]);
+    onWriterChangeRef.current?.(exitCode !== null ? "exited" : writer);
+  }, [writer, exitCode]);
+
+  useEffect(() => {
+    if (active && ready) termRef.current?.focus();
+  }, [active, ready]);
 
   // xterm instance: one per mount.
   useEffect(() => {

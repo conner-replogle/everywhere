@@ -60,6 +60,7 @@ const (
 	TermChannelPrefix   = "term:"
 	AgentChannelPrefix  = "agent:"
 	UploadChannelPrefix = "upload:"
+	FileChannelPrefix   = "file:"
 )
 
 type DeviceInfo struct {
@@ -80,6 +81,7 @@ const (
 	FeatureAttachments = "attachments" // upload channels and send attachments
 	FeatureHistory     = "history"     // agent attach limit and history paging
 	FeatureArchive     = "archive"     // threads.archive and Thread.archivedAt
+	FeatureTabs        = "tabs"        // tabs.*, fs.list, threads.workdir and file channels
 )
 
 // UpdateInfo is the result of device.checkUpdate.
@@ -108,12 +110,18 @@ type Project struct {
 const (
 	ThreadTerminal = "terminal"
 	ThreadClaude   = "claude"
+	// Tabs only.
+	ThreadBrowser = "browser"
+	ThreadFiles   = "files"
 )
 
+// Thread is a thread, or a tab inside one (ParentID set).
 type Thread struct {
-	ID           string `json:"id"`
-	ProjectID    string `json:"projectId"`
-	Kind         string `json:"kind"` // terminal | claude
+	ID        string `json:"id"`
+	ProjectID string `json:"projectId"`
+	// ParentID is the thread a tab belongs to; "" for a thread.
+	ParentID     string `json:"parentId,omitempty"`
+	Kind         string `json:"kind"` // terminal | claude, and for tabs also browser | files
 	Name         string `json:"name"`
 	CreatedAt    int64  `json:"createdAt"`
 	LastOpenedAt *int64 `json:"lastOpenedAt"`
@@ -126,7 +134,50 @@ type Thread struct {
 	// ArchivedAt is set while the thread is archived: hidden from the
 	// thread list, with its shell or claude stopped.
 	ArchivedAt *int64 `json:"archivedAt,omitempty"`
+	// TabState is a tab's UI state, as its view saved it.
+	TabState string `json:"tabState,omitempty"`
 }
+
+// Workdir is where a thread works (threads.workdir): its worktree, the
+// worktree of the thread it's a tab of, or the project directory.
+type Workdir struct {
+	Path     string `json:"path"`
+	Worktree bool   `json:"worktree"`
+}
+
+// FsEntry is one entry of an fs.list listing.
+type FsEntry struct {
+	Name    string `json:"name"`
+	Dir     bool   `json:"dir"`
+	Size    int64  `json:"size"`
+	ModTime int64  `json:"modTime"` // unix ms
+}
+
+type FsListing struct {
+	Path    string    `json:"path"`
+	Parent  *string   `json:"parent"`
+	Entries []FsEntry `json:"entries"`
+}
+
+// File channel file:<id>, one per read: the client sends FileRead as text;
+// the daemon answers FileStart, the file as binary chunks, then {"t":"end"},
+// or FileError at any point.
+type (
+	FileRead struct {
+		T    string `json:"t"` // "read"
+		Path string `json:"path"`
+	}
+	FileStart struct {
+		T       string `json:"t"` // "start"
+		Path    string `json:"path"`
+		Size    int64  `json:"size"`
+		ModTime int64  `json:"modTime"`
+	}
+	FileError struct {
+		T       string `json:"t"` // "error"
+		Message string `json:"message"`
+	}
+)
 
 type DirListing struct {
 	Path   string   `json:"path"`
