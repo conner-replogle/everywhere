@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { type AgentThread, useAgentThread } from "@/lib/agent";
 import { listenComposer } from "@/lib/composer-inbox";
+import { loadDraft, saveDraft } from "@/lib/drafts";
 import { type DevicePeer, useRpc } from "@/lib/peer";
 import { cn } from "@/lib/utils";
 import {
@@ -307,7 +308,9 @@ function Composer({
   git: Parameters<typeof WorkspacePicker>[0]["git"];
   canAttach: boolean;
 }) {
-  const [text, setText] = useState("");
+  // Kept per thread, so switching threads or tabs doesn't lose it.
+  const [text, setText] = useState(() => loadDraft(threadId));
+  useEffect(() => saveDraft(threadId, text), [threadId, text]);
   // The "/" command menu: open while the text is a bare "/word".
   const [slashIndex, setSlashIndex] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);

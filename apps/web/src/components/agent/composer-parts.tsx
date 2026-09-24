@@ -12,7 +12,7 @@ import type {
   GitInfo,
 } from "@everywhere/protocol";
 import { BrainIcon, CheckIcon, ChevronDownIcon, FileIcon, GitBranchIcon, ImageIcon, LoaderIcon, XIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -148,59 +148,74 @@ export interface PendingAttachment {
   preview?: string;
 }
 
-/** Uploads files as soon as they're added, so sending doesn't wait on them. */
-export function useAttachments(peer: DevicePeer, threadId: string) {
-  const [items, setItems] = useState<PendingAttachment[]>([]);
-  const seq = useRef(0);
+/**
+ * A thread's unsent attachments. They live outside the composer, so they
+ * (and uploads still running) survive switching threads or tabs.
+ */
+class AttachmentStore {
+  items: PendingAttachment[] = [];
+  private listeners = new Set<() => void>();
+  private seq = 0;
 
-  const update = useCallback((key: string, patch: Partial<PendingAttachment>) => {
-    setItems((prev) => prev.map((a) => (a.key === key ? { ...a, ...patch } : a)));
-  }, []);
+  subscribe = (fn: () => void) => {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  };
+  snapshot = () => this.items;
 
-  const add = useCallback(
-    (files: Iterable<File>) => {
-      for (const file of files) {
-        const key = `a${++seq.current}`;
-        const image = IMAGE_TYPES.has(file.type);
-        const limit = image ? MAX_IMAGE_BYTES : MAX_FILE_BYTES;
-        const item: PendingAttachment = {
-          key,
-          file,
-          sent: 0,
-          preview: image ? URL.createObjectURL(file) : undefined,
-          error: file.size > limit ? `Over the ${limit >> 20} MB limit` : file.size === 0 ? "Empty file" : undefined,
-        };
-        setItems((prev) => [...prev, item]);
-        if (item.error) continue;
-        peer
-          .upload(threadId, file, (sent) => update(key, { sent }))
-          .then((attachment) => update(key, { attachment }))
-          .catch((e: unknown) => update(key, { error: errorMessage(e) }));
-      }
-    },
-    [peer, threadId, update],
-  );
+  private set(items: PendingAttachment[]) {
+    this.items = items;
+    for (const fn of this.listeners) fn();
+  }
 
-  const remove = useCallback((key: string) => {
-    setItems((prev) => {
-      const gone = prev.find((a) => a.key === key);
-      if (gone?.preview) URL.revokeObjectURL(gone.preview);
-      return prev.filter((a) => a.key !== key);
-    });
-  }, []);
+  private update(key: string, patch: Partial<PendingAttachment>) {
+    this.set(this.items.map((a) => (a.key === key ? { ...a, ...patch } : a)));
+  }
+
+  add(peer: DevicePeer, threadId: string, files: Iterable<File>) {
+    for (const file of files) {
+      const key = `a${++this.seq}`;
+      const image = IMAGE_TYPES.has(file.type);
+      const limit = image ? MAX_IMAGE_BYTES : MAX_FILE_BYTES;
+      const item: PendingAttachment = {
+        key,
+        file,
+        sent: 0,
+        preview: image ? URL.createObjectURL(file) : undefined,
+        error: file.size > limit ? `Over the ${limit >> 20} MB limit` : file.size === 0 ? "Empty file" : undefined,
+      };
+      this.set([...this.items, item]);
+      if (item.error) continue;
+      peer
+        .upload(threadId, file, (sent) => this.update(key, { sent }))
+        .then((attachment) => this.update(key, { attachment }))
+        .catch((e: unknown) => this.update(key, { error: errorMessage(e) }));
+    }
+  }
+
+  remove(key: string) {
+    const gone = this.items.find((a) => a.key === key);
+    if (gone?.preview) URL.revokeObjectURL(gone.preview);
+    this.set(this.items.filter((a) => a.key !== key));
+  }
 
   /** Forget everything after a send; previews are kept by the sent message. */
-  const clear = useCallback(() => setItems([]), []);
+  clear() {
+    this.set([]);
+  }
+}
 
-  // Revoke whatever previews are left when the thread closes.
-  const itemsRef = useRef(items);
-  itemsRef.current = items;
-  useEffect(
-    () => () => {
-      for (const a of itemsRef.current) if (a.preview) URL.revokeObjectURL(a.preview);
-    },
-    [],
-  );
+const attachmentStores = new Map<string, AttachmentStore>();
+
+/** Uploads files as soon as they're added, so sending doesn't wait on them. */
+export function useAttachments(peer: DevicePeer, threadId: string) {
+  let store = attachmentStores.get(threadId);
+  if (!store) attachmentStores.set(threadId, (store = new AttachmentStore()));
+  const items = useSyncExternalStore(store.subscribe, store.snapshot);
+
+  const add = useCallback((files: Iterable<File>) => store.add(peer, threadId, files), [store, peer, threadId]);
+  const remove = useCallback((key: string) => store.remove(key), [store]);
+  const clear = useCallback(() => store.clear(), [store]);
 
   const uploading = items.some((a) => !a.attachment && !a.error);
   const ready = items.filter((a) => a.attachment).map((a) => a.attachment!);
