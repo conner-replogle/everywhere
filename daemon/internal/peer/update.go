@@ -14,11 +14,13 @@ import (
 	"github.com/conner-replogle/everywhere/daemon/internal/version"
 )
 
-// How long a latest-release lookup is reused.
-const updateCheckTTL = 10 * time.Minute
+// How long a latest-release lookup is reused, so that several open tabs
+// re-checking on focus don't each hit GitHub.
+const updateCheckTTL = 2 * time.Minute
 
-// checkUpdate compares this daemon with the latest release.
-func (s *Server) checkUpdate() (protocol.UpdateInfo, error) {
+// checkUpdate compares this daemon with the latest release. force skips the
+// cached lookup.
+func (s *Server) checkUpdate(force bool) (protocol.UpdateInfo, error) {
 	info := protocol.UpdateInfo{Current: version.Version}
 	switch {
 	case version.Version == "dev":
@@ -28,7 +30,7 @@ func (s *Server) checkUpdate() (protocol.UpdateInfo, error) {
 	}
 
 	s.updateMu.Lock()
-	latest, fresh := s.latest, time.Since(s.latestAt) < updateCheckTTL
+	latest, fresh := s.latest, !force && time.Since(s.latestAt) < updateCheckTTL
 	s.updateMu.Unlock()
 	if !fresh {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -60,7 +62,7 @@ func (s *Server) applyUpdate() (protocol.UpdateResult, error) {
 		}
 	}()
 
-	info, err := s.checkUpdate()
+	info, err := s.checkUpdate(true)
 	if err != nil {
 		return protocol.UpdateResult{}, err
 	}

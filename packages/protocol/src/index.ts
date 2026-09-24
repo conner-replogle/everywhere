@@ -145,7 +145,8 @@ export interface PeerDebug {
 /** Control-channel RPC methods: name -> [params, result]. */
 export interface RpcMethods {
   "device.info": [Record<string, never>, DeviceInfo];
-  "device.checkUpdate": [Record<string, never>, UpdateInfo];
+  /** force: skip the daemon's short-lived cache of the latest release. */
+  "device.checkUpdate": [{ force?: boolean }, UpdateInfo];
   /** Installs the latest release, answers, then restarts into it (the connection drops). */
   "device.update": [Record<string, never>, { version: string }];
   "projects.list": [Record<string, never>, Project[]];

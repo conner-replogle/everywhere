@@ -64,6 +64,7 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		ProjectID    string `json:"projectId"`
 		Kind         string `json:"kind"`
 		KeepWorktree bool   `json:"keepWorktree"`
+		Force        bool   `json:"force"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &params); err != nil {
@@ -79,7 +80,7 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		defer cancel()
 		return s.agents.Info(ctx), nil
 	case "device.checkUpdate":
-		return s.checkUpdate()
+		return s.checkUpdate(params.Force)
 	case "device.update":
 		return s.applyUpdate()
 

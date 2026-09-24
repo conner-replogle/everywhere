@@ -5,6 +5,7 @@ import { useDevice } from "@/components/device-context";
 import { useRpc } from "@/lib/peer";
 
 const UPDATE_TIMEOUT_MS = 3 * 60_000; // download + verify on a slow link
+const RECHECK_MS = 15 * 60_000;
 
 /**
  * Offers the latest daemon release when there is one, installs it on
@@ -13,8 +14,25 @@ const UPDATE_TIMEOUT_MS = 3 * 60_000; // download + verify on a slow link
 export function DeviceUpdate() {
   const { device, peer, conn, info } = useDevice();
   const supported = info.data?.features?.includes("update") ?? false;
-  const check = useRpc(peer, "device.checkUpdate", {}, [], supported && conn.state === "connected");
+  const enabled = supported && conn.state === "connected";
+  const check = useRpc(peer, "device.checkUpdate", {}, [], enabled);
   const [confirming, setConfirming] = useState(false);
+
+  // A release can land while the page is open: look again every so often and
+  // whenever the tab comes back into view.
+  const { refetch } = check;
+  useEffect(() => {
+    if (!enabled) return;
+    const onVisible = () => document.visibilityState === "visible" && refetch();
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    const timer = setInterval(refetch, RECHECK_MS);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+      clearInterval(timer);
+    };
+  }, [enabled, refetch]);
   // The version the daemon is restarting into, until it's back on it.
   const [target, setTarget] = useState<string | null>(null);
 
