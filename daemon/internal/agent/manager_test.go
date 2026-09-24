@@ -762,7 +762,9 @@ func TestEffortAndThinking(t *testing.T) {
 	if flags[1]["alwaysThinkingEnabled"] != true {
 		t.Fatalf("thinking on sent %v", flags[1])
 	}
-	if a, _ := h.st.AgentThread(h.thread); a.Effort != "" || !a.Thinking {
-		t.Fatalf("stored effort %q thinking %v", a.Effort, a.Thinking)
-	}
+	// Stored after claude accepts the change.
+	eventually(t, "stored settings", func() bool {
+		a, _ := h.st.AgentThread(h.thread)
+		return a.Effort == "" && a.Thinking
+	})
 }

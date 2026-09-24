@@ -24,9 +24,9 @@ func findChrome(ctx context.Context) (string, error) {
 	if p := os.Getenv("EVERYWHERE_CHROME"); p != "" {
 		return p, nil
 	}
-	names := []string{"chromium", "chromium-browser", "google-chrome-stable", "google-chrome", "chrome", "chrome-headless-shell", "microsoft-edge"}
+	names := []string{"google-chrome-stable", "google-chrome", "chromium", "chromium-browser", "chrome", "chrome-headless-shell", "microsoft-edge"}
 	for _, n := range names {
-		if p, err := exec.LookPath(n); err == nil {
+		if p, err := exec.LookPath(n); err == nil && !isSnapStub(p) {
 			return p, nil
 		}
 	}
@@ -36,7 +36,7 @@ func findChrome(ctx context.Context) (string, error) {
 		out, err := exec.CommandContext(ctx, shell, "-lc", "command -v "+strings.Join(names, " ")).Output()
 		if err == nil || len(out) > 0 {
 			for _, line := range strings.Split(string(out), "\n") {
-				if p := strings.TrimSpace(line); filepath.IsAbs(p) && isExecutable(p) {
+				if p := strings.TrimSpace(line); filepath.IsAbs(p) && isExecutable(p) && !isSnapStub(p) {
 					return p, nil
 				}
 			}
@@ -68,6 +68,22 @@ func findChrome(ctx context.Context) (string, error) {
 		}
 	}
 	return "", ErrNotInstalled
+}
+
+// isSnapStub reports whether p is Ubuntu's snap Chromium, or the script
+// that installs it; neither passes the DevTools pipe through.
+func isSnapStub(p string) bool {
+	if real, err := filepath.EvalSymlinks(p); err == nil && strings.HasPrefix(real, "/snap/") {
+		return true
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	head := make([]byte, 4096)
+	n, _ := f.Read(head)
+	return strings.HasPrefix(string(head[:n]), "#!") && strings.Contains(string(head[:n]), "snap")
 }
 
 func isExecutable(p string) bool {
