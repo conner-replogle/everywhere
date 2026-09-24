@@ -111,6 +111,21 @@ export function AgentView({
       heightBefore.current = null;
     } else if (atBottom.current) el.scrollTop = el.scrollHeight;
   });
+  // Layout that settles after a render (images, the composer growing, the
+  // status bar appearing) would leave the view above the bottom until the
+  // next render. The observer runs before paint, so it never shows.
+  const contentRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const content = contentRef.current;
+    if (!el || !content) return;
+    const ro = new ResizeObserver(() => {
+      if (atBottom.current) el.scrollTop = el.scrollHeight;
+    });
+    ro.observe(el);
+    ro.observe(content);
+    return () => ro.disconnect();
+  }, []);
   const showEarlier = () => {
     heightBefore.current = scrollRef.current?.scrollHeight ?? null;
     if (hidden > 0) setShown((n) => n + PAGE);
@@ -136,7 +151,7 @@ export function AgentView({
           lastTop.current = el.scrollTop;
         }}
       >
-        <div className="mx-auto flex max-w-3xl flex-col gap-3 px-4 py-4">
+        <div ref={contentRef} className="mx-auto flex max-w-3xl flex-col gap-3 px-4 py-4">
           {hidden > 0 || (agent.truncated && canPage) ? (
             <Button
               variant="ghost"
