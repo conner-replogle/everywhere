@@ -81,8 +81,8 @@ func (m *Manager) Use(ctx context.Context, key string) (*Tab, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, t := range m.tabs {
-		if t.watched() {
+	for _, other := range m.tabs {
+		if other.watched() {
 			return t, nil
 		}
 	}
