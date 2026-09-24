@@ -3,6 +3,7 @@ import { BrainIcon, CheckIcon, ChevronRightIcon, CircleAlertIcon, LoaderCircleIc
 import { memo, useState } from "react";
 import type { LoggedEvent } from "@/lib/agent";
 import { cn } from "@/lib/utils";
+import { SentAttachments } from "./composer-parts";
 import { Markdown } from "./markdown";
 import { asInput, EditPreview, isEdit, type ToolInput, toolIcon, toolLabel, toolSummary } from "./tools";
 
@@ -103,8 +104,11 @@ function ItemView({ item, cwd }: { item: Item; cwd?: string }) {
   switch (e.type) {
     case "user":
       return (
-        <div className="self-end rounded-lg bg-secondary px-3 py-2 whitespace-pre-wrap break-words max-w-[85%]">
-          {e.text}
+        <div className="grid max-w-[85%] justify-items-end gap-1.5 self-end">
+          {e.text && (
+            <div className="rounded-lg bg-secondary px-3 py-2 whitespace-pre-wrap break-words">{e.text}</div>
+          )}
+          {e.attachments && e.attachments.length > 0 && <SentAttachments attachments={e.attachments} />}
         </div>
       );
     case "assistant":

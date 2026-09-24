@@ -59,7 +59,14 @@ function ThreadPage() {
         {/* Wait for the thread list so a claude thread never flashes a terminal. */}
         {!thread ? null : claude ? (
           <Suspense>
-            <AgentView key={threadId} peer={peer} threadId={threadId} generation={conn.generation} cwd={project?.path} />
+            <AgentView
+              key={threadId}
+              peer={peer}
+              threadId={threadId}
+              projectId={thread.projectId}
+              generation={conn.generation}
+              cwd={project?.path}
+            />
           </Suspense>
         ) : (
           <TerminalView

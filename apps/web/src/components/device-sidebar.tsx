@@ -67,6 +67,8 @@ export function DeviceSidebar({ className }: { className?: string }) {
   const { threadId: activeThreadId } = useParams({ strict: false });
   const { collapsed, toggle } = useCollapsed(deviceId);
   const [pending, setPending] = useState<Pending>(null);
+  // Deleting a claude thread that has a worktree: also remove the worktree?
+  const [removeWorktree, setRemoveWorktree] = useState(true);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const connected = conn.state === "connected";
@@ -256,7 +258,10 @@ export function DeviceSidebar({ className }: { className?: string }) {
                         thread={t}
                         active={t.id === activeThreadId}
                         onRename={() => setPending({ kind: "rename-thread", thread: t })}
-                        onDelete={() => setPending({ kind: "delete-thread", thread: t })}
+                        onDelete={() => {
+                          setRemoveWorktree(true);
+                          setPending({ kind: "delete-thread", thread: t });
+                        }}
                       />
                     ))}
                     {list.length === 0 && (
@@ -342,12 +347,30 @@ export function DeviceSidebar({ className }: { className?: string }) {
               <code className="font-mono text-xs text-foreground">{pending.project.path}</code> are not touched.
             </p>
           ) : (
-            <p>
-              {pending?.kind === "delete-thread" && pending.thread.kind === "claude"
-                ? "Its conversation history in everywhere is deleted and Claude is stopped if it's running."
-                : "If its shell is running, it's killed."}{" "}
-              Anyone viewing it is disconnected.
-            </p>
+            <>
+              <p>
+                {pending?.kind === "delete-thread" && pending.thread.kind === "claude"
+                  ? "Its conversation history in everywhere is deleted and Claude is stopped if it's running."
+                  : "If its shell is running, it's killed."}{" "}
+                Anyone viewing it is disconnected.
+              </p>
+              {pending?.kind === "delete-thread" && pending.thread.worktree && (
+                <label className="flex items-start gap-2 text-foreground">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={removeWorktree}
+                    onChange={(e) => setRemoveWorktree(e.target.checked)}
+                  />
+                  <span>
+                    Also delete its worktree, including uncommitted changes. The branch is kept.
+                    <code className="mt-0.5 block font-mono text-xs break-all text-muted-foreground">
+                      {pending.thread.worktree}
+                    </code>
+                  </span>
+                </label>
+              )}
+            </>
           )
         }
         onConfirm={async () => {
@@ -361,7 +384,7 @@ export function DeviceSidebar({ className }: { className?: string }) {
             }
           } else if (pending?.kind === "delete-thread") {
             const id = pending.thread.id;
-            await peer.call("threads.delete", { id });
+            await peer.call("threads.delete", { id, keepWorktree: !removeWorktree });
             threads.refetch();
             if (activeThreadId === id) await navigate({ to: "/d/$deviceId", params: { deviceId } });
           }

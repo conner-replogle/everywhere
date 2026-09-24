@@ -3,6 +3,7 @@
 
 import {
   AGENT_CHANNEL_PREFIX,
+  type AgentAttachment,
   type AgentClientMsg,
   type AgentDaemonMsg,
   CONTROL_CHANNEL,
@@ -17,6 +18,9 @@ import {
   TERM_CHANNEL_PREFIX,
   type TermClientMsg,
   type TermDaemonMsg,
+  UPLOAD_CHANNEL_PREFIX,
+  type UploadResult,
+  type UploadStart,
 } from "@everywhere/protocol";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "./api";
@@ -74,6 +78,7 @@ const STUN_ONLY: RTCIceServer[] = [{ urls: "stun:stun.cloudflare.com:3478" }];
 const CONNECT_TIMEOUT_MS = 20_000;
 const DISCONNECT_GRACE_MS = 5_000;
 const RPC_TIMEOUT_MS = 15_000;
+const UPLOAD_CHUNK = 16 * 1024;
 export const UNREACHABLE_MESSAGE = "Couldn't reach device — direct and relayed connections both failed.";
 
 // STUN + short-lived Cloudflare TURN credentials from the Worker, cached until
@@ -571,6 +576,60 @@ export class DevicePeer {
     const ch = this.pc.createDataChannel(`${TERM_CHANNEL_PREFIX}${threadId}`, { ordered: true });
     ch.binaryType = "arraybuffer";
     return new TerminalChannel(ch, handlers);
+  }
+
+  /**
+   * Uploads a file for a claude thread on its own `upload:<id>` channel.
+   * Resolves with the stored attachment, whose id goes into `send`.
+   */
+  async upload(threadId: string, file: File, onProgress?: (sent: number) => void): Promise<AgentAttachment> {
+    if (!this.pc || this.snap.state !== "connected") throw new Error("Not connected to device");
+    const ch = this.pc.createDataChannel(`${UPLOAD_CHANNEL_PREFIX}${randomSid()}`, { ordered: true });
+    ch.binaryType = "arraybuffer";
+    ch.bufferedAmountLowThreshold = UPLOAD_CHUNK * 8;
+    try {
+      const result = new Promise<UploadResult>((resolve, reject) => {
+        ch.onmessage = (ev) => {
+          try {
+            resolve(JSON.parse(ev.data as string) as UploadResult);
+          } catch (e) {
+            reject(e);
+          }
+        };
+        ch.onclose = () => reject(new Error("Upload interrupted"));
+      });
+      await new Promise<void>((resolve, reject) => {
+        ch.onopen = () => resolve();
+        ch.onerror = () => reject(new Error("Couldn't open upload channel"));
+      });
+      const start: UploadStart = {
+        t: "start",
+        threadId,
+        name: file.name || "pasted",
+        mediaType: file.type || "application/octet-stream",
+        size: file.size,
+      };
+      ch.send(JSON.stringify(start));
+      for (let sent = 0; sent < file.size; ) {
+        // Keep the send buffer small so progress is real and memory flat.
+        if (ch.bufferedAmount > UPLOAD_CHUNK * 64) {
+          await new Promise<void>((resolve) => {
+            ch.onbufferedamountlow = () => resolve();
+          });
+        }
+        const chunk = await file.slice(sent, sent + UPLOAD_CHUNK).arrayBuffer();
+        ch.send(chunk);
+        sent += chunk.byteLength;
+        onProgress?.(sent);
+      }
+      ch.send(JSON.stringify({ t: "end" }));
+      const r = await result;
+      if (r.t === "error") throw new Error(r.message);
+      return r.attachment;
+    } finally {
+      ch.onclose = null;
+      ch.close();
+    }
   }
 
   /** Opens an `agent:<threadId>` channel for a claude thread. Throws if not connected. */

@@ -1,6 +1,7 @@
-import type { AgentState, PermissionMode } from "@everywhere/protocol";
-import { ArrowUpIcon, ChevronDownIcon, RotateCcwIcon, SquareIcon, XIcon } from "lucide-react";
+import type { AgentModel, AgentState, PermissionMode } from "@everywhere/protocol";
+import { ArrowUpIcon, ChevronDownIcon, PaperclipIcon, RotateCcwIcon, SquareIcon, XIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useDevice } from "@/components/device-context";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -10,8 +11,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { type AgentThread, useAgentThread } from "@/lib/agent";
-import type { DevicePeer } from "@/lib/peer";
+import { type DevicePeer, useRpc } from "@/lib/peer";
 import { cn } from "@/lib/utils";
+import { AttachmentChips, ContextMeter, useAttachments, WorkspacePicker } from "./composer-parts";
 import { PendingRequest } from "./pending";
 import { buildItems, Timeline } from "./timeline";
 
@@ -26,17 +28,29 @@ export const MODES: { value: PermissionMode; label: string; hint: string }[] = [
 export function AgentView({
   peer,
   threadId,
+  projectId,
   generation,
   cwd,
 }: {
   peer: DevicePeer;
   threadId: string;
+  projectId: string;
   generation: number;
   /** The project directory, for showing paths relative to it. */
   cwd?: string;
 }) {
   const agent = useAgentThread(peer, threadId, generation);
   const { state } = agent;
+  const { info } = useDevice();
+  const features = info.data?.features ?? [];
+  // Before the thread has run, the models come from a probe of the device's claude.
+  const needModels = features.includes("worktrees") && !!state && state.models.length === 0;
+  const agentInfo = useRpc(peer, "agent.info", {}, [], needModels);
+  const models = state?.models.length ? state.models : (agentInfo.data?.models ?? []);
+  const unlocked = !!state && !state.workspace.locked;
+  const git = useRpc(peer, "git.info", { projectId }, [], unlocked && features.includes("worktrees"));
+  // Paths are shown relative to wherever claude works: the worktree, if any.
+  const workdir = state?.workspace.path || cwd;
   const items = useMemo(() => buildItems(agent.events), [agent.events]);
   const busy = state?.status === "working" || state?.status === "waiting" || state?.status === "starting";
 
@@ -73,7 +87,7 @@ export function AgentView({
           <Timeline
             items={items}
             streaming={state?.streaming ?? []}
-            cwd={cwd}
+            cwd={workdir}
             working={state?.status === "working"}
           />
         </div>
@@ -82,10 +96,21 @@ export function AgentView({
       <div className="shrink-0 border-t bg-background">
         <div className="mx-auto grid max-w-3xl gap-2 px-4 pt-2 pb-3">
           {state?.pending.map((r) => (
-            <PendingRequest key={r.id} request={r} cwd={cwd} respond={agent.send} />
+            <PendingRequest key={r.id} request={r} cwd={workdir} respond={agent.send} />
           ))}
           <StatusBar agent={agent} />
-          <Composer agent={agent} busy={busy} />
+          <Composer
+            agent={agent}
+            busy={busy}
+            peer={peer}
+            threadId={threadId}
+            models={models}
+            git={git.data}
+            canAttach={features.includes("attachments")}
+          />
+          {agentInfo.data && !agentInfo.data.available && (
+            <p className="text-xs text-destructive">Claude isn't usable on this device: {agentInfo.data.error}</p>
+          )}
         </div>
       </div>
     </div>
@@ -96,7 +121,9 @@ function EmptyState() {
   return (
     <div className="py-16 text-center text-muted-foreground">
       <p className="text-[15px] text-foreground">Start a conversation with Claude</p>
-      <p className="mt-1">It runs on this device, in the project directory, with your Claude login.</p>
+      <p className="mt-1">
+        It runs on this device with your Claude login, in the project directory or its own git worktree.
+      </p>
     </div>
   );
 }
@@ -151,9 +178,28 @@ function Notice({ tone, children }: { tone: "error"; children: React.ReactNode }
   );
 }
 
-function Composer({ agent, busy }: { agent: AgentThread; busy: boolean }) {
+function Composer({
+  agent,
+  busy,
+  peer,
+  threadId,
+  models,
+  git,
+  canAttach,
+}: {
+  agent: AgentThread;
+  busy: boolean;
+  peer: DevicePeer;
+  threadId: string;
+  models: AgentModel[];
+  git: Parameters<typeof WorkspacePicker>[0]["git"];
+  canAttach: boolean;
+}) {
   const [text, setText] = useState("");
+  const [dragging, setDragging] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const files = useAttachments(peer, threadId);
   const { state } = agent;
   const ready = agent.attached && agent.synced;
 
@@ -165,15 +211,35 @@ function Composer({ agent, busy }: { agent: AgentThread; busy: boolean }) {
     el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
   }, [text]);
 
+  const canSend = ready && !files.uploading && (text.trim() !== "" || files.ready.length > 0);
   const submit = () => {
-    const t = text.trim();
-    if (!t || !ready) return;
-    agent.send({ t: "send", text: t });
+    if (!canSend) return;
+    const attachments = files.ready.map((a) => a.id);
+    agent.send({ t: "send", text: text.trim(), ...(attachments.length ? { attachments } : {}) });
     setText("");
+    files.clear();
   };
 
   return (
-    <div className="rounded-lg border border-input bg-card focus-within:ring-2 focus-within:ring-ring/40">
+    <div
+      className={cn(
+        "rounded-lg border border-input bg-card focus-within:ring-2 focus-within:ring-ring/40",
+        dragging && "border-primary ring-2 ring-primary/40",
+      )}
+      onDragOver={(e) => {
+        if (!canAttach || !e.dataTransfer.types.includes("Files")) return;
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => {
+        setDragging(false);
+        if (!canAttach || e.dataTransfer.files.length === 0) return;
+        e.preventDefault();
+        files.add(e.dataTransfer.files);
+      }}
+    >
+      <AttachmentChips items={files.items} onRemove={files.remove} />
       <textarea
         ref={ref}
         value={text}
@@ -181,6 +247,11 @@ function Composer({ agent, busy }: { agent: AgentThread; busy: boolean }) {
         autoFocus
         disabled={!ready}
         onChange={(e) => setText(e.target.value)}
+        onPaste={(e) => {
+          if (!canAttach || e.clipboardData.files.length === 0) return;
+          e.preventDefault();
+          files.add(e.clipboardData.files);
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault();
@@ -195,10 +266,49 @@ function Composer({ agent, busy }: { agent: AgentThread; busy: boolean }) {
         }
         className="block max-h-60 w-full resize-none bg-transparent px-3 pt-2.5 pb-1 outline-none placeholder:text-muted-foreground disabled:opacity-50"
       />
-      <div className="flex items-center gap-1 px-1.5 pb-1.5">
+      <div className="flex min-w-0 items-center gap-1 px-1.5 pb-1.5">
+        {canAttach && (
+          <>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="size-6"
+              disabled={!ready}
+              onClick={() => fileInput.current?.click()}
+              aria-label="Attach files"
+              title="Attach files (or paste, or drop them here)"
+            >
+              <PaperclipIcon />
+            </Button>
+            <input
+              ref={fileInput}
+              type="file"
+              multiple
+              hidden
+              onChange={(e) => {
+                if (e.target.files) files.add(e.target.files);
+                e.target.value = "";
+              }}
+            />
+          </>
+        )}
         <ModeMenu state={state} disabled={!ready} onPick={(mode) => agent.send({ t: "setMode", mode })} />
-        <ModelMenu state={state} disabled={!ready} onPick={(model) => agent.send({ t: "setModel", model })} />
+        <ModelMenu
+          state={state}
+          models={models}
+          disabled={!ready}
+          onPick={(model) => agent.send({ t: "setModel", model })}
+        />
+        {state && (
+          <WorkspacePicker
+            workspace={state.workspace}
+            git={git}
+            disabled={!ready}
+            onPick={(workspace, baseBranch) => agent.send({ t: "setWorkspace", workspace, baseBranch })}
+          />
+        )}
         <StatusText state={state} />
+        <ContextMeter context={state?.context} />
         {busy ? (
           <Button
             size="icon-sm"
@@ -214,7 +324,7 @@ function Composer({ agent, busy }: { agent: AgentThread; busy: boolean }) {
           <Button
             size="icon-sm"
             className="ml-auto size-7"
-            disabled={!ready || !text.trim()}
+            disabled={!canSend}
             onClick={submit}
             aria-label="Send"
             title="Send (Enter)"
@@ -287,14 +397,15 @@ function ModeMenu({
 
 function ModelMenu({
   state,
+  models,
   disabled,
   onPick,
 }: {
   state: AgentState | null;
+  models: AgentModel[];
   disabled: boolean;
   onPick: (model: string) => void;
 }) {
-  const models = state?.models ?? [];
   const configured = state?.model ?? "";
   const current = models.find((m) => m.value === (configured || "default"));
   const label = current?.displayName ?? (configured || "Default model");

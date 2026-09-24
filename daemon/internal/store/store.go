@@ -209,12 +209,14 @@ func (s *Store) DeleteProject(id string) error {
 
 // --- threads ----------------------------------------------------------------
 
-const threadCols = "id, project_id, kind, name, created_at, last_opened_at"
+const threadCols = "id, project_id, kind, name, created_at, last_opened_at, agent_worktree"
 
 func scanThread(sc interface{ Scan(...any) error }) (protocol.Thread, error) {
 	var t protocol.Thread
 	var opened sql.NullInt64
-	err := sc.Scan(&t.ID, &t.ProjectID, &t.Kind, &t.Name, &t.CreatedAt, &opened)
+	var worktree sql.NullString
+	err := sc.Scan(&t.ID, &t.ProjectID, &t.Kind, &t.Name, &t.CreatedAt, &opened, &worktree)
+	t.Worktree = worktree.String
 	if opened.Valid {
 		t.LastOpenedAt = &opened.Int64
 	}

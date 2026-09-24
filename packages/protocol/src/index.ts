@@ -52,6 +52,7 @@ export const HUB_PONG = "pong";
 export const CONTROL_CHANNEL = "control";
 export const TERM_CHANNEL_PREFIX = "term:";
 export const AGENT_CHANNEL_PREFIX = "agent:";
+export const UPLOAD_CHANNEL_PREFIX = "upload:";
 
 export interface DeviceInfo {
   hostname: string;
@@ -63,8 +64,12 @@ export interface DeviceInfo {
   features?: DeviceFeature[];
 }
 
-/** claude: claude threads and the agent channel. update: device.checkUpdate and device.update. */
-export type DeviceFeature = "claude" | "update";
+/**
+ * claude: claude threads and the agent channel. update: device.checkUpdate and
+ * device.update. worktrees: claude threads in their own git worktree, and
+ * git.info. attachments: upload channels and attachments on send.
+ */
+export type DeviceFeature = "claude" | "update" | "worktrees" | "attachments";
 
 export interface UpdateInfo {
   current: string;
@@ -106,6 +111,8 @@ export interface Thread {
   running: boolean;
   /** Set for claude threads; see AgentState.status. */
   agentStatus?: AgentStatus;
+  /** The git worktree a claude thread runs in, once created. */
+  worktree?: string;
 }
 
 export interface DirListing {
@@ -148,8 +155,12 @@ export interface RpcMethods {
   "threads.list": [{ projectId?: string }, Thread[]];
   "threads.create": [{ projectId: string; name?: string; kind?: ThreadKind }, Thread];
   "threads.rename": [{ id: string; name: string }, Thread];
-  "threads.delete": [{ id: string }, Record<string, never>];
+  /** keepWorktree: leave a claude thread's worktree on disk (its branch is always kept). */
+  "threads.delete": [{ id: string; keepWorktree?: boolean }, Record<string, never>];
   "fs.listDirs": [{ path: string }, DirListing];
+  "git.info": [{ projectId: string }, GitInfo];
+  /** Claude Code's models and account, before any thread has started. */
+  "agent.info": [Record<string, never>, AgentInfo];
   "debug.peer": [Record<string, never>, PeerDebug];
 }
 export type RpcMethod = keyof RpcMethods;
@@ -189,7 +200,8 @@ export type TermDaemonMsg =
  */
 export type AgentClientMsg =
   | { t: "attach"; afterSeq?: number }
-  | { t: "send"; text: string }
+  /** attachments: ids of finished uploads. */
+  | { t: "send"; text: string; attachments?: string[] }
   | { t: "interrupt" }
   | {
       t: "respond";
@@ -202,7 +214,9 @@ export type AgentClientMsg =
     }
   | { t: "setMode"; mode: PermissionMode }
   /** "" means claude's default model. */
-  | { t: "setModel"; model: string };
+  | { t: "setModel"; model: string }
+  /** Before the first prompt only. baseBranch "" means the current branch. */
+  | { t: "setWorkspace"; workspace: "local" | "worktree"; baseBranch?: string };
 
 export type AgentDaemonMsg =
   | { t: "event"; seq: number; at: number; event: AgentEvent }
@@ -229,7 +243,57 @@ export interface AgentState {
   account?: { email?: string; subscriptionType?: string };
   /** Claude's latest rate_limit_info, passed through. */
   rateLimit?: unknown;
+  workspace: AgentWorkspace;
+  /** How full the context window is, when known. */
+  context?: AgentContext;
 }
+
+export interface AgentWorkspace {
+  mode: "local" | "worktree";
+  baseBranch?: string;
+  /** The worktree, once created. */
+  path?: string;
+  branch?: string;
+  /** The thread has started, so the workspace is fixed. */
+  locked: boolean;
+}
+
+export interface AgentContext {
+  used: number;
+  max: number;
+  percentage: number;
+}
+
+export interface AgentAttachment {
+  id: string;
+  name: string;
+  kind: "image" | "file";
+  mediaType: string;
+  size: number;
+}
+
+export interface AgentInfo {
+  available: boolean;
+  /** Why claude isn't usable here. */
+  error?: string;
+  models: AgentModel[];
+  account?: { email?: string; subscriptionType?: string };
+}
+
+export interface GitInfo {
+  isRepo: boolean;
+  /** The checked-out branch; "" when detached. */
+  current: string;
+  branches: string[];
+}
+
+/**
+ * Upload channel `upload:<id>` (id: 8-64 of [a-z0-9]), one per file. The client
+ * sends UploadStart, the file as binary chunks, then {t:"end"}; the daemon
+ * answers with UploadResult and the client closes the channel.
+ */
+export type UploadStart = { t: "start"; threadId: string; name: string; mediaType: string; size: number };
+export type UploadResult = { t: "done"; attachment: AgentAttachment } | { t: "error"; message: string };
 
 /** A prompt waiting for the user. */
 export interface AgentRequest {
@@ -265,7 +329,7 @@ interface AgentEventBase {
 /** One persisted entry in a claude thread's log. */
 export type AgentEvent = AgentEventBase &
   (
-    | { type: "user"; id: string; text: string }
+    | { type: "user"; id: string; text: string; attachments?: AgentAttachment[] }
     | { type: "assistant" | "thinking"; id: string; text: string; streamKey?: string }
     /** id is the tool_use id; a toolResult with the same id follows. */
     | { type: "tool"; id: string; name: string; input: unknown }

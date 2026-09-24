@@ -226,6 +226,26 @@ same one the Agent SDK uses (`internal/claude`):
     - `delta {key, text}`: streamed text, not persisted
     - `error`
 - **Clients**: any attached client may prompt and answer; the first answer wins.
+- **Workspace** (chosen before the first prompt, then fixed): the project
+  checkout, or a new git worktree from a chosen base branch, made on the first
+  prompt with `git worktree add -b everywhere/<thread> <data>/worktrees/<project>-<id>/<thread> <base>`.
+  Uncommitted changes don't carry over. A missing worktree is recreated on its
+  branch. Deleting the thread removes the worktree (unless asked not to); the
+  branch is kept. `git.info {projectId}` lists branches for the picker.
+- **Attachments**: each file goes over its own `upload:<id>` channel (start
+  frame, binary chunks, end; 10 MB per image, 50 MB per file) into
+  `<data>/attachments/<thread>/<id>/`. On `send`, images become image blocks,
+  and every attachment is named in the prompt as
+  `[Attached <kind> "<name>" is saved at: <path>]`, with the directory added
+  to claude's allowed dirs.
+- **Context**: `get_context_usage` after each turn, at start and after
+  compaction, plus live estimates from each API call's input usage; the last
+  value is kept for stopped threads.
+- **Models before the first prompt**: `agent.info` starts a throwaway claude
+  for its initialize handshake (no prompt, no API use) and caches the models
+  and account for 10 minutes.
+- **Continue after update**: `device.update` marks threads with a turn in
+  progress; on startup each is resumed once with "Continue where you left off."
 - **Thread list**: `threads.list` reports `running` and `agentStatus`
   (stopped | starting | idle | working | waiting | error).
 

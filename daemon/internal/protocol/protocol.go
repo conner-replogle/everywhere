@@ -119,6 +119,8 @@ type Thread struct {
 	Running bool `json:"running"`
 	// AgentStatus is set for claude threads; see AgentState.Status.
 	AgentStatus string `json:"agentStatus,omitempty"`
+	// Worktree is the git worktree a claude thread runs in, once created.
+	Worktree string `json:"worktree,omitempty"`
 }
 
 type DirListing struct {
