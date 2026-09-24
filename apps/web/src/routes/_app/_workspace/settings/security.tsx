@@ -23,7 +23,7 @@ import { auth, useAuth } from "@/lib/auth";
 import { describeUserAgent } from "@/lib/user-agent";
 import { cn, errorMessage, timeAgo } from "@/lib/utils";
 
-export const Route = createFileRoute("/_app/settings/security")({
+export const Route = createFileRoute("/_app/_workspace/settings/security")({
   component: SecuritySettings,
 });
 

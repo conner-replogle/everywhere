@@ -18,7 +18,7 @@ import { devices as devicesStore, useDevices } from "@/lib/devices";
 import { useHub } from "@/lib/hub";
 import { timeAgo } from "@/lib/utils";
 
-export const Route = createFileRoute("/_app/settings/devices")({
+export const Route = createFileRoute("/_app/_workspace/settings/devices")({
   component: DeviceSettings,
 });
 

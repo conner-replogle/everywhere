@@ -1,7 +1,7 @@
 import { createFileRoute, Link, Outlet } from "@tanstack/react-router";
 import { MonitorIcon, ShieldIcon } from "lucide-react";
 
-export const Route = createFileRoute("/_app/settings")({
+export const Route = createFileRoute("/_app/_workspace/settings")({
   component: SettingsLayout,
 });
 
@@ -13,7 +13,8 @@ const SECTIONS = [
 function SettingsLayout() {
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-4 py-6 sm:px-6 md:flex-row md:gap-8">
+      {/* On phones, below the button that opens the sidebar. */}
+      <div className="mx-auto flex w-full max-w-5xl flex-col gap-4 px-4 py-6 max-md:pt-10 sm:px-6 md:flex-row md:gap-8">
         <nav aria-label="Settings" className="flex shrink-0 gap-0.5 md:w-40 md:flex-col">
           <span className="hidden px-2 pb-1.5 text-xs font-medium text-muted-foreground md:block">Settings</span>
           {SECTIONS.map(({ to, label, icon: Icon }) => (

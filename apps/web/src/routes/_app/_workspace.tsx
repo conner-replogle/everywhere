@@ -1,4 +1,4 @@
-import { createFileRoute, Outlet, useLocation, useParams } from "@tanstack/react-router";
+import { createFileRoute, Outlet, useLocation } from "@tanstack/react-router";
 import { PanelLeftIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AppSidebar } from "@/components/app-sidebar";
@@ -23,10 +23,10 @@ function WorkspaceLayout() {
   const pathname = useLocation({ select: (l) => l.pathname });
   useEffect(() => setSidebarOpen(false), [pathname]);
   // On phones the home page is the sidebar itself, not an empty page behind a drawer.
-  const sidebarAsPage = !useParams({ strict: false }).threadId;
+  const sidebarAsPage = pathname === "/";
 
   return (
-    <div className="relative flex h-full min-h-0">
+    <div className="relative flex h-full min-h-0 overflow-hidden">
       <AppSidebar
         debugDevice={debugDevice}
         onDebug={(id) => setDebugDevice(debugDevice === id ? null : id)}

@@ -5,16 +5,20 @@ import {
   ArchiveRestoreIcon,
   BugIcon,
   ChevronRightIcon,
+  ChevronsUpDownIcon,
   FolderIcon,
   FolderPlusIcon,
   HomeIcon,
+  LogOutIcon,
   MoreHorizontalIcon,
   PencilIcon,
   PlusIcon,
   RotateCcwIcon,
+  SettingsIcon,
   SparklesIcon,
   SquareTerminalIcon,
   Trash2Icon,
+  UserIcon,
   XIcon,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
@@ -22,6 +26,8 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { DeviceContext, type DeviceContextValue, useDevice } from "@/components/device-context";
 import { DeviceUpdate, RefreshVersionButton, useUpdateCheck } from "@/components/device-update";
 import { useFleet } from "@/components/fleet";
+import { HubStatus } from "@/components/hub-status";
+import { Logo } from "@/components/logo";
 import { NewProjectDialog } from "@/components/new-project-dialog";
 import { PresenceDot } from "@/components/presence-dot";
 import { RenameDialog } from "@/components/rename-dialog";
@@ -34,6 +40,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { auth, useAuth } from "@/lib/auth";
 import { useDeviceOnline } from "@/lib/hub";
 import { cn, errorMessage } from "@/lib/utils";
 
@@ -177,7 +184,18 @@ export function AppSidebar({
 
   return (
     <aside className={cn("flex min-h-0 flex-col border-r bg-sidebar", className)}>
-      <div className="flex h-9 shrink-0 items-center border-b pr-1.5 pl-3">
+      <div className="flex h-10 shrink-0 items-center gap-3 border-b px-3">
+        <Link
+          to="/"
+          className="shrink-0 rounded-sm focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none"
+        >
+          <Logo className="text-[13px]" />
+        </Link>
+        <span className="ml-auto min-w-0">
+          <HubStatus />
+        </span>
+      </div>
+      <div className="flex h-9 shrink-0 items-center pr-1.5 pl-3">
         <span className="text-xs font-medium text-muted-foreground">Projects</span>
         {connectedEntries.length > 1 ? (
           <DropdownMenu>
@@ -449,6 +467,8 @@ export function AppSidebar({
         </div>
       )}
 
+      <SidebarFooter />
+
       {newProjectFor && (
         <NewProjectDialog
           peer={newProjectFor.peer}
@@ -716,6 +736,44 @@ function ThreadStatusDot({ thread: t }: { thread: Thread }) {
       title={t.kind === "claude" ? "Claude running" : "Shell running"}
       aria-label="running"
     />
+  );
+}
+
+/** Settings and the signed-in account, at the bottom of the sidebar. */
+function SidebarFooter() {
+  const navigate = useNavigate();
+  const user = useAuth()?.user;
+  return (
+    <div className="flex shrink-0 items-center gap-1 border-t px-1.5 py-1.5">
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="ghost" size="sm" className="min-w-0 flex-1 justify-start text-foreground">
+            <UserIcon className="text-muted-foreground" />
+            <span className="truncate">{user?.username ?? "Account"}</span>
+            <ChevronsUpDownIcon className="ml-auto text-muted-foreground" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" side="top" className="w-56">
+          <DropdownMenuLabel>Signed in as {user?.username}</DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onSelect={async () => {
+              await auth.logout();
+              await navigate({ to: "/login" });
+            }}
+          >
+            <LogOutIcon />
+            Log out
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <Button variant="ghost" size="sm" className="shrink-0" asChild>
+        <Link to="/settings" activeProps={{ className: "bg-accent text-accent-foreground" }}>
+          <SettingsIcon />
+          Settings
+        </Link>
+      </Button>
+    </div>
   );
 }
 
