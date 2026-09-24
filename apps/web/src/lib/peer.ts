@@ -80,6 +80,8 @@ const DISCONNECT_GRACE_MS = 5_000;
 const RPC_TIMEOUT_MS = 15_000;
 const UPLOAD_CHUNK = 16 * 1024;
 export const UNREACHABLE_MESSAGE = "Couldn't reach device — direct and relayed connections both failed.";
+/** The offer went out through the hub but the daemon never answered it. */
+export const NO_ANSWER_MESSAGE = "Device didn't respond.";
 
 // STUN + short-lived Cloudflare TURN credentials from the Worker, cached until
 // an hour before they expire. ICE prefers direct paths (LAN, Tailscale, NAT
@@ -358,7 +360,8 @@ export class DevicePeer {
     };
 
     this.connectTimer = setTimeout(() => {
-      if (alive() && this.snap.state !== "connected") this.fail(UNREACHABLE_MESSAGE);
+      if (!alive() || this.snap.state === "connected") return;
+      this.fail(this.answerReceivedAt === null ? NO_ANSWER_MESSAGE : UNREACHABLE_MESSAGE);
     }, CONNECT_TIMEOUT_MS);
 
     try {

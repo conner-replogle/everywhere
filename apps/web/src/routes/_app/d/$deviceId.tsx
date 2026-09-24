@@ -7,7 +7,7 @@ import { DeviceContext, type DeviceContextValue, useDevice } from "@/components/
 import { DeviceSidebar } from "@/components/device-sidebar";
 import { Button } from "@/components/ui/button";
 import { useDevices } from "@/lib/devices";
-import { UNREACHABLE_MESSAGE, usePeer, useRpc } from "@/lib/peer";
+import { NO_ANSWER_MESSAGE, UNREACHABLE_MESSAGE, usePeer, useRpc } from "@/lib/peer";
 import { cn, timeAgo } from "@/lib/utils";
 
 export const Route = createFileRoute("/_app/d/$deviceId")({
@@ -108,10 +108,11 @@ function ConnectionPanel() {
 
   if (conn.state === "failed") {
     const unreachable = conn.error === UNREACHABLE_MESSAGE;
+    const noAnswer = conn.error === NO_ANSWER_MESSAGE;
     return (
       <Panel
         icon={<WifiOffIcon className="size-5 text-destructive" />}
-        title={unreachable ? UNREACHABLE_MESSAGE : "Couldn't connect to device"}
+        title={unreachable ? UNREACHABLE_MESSAGE : noAnswer ? NO_ANSWER_MESSAGE : "Couldn't connect to device"}
         action={
           <Button variant="outline" size="sm" onClick={() => peer.retry()}>
             <RotateCcwIcon />
@@ -119,7 +120,14 @@ function ConnectionPanel() {
           </Button>
         }
       >
-        {unreachable ? (
+        {noAnswer ? (
+          <p>
+            {name} looks online, but its daemon never answered. It may have lost its network and not noticed yet; it
+            reconnects on its own within about half a minute. If this keeps happening, check it with{" "}
+            <code className="rounded bg-terminal px-1 py-0.5 font-mono text-xs text-foreground">everywhere status</code>{" "}
+            on the machine.
+          </p>
+        ) : unreachable ? (
           <p>
             {name} is online, but no connection could be made, neither direct (LAN, Tailscale) nor through the TURN
             relay. Open the debug panel for details.

@@ -10,7 +10,13 @@ import { HUB_PING, HUB_PONG } from "@everywhere/protocol";
 import { randomId } from "./crypto";
 import { versionAtLeast } from "./version";
 
-type Attachment = { kind: "device"; id: string } | { kind: "client"; id: string; session: string };
+type Attachment = { kind: "device"; id: string; since?: number } | { kind: "client"; id: string; session: string };
+
+// Daemons ping every 15s (25s in older versions). A daemon whose network went away
+// leaves its socket open here with nothing coming through, so one that hasn't
+// pinged in this long counts as offline and is closed.
+const DEVICE_SILENT_MS = 60_000;
+const SWEEP_INTERVAL_MS = 30_000;
 
 export const HUB_KIND_HEADER = "x-ew-kind";
 export const HUB_ID_HEADER = "x-ew-id";
@@ -38,9 +44,12 @@ export class AccountHub extends DurableObject<Env> {
       // A daemon reconnecting replaces its stale socket.
       for (const ws of this.ctx.getWebSockets(`device:${deviceId}`)) ws.close(4000, "replaced");
       this.ctx.acceptWebSocket(server, [`device:${deviceId}`]);
-      server.serializeAttachment({ kind: "device", id: deviceId } satisfies Attachment);
+      server.serializeAttachment({ kind: "device", id: deviceId, since: Date.now() } satisfies Attachment);
       this.broadcast({ t: "presence.update", deviceId, online: true });
       await this.touchDevice(deviceId);
+      if ((await this.ctx.storage.getAlarm()) === null) {
+        await this.ctx.storage.setAlarm(Date.now() + SWEEP_INTERVAL_MS);
+      }
     } else {
       const connId = randomId();
       this.ctx.acceptWebSocket(server, [`client:${connId}`]);
@@ -65,9 +74,12 @@ export class AccountHub extends DurableObject<Env> {
       if (!isSignal(m)) return this.fail(ws, "bad_message", "unknown message");
       // Re-check the session before each new connection, so sessions removed
       // out of band (expiry, reset-password script) can't open new peers.
-      if (m.data.type === "offer" && !(await this.sessionValid(me.session))) {
-        ws.close(4003, "session expired");
-        return;
+      if (m.data.type === "offer") {
+        if (!(await this.sessionValid(me.session))) {
+          ws.close(4003, "session expired");
+          return;
+        }
+        await this.closeSilentDevices();
       }
       const target = this.socket(`device:${m.to}`);
       if (!target) {
@@ -105,6 +117,14 @@ export class AccountHub extends DurableObject<Env> {
 
   override async webSocketError(ws: WebSocket): Promise<void> {
     await this.onGone(ws);
+  }
+
+  /** Periodic sweep for daemons that went silent, while any are connected. */
+  override async alarm(): Promise<void> {
+    await this.closeSilentDevices();
+    if (this.ctx.getWebSockets().some((ws) => (ws.deserializeAttachment() as Attachment | null)?.kind === "device")) {
+      await this.ctx.storage.setAlarm(Date.now() + SWEEP_INTERVAL_MS);
+    }
   }
 
   /** Called by the Worker when a device is revoked. */
@@ -147,17 +167,41 @@ export class AccountHub extends DurableObject<Env> {
     await this.touchDevice(me.id);
   }
 
+  /** Closes daemon sockets that stopped pinging and reports those devices offline. */
+  private async closeSilentDevices(): Promise<void> {
+    for (const ws of this.ctx.getWebSockets()) {
+      const a = ws.deserializeAttachment() as Attachment | null;
+      if (a?.kind !== "device" || ws.readyState !== WebSocket.OPEN || !this.silent(ws, a)) continue;
+      try {
+        ws.close(4008, "no ping");
+      } catch {
+        // already closed
+      }
+      await this.onGone(ws);
+    }
+  }
+
+  private silent(ws: WebSocket, a: Attachment & { kind: "device" }): boolean {
+    // Sockets accepted before `since` existed count from now until their next ping.
+    const last = this.ctx.getWebSocketAutoResponseTimestamp(ws)?.getTime() ?? a.since ?? Date.now();
+    return Date.now() - last > DEVICE_SILENT_MS;
+  }
+
+  private live(ws: WebSocket): boolean {
+    if (ws.readyState !== WebSocket.OPEN) return false;
+    const a = ws.deserializeAttachment() as Attachment | null;
+    return a?.kind !== "device" || !this.silent(ws, a);
+  }
+
   private socket(tag: string, except?: WebSocket): WebSocket | undefined {
-    return this.ctx
-      .getWebSockets(tag)
-      .find((ws) => ws !== except && ws.readyState === WebSocket.OPEN);
+    return this.ctx.getWebSockets(tag).find((ws) => ws !== except && this.live(ws));
   }
 
   private onlineDevices(): string[] {
     const ids = new Set<string>();
     for (const ws of this.ctx.getWebSockets()) {
       const a = ws.deserializeAttachment() as Attachment | null;
-      if (a?.kind === "device" && ws.readyState === WebSocket.OPEN) ids.add(a.id);
+      if (a?.kind === "device" && this.live(ws)) ids.add(a.id);
     }
     return [...ids];
   }

@@ -22,6 +22,13 @@ import (
 // ErrRevoked means the device was removed in the web UI; the daemon should stop.
 var ErrRevoked = errors.New("this device was removed from your account; run `everywhere uninstall` or re-enroll")
 
+// Vars so tests can shorten them.
+var (
+	pingInterval = 15 * time.Second
+	pongTimeout  = 10 * time.Second
+	dialTimeout  = 15 * time.Second
+)
+
 type SignalHandler func(from, sid string, data protocol.SignalData)
 
 type Client struct {
@@ -75,12 +82,14 @@ func (c *Client) Send(to, sid string, data protocol.SignalData) {
 
 func (c *Client) session(ctx context.Context) error {
 	url := strings.Replace(strings.TrimRight(c.Server, "/"), "http", "ws", 1) + "/api/daemon/ws"
-	conn, resp, err := websocket.Dial(ctx, url, &websocket.DialOptions{
+	dctx, cancelDial := context.WithTimeout(ctx, dialTimeout)
+	conn, resp, err := websocket.Dial(dctx, url, &websocket.DialOptions{
 		HTTPHeader: http.Header{
 			"Authorization": {"Bearer " + c.Credential},
 			"X-Ew-Version":  {version.Version},
 		},
 	})
+	cancelDial() // only bounds the handshake
 	if err != nil {
 		if resp != nil && resp.StatusCode == http.StatusUnauthorized {
 			return ErrRevoked
@@ -98,23 +107,41 @@ func (c *Client) session(ctx context.Context) error {
 		return err
 	}
 
+	// A socket bound to an address that no longer exists (e.g. after a network
+	// change) never errors on its own: writes just queue in the kernel. So each
+	// ping must be answered in time, or the connection is treated as dead.
+	pong := make(chan struct{}, 1)
 	pingCtx, stopPing := context.WithCancel(ctx)
 	defer stopPing()
 	go func() {
-		t := time.NewTicker(25 * time.Second)
+		t := time.NewTicker(pingInterval)
 		defer t.Stop()
 		for {
 			select {
 			case <-pingCtx.Done():
 				return
 			case <-t.C:
-				wctx, cancel := context.WithTimeout(pingCtx, 10*time.Second)
-				err := conn.Write(wctx, websocket.MessageText, []byte(protocol.HubPing))
-				cancel()
-				if err != nil {
-					conn.CloseNow()
-					return
+			}
+			select {
+			case <-pong: // drop a stale pong from before this ping
+			default:
+			}
+			wctx, cancel := context.WithTimeout(pingCtx, pongTimeout)
+			err := conn.Write(wctx, websocket.MessageText, []byte(protocol.HubPing))
+			if err == nil {
+				select {
+				case <-pong:
+				case <-wctx.Done():
+					err = wctx.Err()
 				}
+			}
+			cancel()
+			if err != nil {
+				if pingCtx.Err() == nil {
+					slog.Warn("hub didn't answer ping; reconnecting", "err", err)
+				}
+				conn.CloseNow()
+				return
 			}
 		}
 	}()
@@ -131,6 +158,10 @@ func (c *Client) session(ctx context.Context) error {
 			return err
 		}
 		if string(raw) == protocol.HubPong {
+			select {
+			case pong <- struct{}{}:
+			default:
+			}
 			continue
 		}
 		var msg protocol.HubToDaemon
