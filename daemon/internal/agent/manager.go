@@ -159,7 +159,8 @@ func (m *Manager) Status(threadID string) (running bool, status string) {
 }
 
 // Kill stops a thread's claude process and forgets it (the thread was
-// deleted).
+// deleted or archived). A later attach or prompt starts a new session from
+// the stored thread, resuming claude's conversation.
 func (m *Manager) Kill(threadID string) {
 	m.mu.Lock()
 	s := m.sessions[threadID]

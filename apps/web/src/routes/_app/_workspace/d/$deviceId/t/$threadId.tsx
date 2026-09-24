@@ -1,13 +1,13 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import type { AgentStatus } from "@everywhere/protocol";
-import { GlobeIcon } from "lucide-react";
+import { ArchiveRestoreIcon, GlobeIcon } from "lucide-react";
 import { lazy, Suspense, useRef, useState } from "react";
 import { CenteredMessage } from "@/components/centered-message";
 import { useDevice } from "@/components/device-context";
 import { TerminalView, type WriterState } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
 import { sendToComposer } from "@/lib/composer-inbox";
-import { cn } from "@/lib/utils";
+import { cn, errorMessage } from "@/lib/utils";
 
 // Loaded on demand so terminal-only use skips the markdown stack.
 const AgentView = lazy(() => import("@/components/agent/agent-view").then((m) => ({ default: m.AgentView })));
@@ -18,7 +18,7 @@ const BROWSER_OPEN_KEY = "ew.browser.open";
 /** Below md the browser covers the chat instead of sitting beside it. */
 const narrowScreen = () => window.matchMedia("(max-width: 767px)").matches;
 
-export const Route = createFileRoute("/_app/d/$deviceId/t/$threadId")({
+export const Route = createFileRoute("/_app/_workspace/d/$deviceId/t/$threadId")({
   component: ThreadPage,
 });
 
@@ -36,14 +36,23 @@ function ThreadPage() {
   };
   const thread = threads.data?.find((t) => t.id === threadId);
   const project = thread && projects.data?.find((p) => p.id === thread.projectId);
+  const archived = !!thread?.archivedAt;
+  const [restoreError, setRestoreError] = useState<string | null>(null);
+  const restore = async () => {
+    setRestoreError(null);
+    try {
+      await peer.call("threads.archive", { id: threadId, archived: false });
+      threads.refetch();
+    } catch (e) {
+      setRestoreError(errorMessage(e));
+    }
+  };
 
   if (threads.data && !thread) {
     return (
       <CenteredMessage title="Thread not found" body="It may have been deleted from another client.">
         <Button variant="outline" size="sm" asChild>
-          <Link to="/d/$deviceId" params={{ deviceId }}>
-            Back to device
-          </Link>
+          <Link to="/">Back to projects</Link>
         </Button>
       </CenteredMessage>
     );
@@ -56,7 +65,11 @@ function ThreadPage() {
       <div className="flex h-9 shrink-0 items-center gap-3 border-b bg-sidebar pr-3 pl-10 md:pl-3">
         <span className="truncate font-medium">{thread?.name ?? "…"}</span>
         {project && <span className="truncate font-mono text-xs text-muted-foreground">{project.path}</span>}
-        {claude ? (
+        {archived ? (
+          <span className="ml-auto shrink-0 rounded-sm bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+            Archived
+          </span>
+        ) : claude ? (
           <AgentStatusLabel status={thread.agentStatus} />
         ) : (
           <span
@@ -90,7 +103,9 @@ function ThreadPage() {
           {!thread ? null : claude ? (
             <Suspense>
               <AgentView
-                key={threadId}
+                // Restoring reattaches: archiving closed the thread's session.
+                key={`${threadId}:${archived}`}
+                archived={archived ? { onRestore: restore, error: restoreError } : undefined}
                 peer={peer}
                 threadId={threadId}
                 projectId={thread.projectId}
@@ -103,6 +118,16 @@ function ThreadPage() {
                 }}
               />
             </Suspense>
+          ) : archived ? (
+            <CenteredMessage
+              title="This terminal is archived"
+              body={restoreError ?? "Its shell was stopped. Restore it to start a new shell in the project."}
+            >
+              <Button variant="outline" size="sm" onClick={restore}>
+                <ArchiveRestoreIcon />
+                Restore
+              </Button>
+            </CenteredMessage>
           ) : (
             <TerminalView
               key={threadId}

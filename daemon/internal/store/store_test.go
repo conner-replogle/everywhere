@@ -195,6 +195,16 @@ func TestAgentThreads(t *testing.T) {
 		t.Fatalf("AgentEvents(before 3) = %+v more=%v", events, more)
 	}
 
+	if a, err := s.SetThreadArchived(th.ID, true); err != nil || a.ArchivedAt == nil {
+		t.Fatalf("archive: %+v, %v", a, err)
+	}
+	if got, _ := s.GetThread(th.ID); got.ArchivedAt == nil {
+		t.Fatalf("archived thread read back unarchived: %+v", got)
+	}
+	if a, err := s.SetThreadArchived(th.ID, false); err != nil || a.ArchivedAt != nil {
+		t.Fatalf("restore: %+v, %v", a, err)
+	}
+
 	if err := s.DeleteThread(th.ID); err != nil {
 		t.Fatal(err)
 	}

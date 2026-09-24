@@ -74,6 +74,10 @@ ALTER TABLE threads ADD COLUMN agent_context TEXT;
 ALTER TABLE threads ADD COLUMN agent_effort TEXT;
 ALTER TABLE threads ADD COLUMN agent_thinking INTEGER NOT NULL DEFAULT 1;
 `,
+	// 5: archived threads.
+	`
+ALTER TABLE threads ADD COLUMN archived_at INTEGER;
+`,
 }
 
 type Store struct {
@@ -215,16 +219,19 @@ func (s *Store) DeleteProject(id string) error {
 
 // --- threads ----------------------------------------------------------------
 
-const threadCols = "id, project_id, kind, name, created_at, last_opened_at, agent_worktree"
+const threadCols = "id, project_id, kind, name, created_at, last_opened_at, agent_worktree, archived_at"
 
 func scanThread(sc interface{ Scan(...any) error }) (protocol.Thread, error) {
 	var t protocol.Thread
-	var opened sql.NullInt64
+	var opened, archived sql.NullInt64
 	var worktree sql.NullString
-	err := sc.Scan(&t.ID, &t.ProjectID, &t.Kind, &t.Name, &t.CreatedAt, &opened, &worktree)
+	err := sc.Scan(&t.ID, &t.ProjectID, &t.Kind, &t.Name, &t.CreatedAt, &opened, &worktree, &archived)
 	t.Worktree = worktree.String
 	if opened.Valid {
 		t.LastOpenedAt = &opened.Int64
+	}
+	if archived.Valid {
+		t.ArchivedAt = &archived.Int64
 	}
 	return t, err
 }
@@ -295,6 +302,18 @@ func (s *Store) RenameThread(id, name string) (protocol.Thread, error) {
 		return protocol.Thread{}, errors.New("name is required")
 	}
 	if err := s.execOne("UPDATE threads SET name = ? WHERE id = ?", name, id); err != nil {
+		return protocol.Thread{}, err
+	}
+	return s.GetThread(id)
+}
+
+// SetThreadArchived archives a thread, or restores an archived one.
+func (s *Store) SetThreadArchived(id string, archived bool) (protocol.Thread, error) {
+	var at any
+	if archived {
+		at = now()
+	}
+	if err := s.execOne("UPDATE threads SET archived_at = ? WHERE id = ?", at, id); err != nil {
 		return protocol.Thread{}, err
 	}
 	return s.GetThread(id)

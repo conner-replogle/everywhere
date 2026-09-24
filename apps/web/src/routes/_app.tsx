@@ -1,6 +1,7 @@
 import { createFileRoute, Link, Outlet, redirect, useNavigate } from "@tanstack/react-router";
 import { ChevronDownIcon, LogOutIcon } from "lucide-react";
 import { useEffect, useState } from "react";
+import { FleetProvider } from "@/components/fleet";
 import { Logo } from "@/components/logo";
 import { Button } from "@/components/ui/button";
 import {
@@ -49,7 +50,7 @@ function AppLayout() {
           <Logo className="text-[13px]" />
         </Link>
         <nav className="flex shrink-0 items-center gap-0.5">
-          <NavLink to="/">Devices</NavLink>
+          <NavLink to="/">Projects</NavLink>
           <NavLink to="/settings">Settings</NavLink>
         </nav>
         <div className="ml-auto flex min-w-0 items-center gap-3">
@@ -78,7 +79,9 @@ function AppLayout() {
         </div>
       </header>
       <main className="min-h-0 flex-1 overflow-y-auto">
-        <Outlet />
+        <FleetProvider>
+          <Outlet />
+        </FleetProvider>
       </main>
     </div>
   );

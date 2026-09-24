@@ -95,8 +95,8 @@ export function AddDeviceDialog({ open, onOpenChange }: { open: boolean; onOpenC
               <span className="font-medium">{enrolled.name}</span> is enrolled.
             </span>
             <Button asChild size="sm" variant="secondary" className="ml-auto">
-              <Link to="/d/$deviceId" params={{ deviceId: enrolled.id }} onClick={() => onOpenChange(false)}>
-                Open
+              <Link to="/" onClick={() => onOpenChange(false)}>
+                See its projects
               </Link>
             </Button>
           </div>

@@ -18,16 +18,17 @@ import {
 
 const STATS_INTERVAL_MS = 1000;
 const DAEMON_INTERVAL_MS = 3000;
-const OPEN_KEY = "ew:debug-panel";
+const OPEN_KEY = "ew:debug-device";
 
-/** Open/closed state for the debug panel, remembered across reloads. */
-export function useDebugPanelState(): [boolean, (open: boolean) => void] {
-  const [open, setOpen] = useState(() => localStorage.getItem(OPEN_KEY) === "1");
+/** Which device the debug panel is open for, if any, remembered across reloads. */
+export function useDebugPanelState(): [string | null, (deviceId: string | null) => void] {
+  const [deviceId, setDeviceId] = useState(() => localStorage.getItem(OPEN_KEY));
   return [
-    open,
-    (o: boolean) => {
-      localStorage.setItem(OPEN_KEY, o ? "1" : "0");
-      setOpen(o);
+    deviceId,
+    (id: string | null) => {
+      if (id) localStorage.setItem(OPEN_KEY, id);
+      else localStorage.removeItem(OPEN_KEY);
+      setDeviceId(id);
     },
   ];
 }

@@ -79,6 +79,7 @@ const (
 	FeatureWorktrees   = "worktrees"   // claude threads in their own worktree; git.info
 	FeatureAttachments = "attachments" // upload channels and send attachments
 	FeatureHistory     = "history"     // agent attach limit and history paging
+	FeatureArchive     = "archive"     // threads.archive and Thread.archivedAt
 )
 
 // UpdateInfo is the result of device.checkUpdate.
@@ -122,6 +123,9 @@ type Thread struct {
 	AgentStatus string `json:"agentStatus,omitempty"`
 	// Worktree is the git worktree a claude thread runs in, once created.
 	Worktree string `json:"worktree,omitempty"`
+	// ArchivedAt is set while the thread is archived: hidden from the
+	// thread list, with its shell or claude stopped.
+	ArchivedAt *int64 `json:"archivedAt,omitempty"`
 }
 
 type DirListing struct {

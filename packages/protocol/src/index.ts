@@ -70,9 +70,9 @@ export interface DeviceInfo {
  * claude: claude threads and the agent channel. update: device.checkUpdate and
  * device.update. worktrees: claude threads in their own git worktree, and
  * git.info. attachments: upload channels and attachments on send. history:
- * the agent attach limit and history paging.
+ * the agent attach limit and history paging. archive: threads.archive.
  */
-export type DeviceFeature = "claude" | "update" | "worktrees" | "attachments" | "history";
+export type DeviceFeature = "claude" | "update" | "worktrees" | "attachments" | "history" | "archive";
 
 export interface UpdateInfo {
   current: string;
@@ -116,6 +116,8 @@ export interface Thread {
   agentStatus?: AgentStatus;
   /** The git worktree a claude thread runs in, once created. */
   worktree?: string;
+  /** archive: set while archived (hidden, its shell or claude stopped). */
+  archivedAt?: number;
 }
 
 export interface DirListing {
@@ -159,6 +161,8 @@ export interface RpcMethods {
   "threads.list": [{ projectId?: string }, Thread[]];
   "threads.create": [{ projectId: string; name?: string; kind?: ThreadKind }, Thread];
   "threads.rename": [{ id: string; name: string }, Thread];
+  /** archive: archiving stops the thread's shell or claude; history and worktree stay. */
+  "threads.archive": [{ id: string; archived: boolean }, Thread];
   /** keepWorktree: leave a claude thread's worktree on disk (its branch is always kept). */
   "threads.delete": [{ id: string; keepWorktree?: boolean }, Record<string, never>];
   "fs.listDirs": [{ path: string }, DirListing];

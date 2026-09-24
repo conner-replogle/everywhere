@@ -1,5 +1,13 @@
 import type { AgentCommand, AgentLimit, AgentModel, AgentState, PermissionMode } from "@everywhere/protocol";
-import { ArrowUpIcon, ChevronDownIcon, PaperclipIcon, RotateCcwIcon, SquareIcon, XIcon } from "lucide-react";
+import {
+  ArchiveRestoreIcon,
+  ArrowUpIcon,
+  ChevronDownIcon,
+  PaperclipIcon,
+  RotateCcwIcon,
+  SquareIcon,
+  XIcon,
+} from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useDevice } from "@/components/device-context";
 import { Button } from "@/components/ui/button";
@@ -47,6 +55,7 @@ export function AgentView({
   generation,
   cwd,
   onBrowserUse,
+  archived,
 }: {
   peer: DevicePeer;
   threadId: string;
@@ -56,6 +65,8 @@ export function AgentView({
   cwd?: string;
   /** Called when claude starts driving the project's browser. */
   onBrowserUse?: () => void;
+  /** Set while the thread is archived: its history shows, with a way back instead of the composer. */
+  archived?: { onRestore: () => void; error: string | null };
 }) {
   const agent = useAgentThread(peer, threadId, generation);
   const { state } = agent;
@@ -176,26 +187,38 @@ export function AgentView({
       </div>
 
       <div className="shrink-0 border-t bg-background">
-        <div className="mx-auto grid max-w-3xl gap-2 px-4 pt-2 pb-3">
-          {state?.pending.map((r) => (
-            <PendingRequest key={r.id} request={r} cwd={workdir} respond={agent.send} />
-          ))}
-          <StatusBar agent={agent} />
-          <Composer
-            agent={agent}
-            busy={busy}
-            peer={peer}
-            threadId={threadId}
-            models={models}
-            commands={commands}
-            limits={limits}
-            git={git.data}
-            canAttach={features.includes("attachments")}
-          />
-          {agentInfo.data && !agentInfo.data.available && (
-            <p className="text-xs text-destructive">Claude isn't usable on this device: {agentInfo.data.error}</p>
-          )}
-        </div>
+        {archived ? (
+          <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-3 px-4 py-3">
+            <p className="min-w-0 flex-1 text-[13px] text-muted-foreground">
+              {archived.error ?? "This thread is archived. Restore it to keep going; Claude picks up where it left off."}
+            </p>
+            <Button size="sm" variant="secondary" onClick={archived.onRestore}>
+              <ArchiveRestoreIcon />
+              Restore
+            </Button>
+          </div>
+        ) : (
+          <div className="mx-auto grid max-w-3xl gap-2 px-4 pt-2 pb-3">
+            {state?.pending.map((r) => (
+              <PendingRequest key={r.id} request={r} cwd={workdir} respond={agent.send} />
+            ))}
+            <StatusBar agent={agent} />
+            <Composer
+              agent={agent}
+              busy={busy}
+              peer={peer}
+              threadId={threadId}
+              models={models}
+              commands={commands}
+              limits={limits}
+              git={git.data}
+              canAttach={features.includes("attachments")}
+            />
+            {agentInfo.data && !agentInfo.data.available && (
+              <p className="text-xs text-destructive">Claude isn't usable on this device: {agentInfo.data.error}</p>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

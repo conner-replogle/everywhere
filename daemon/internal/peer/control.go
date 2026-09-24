@@ -64,6 +64,7 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		ProjectID    string `json:"projectId"`
 		Kind         string `json:"kind"`
 		KeepWorktree bool   `json:"keepWorktree"`
+		Archived     bool   `json:"archived"`
 		Force        bool   `json:"force"`
 	}
 	if len(raw) > 0 {
@@ -136,6 +137,22 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 			s.broadcast(protocol.EventThreadsChanged)
 		}
 		return t, err
+	case "threads.archive":
+		t, err := s.store.SetThreadArchived(params.ID, params.Archived)
+		if err != nil {
+			return nil, err
+		}
+		if params.Archived {
+			// History, worktree and claude's session stay; restoring resumes it.
+			if t.Kind == protocol.ThreadClaude {
+				s.agents.Kill(t.ID)
+			} else {
+				s.terms.Kill(t.ID)
+			}
+		}
+		s.fillStatus(&t)
+		s.broadcast(protocol.EventThreadsChanged)
+		return t, nil
 	case "threads.delete":
 		t, err := s.store.GetThread(params.ID)
 		if err != nil {
