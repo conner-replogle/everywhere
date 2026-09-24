@@ -1,47 +1,106 @@
-import { ArrowUpCircleIcon, LoaderIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import type { UpdateInfo } from "@everywhere/protocol";
+import { ArrowUpCircleIcon, LoaderIcon, RotateCwIcon } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { useDevice } from "@/components/device-context";
-import { useRpc } from "@/lib/peer";
+import { cn } from "@/lib/utils";
 
 const UPDATE_TIMEOUT_MS = 3 * 60_000; // download + verify on a slow link
 const RECHECK_MS = 15 * 60_000;
 
+export interface UpdateCheck {
+  /** The daemon can update itself (and so can be asked about updates). */
+  supported: boolean;
+  data: UpdateInfo | undefined;
+  checking: boolean;
+  /** force skips the daemon's cached lookup of the latest release. */
+  check: (force?: boolean) => void;
+}
+
 /**
- * Offers the latest daemon release when there is one, installs it on
- * request and follows the daemon through its restart.
+ * Asks the daemon whether a newer release exists: on connect, when the tab
+ * comes back into view, every so often, and on demand.
  */
-export function DeviceUpdate() {
-  const { device, peer, conn, info } = useDevice();
+export function useUpdateCheck(): UpdateCheck {
+  const { peer, conn, info } = useDevice();
   const supported = info.data?.features?.includes("update") ?? false;
   const enabled = supported && conn.state === "connected";
-  const check = useRpc(peer, "device.checkUpdate", {}, [], enabled);
-  const [confirming, setConfirming] = useState(false);
+  const [data, setData] = useState<UpdateInfo>();
+  const [checking, setChecking] = useState(false);
 
-  // A release can land while the page is open: look again every so often and
-  // whenever the tab comes back into view.
-  const { refetch } = check;
+  const check = useCallback(
+    (force = false) => {
+      setChecking(true);
+      peer
+        .call("device.checkUpdate", force ? { force: true } : {})
+        .then(setData)
+        .catch(() => {}) // offline or GitHub unreachable: keep what we had
+        .finally(() => setChecking(false));
+    },
+    [peer],
+  );
+
   useEffect(() => {
     if (!enabled) return;
-    const onVisible = () => document.visibilityState === "visible" && refetch();
+    check();
+    const onVisible = () => document.visibilityState === "visible" && check();
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", onVisible);
-    const timer = setInterval(refetch, RECHECK_MS);
+    const timer = setInterval(check, RECHECK_MS);
     return () => {
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("focus", onVisible);
       clearInterval(timer);
     };
-  }, [enabled, refetch]);
+  }, [enabled, conn.generation, check]);
+
+  return { supported, data, checking, check };
+}
+
+/** The small button next to the version: re-read the device and look for a release now. */
+export function RefreshVersionButton({ update }: { update: UpdateCheck }) {
+  const { info } = useDevice();
+  const upToDate = update.data && !update.data.available && !update.data.reason;
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        info.refetch();
+        if (update.supported) update.check(true);
+      }}
+      disabled={update.checking}
+      className="shrink-0 rounded-sm p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-60"
+      aria-label="Check for updates"
+      title={
+        update.checking
+          ? "Checking for updates…"
+          : upToDate
+            ? `Up to date (latest is ${update.data?.latest}). Click to check again.`
+            : "Check for updates"
+      }
+    >
+      <RotateCwIcon className={cn("size-3", update.checking && "animate-spin")} />
+    </button>
+  );
+}
+
+/**
+ * Offers the latest daemon release when there is one, installs it on
+ * request and follows the daemon through its restart.
+ */
+export function DeviceUpdate({ update }: { update: UpdateCheck }) {
+  const { device, peer, info } = useDevice();
+  const [confirming, setConfirming] = useState(false);
   // The version the daemon is restarting into, until it's back on it.
   const [target, setTarget] = useState<string | null>(null);
+  const { check } = update;
 
   useEffect(() => {
     if (target && info.data?.version === target) {
       setTarget(null);
-      check.refetch();
+      check();
     }
-  }, [target, info.data?.version, check.refetch]);
+  }, [target, info.data?.version, check]);
 
   if (target) {
     return (
@@ -51,7 +110,7 @@ export function DeviceUpdate() {
       </div>
     );
   }
-  const u = check.data;
+  const u = update.data;
   if (!u?.available) return null;
 
   const name = device?.name ?? info.data?.hostname ?? "this device";

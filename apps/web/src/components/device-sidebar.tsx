@@ -17,7 +17,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { useDevice } from "@/components/device-context";
-import { DeviceUpdate } from "@/components/device-update";
+import { DeviceUpdate, RefreshVersionButton, useUpdateCheck } from "@/components/device-update";
 import { NewProjectDialog } from "@/components/new-project-dialog";
 import { PresenceDot } from "@/components/presence-dot";
 import { RenameDialog } from "@/components/rename-dialog";
@@ -73,6 +73,7 @@ export function DeviceSidebar({ className }: { className?: string }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const connected = conn.state === "connected";
   const online = useDeviceOnline(deviceId);
+  const update = useUpdateCheck();
   // Daemons from before claude threads would open a terminal instead.
   const claudeSupported = info.data?.features?.includes("claude") ?? false;
 
@@ -119,16 +120,19 @@ export function DeviceSidebar({ className }: { className?: string }) {
         <PresenceDot online={online} />
         <div className="min-w-0 flex-1">
           <div className="truncate font-medium">{device?.name ?? info.data?.hostname ?? "Device"}</div>
-          <div className="truncate text-xs text-muted-foreground">
-            {connected
-              ? info.data
-                ? `${info.data.os}/${info.data.arch} · ${info.data.version}`
-                : "Connected"
-              : conn.state === "offline"
-                ? "Offline"
-                : conn.state === "failed"
-                  ? "Unreachable"
-                  : "Connecting…"}
+          <div className="flex min-w-0 items-center gap-1 text-xs text-muted-foreground">
+            <span className="truncate">
+              {connected
+                ? info.data
+                  ? `${info.data.os}/${info.data.arch} · ${info.data.version}`
+                  : "Connected"
+                : conn.state === "offline"
+                  ? "Offline"
+                  : conn.state === "failed"
+                    ? "Unreachable"
+                    : "Connecting…"}
+            </span>
+            {connected && info.data && <RefreshVersionButton update={update} />}
           </div>
         </div>
         <Button
@@ -144,7 +148,7 @@ export function DeviceSidebar({ className }: { className?: string }) {
         </Button>
       </div>
 
-      <DeviceUpdate />
+      <DeviceUpdate update={update} />
 
       <div className="flex h-8 shrink-0 items-center px-3 pt-1">
         <span className="text-xs font-medium text-muted-foreground">Projects</span>
