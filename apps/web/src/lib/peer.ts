@@ -4,6 +4,7 @@
 import {
   AGENT_CHANNEL_PREFIX,
   type AgentAttachment,
+  BROWSER_CHANNEL_PREFIX,
   type AgentClientMsg,
   type AgentDaemonMsg,
   CONTROL_CHANNEL,
@@ -24,6 +25,7 @@ import {
 } from "@everywhere/protocol";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "./api";
+import { BrowserChannel, type BrowserHandlers } from "./browser-channel";
 import { hub } from "./hub";
 
 export type PeerState = "idle" | "connecting" | "connected" | "failed" | "offline";
@@ -640,6 +642,13 @@ export class DevicePeer {
     if (!this.pc || this.snap.state !== "connected") throw new Error("Not connected to device");
     const ch = this.pc.createDataChannel(`${AGENT_CHANNEL_PREFIX}${threadId}`, { ordered: true });
     return new AgentChannel(ch, handlers);
+  }
+
+  /** Opens a `browser:<projectId>` channel to the project's browser tab. Throws if not connected. */
+  openBrowser(projectId: string, handlers: BrowserHandlers): BrowserChannel {
+    if (!this.pc || this.snap.state !== "connected") throw new Error("Not connected to device");
+    const ch = this.pc.createDataChannel(`${BROWSER_CHANNEL_PREFIX}${projectId}`, { ordered: true });
+    return new BrowserChannel(ch, handlers);
   }
 }
 

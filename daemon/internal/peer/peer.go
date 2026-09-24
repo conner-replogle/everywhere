@@ -5,6 +5,7 @@ package peer
 import (
 	"encoding/json"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +14,7 @@ import (
 	"github.com/pion/webrtc/v4"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/agent"
+	"github.com/conner-replogle/everywhere/daemon/internal/browser"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/store"
 	"github.com/conner-replogle/everywhere/daemon/internal/term"
@@ -28,11 +30,12 @@ type Server struct {
 	// device.update needs it.
 	Restart func()
 
-	store  *store.Store
-	terms  *term.Manager
-	agents *agent.Manager
-	info   protocol.DeviceInfo
-	api    *webrtc.API
+	store    *store.Store
+	terms    *term.Manager
+	agents   *agent.Manager
+	browsers *browser.Manager
+	info     protocol.DeviceInfo
+	api      *webrtc.API
 
 	mu     sync.Mutex
 	peers  map[string]*peer // by sid
@@ -56,15 +59,17 @@ type peer struct {
 	pending  []protocol.SignalData // local candidates gathered before the answer was sent
 	terms    map[*termClient]bool
 	agents   map[*agentClient]bool
+	browsers map[*browserClient]bool
 }
 
-// closeChannels detaches every terminal and agent thread this peer had open.
+// closeChannels detaches every terminal, agent thread and browser tab this
+// peer had open.
 // Data channel close callbacks aren't guaranteed when the whole connection
 // drops.
 func (p *peer) closeChannels() {
 	p.mu.Lock()
-	terms, agents := p.terms, p.agents
-	p.terms, p.agents = nil, nil
+	terms, agents, browsers := p.terms, p.agents, p.browsers
+	p.terms, p.agents, p.browsers = nil, nil, nil
 	p.mu.Unlock()
 	for c := range terms {
 		c.detach()
@@ -72,10 +77,13 @@ func (p *peer) closeChannels() {
 	for c := range agents {
 		c.detach()
 	}
+	for c := range browsers {
+		c.detach()
+	}
 }
 
 // NewServer serves the store's projects and threads; claude threads keep
-// their worktrees and attachments under dataDir.
+// their worktrees and attachments under dataDir, and the browser its profile.
 func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string) *Server {
 	se := webrtc.SettingEngine{}
 	// Skip container/VM bridges; they only slow ICE down. Tailscale's
@@ -98,6 +106,7 @@ func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string) *Serve
 	threadsChanged := func() { s.broadcast(protocol.EventThreadsChanged) }
 	s.terms = term.NewManager(st, threadsChanged)
 	s.agents = agent.NewManager(st, dataDir, threadsChanged)
+	s.browsers = browser.NewManager(filepath.Join(dataDir, "browser"))
 	return s
 }
 
@@ -137,6 +146,7 @@ func (s *Server) Shutdown() {
 	}
 	s.terms.Shutdown()
 	s.agents.Shutdown()
+	s.browsers.Shutdown()
 }
 
 // HandleSignal processes one signaling message from a browser. Messages for a
@@ -178,7 +188,7 @@ func (s *Server) answer(from, sid, sdp string) error {
 	if err != nil {
 		return err
 	}
-	p := &peer{sid: sid, from: from, pc: pc, started: time.Now(), terms: map[*termClient]bool{}, agents: map[*agentClient]bool{}}
+	p := &peer{sid: sid, from: from, pc: pc, started: time.Now(), terms: map[*termClient]bool{}, agents: map[*agentClient]bool{}, browsers: map[*browserClient]bool{}}
 	s.mu.Lock()
 	s.peers[sid] = p
 	s.mu.Unlock()
@@ -221,6 +231,8 @@ func (s *Server) answer(from, sid, sdp string) error {
 			s.serveTerm(p, dc, strings.TrimPrefix(label, protocol.TermChannelPrefix))
 		case strings.HasPrefix(label, protocol.AgentChannelPrefix):
 			s.serveAgent(p, dc, strings.TrimPrefix(label, protocol.AgentChannelPrefix))
+		case strings.HasPrefix(label, protocol.BrowserChannelPrefix):
+			s.serveBrowser(p, dc, strings.TrimPrefix(label, protocol.BrowserChannelPrefix))
 		case strings.HasPrefix(label, protocol.UploadChannelPrefix):
 			s.serveUpload(dc, strings.TrimPrefix(label, protocol.UploadChannelPrefix))
 		default:

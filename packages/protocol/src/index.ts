@@ -54,6 +54,8 @@ export const TERM_CHANNEL_PREFIX = "term:";
 export const AGENT_CHANNEL_PREFIX = "agent:";
 export const UPLOAD_CHANNEL_PREFIX = "upload:";
 
+export * from "./browser";
+
 export interface DeviceInfo {
   hostname: string;
   home: string;

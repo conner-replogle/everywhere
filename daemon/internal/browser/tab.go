@@ -1,0 +1,742 @@
+package browser
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"math"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
+)
+
+const (
+	// A viewer with more than this queued skips frames until it drains, and
+	// the next frame waits (up to drainWait) for every viewer to get below it.
+	lowWater  = 512 << 10
+	drainWait = 250 * time.Millisecond
+	callWait  = 10 * time.Second
+
+	pageBinding = "__everywhere"
+)
+
+// pageScript runs in every document the tab loads and reports, through
+// pageBinding, what the screencast can't carry: the CSS cursor under the
+// pointer ("c:<cursor>") and the title ("t:<title>"), which Chrome's own
+// target events only update lazily.
+var pageScript = fmt.Sprintf(`(() => {
+  if (window.%[1]sInstalled) return;
+  window.%[1]sInstalled = true;
+  const send = (s) => window.%[1]s?.(s);
+  const plain = /^(button|submit|reset|checkbox|radio|range|color|file|image)$/;
+  let cursor = "";
+  addEventListener("mousemove", (e) => {
+    const t = e.target;
+    let c = "default";
+    try { c = getComputedStyle(t).cursor; } catch {}
+    if (c.includes(",")) c = c.slice(c.lastIndexOf(",") + 1).trim(); // url(...), fallback
+    if (c === "auto") {
+      const editable = t && (t.isContentEditable || t.tagName === "TEXTAREA" || (t.tagName === "INPUT" && !plain.test(t.type)));
+      c = editable ? "text" : "default";
+    }
+    if (c !== cursor) { cursor = c; send("c:" + c); }
+  }, { capture: true, passive: true });
+  let title = null;
+  const report = () => { if (document.title !== title) { title = document.title; send("t:" + title); } };
+  const watch = () => {
+    report();
+    if (document.head) new MutationObserver(report).observe(document.head, { subtree: true, childList: true, characterData: true });
+  };
+  if (document.readyState === "loading") addEventListener("DOMContentLoaded", watch, { once: true });
+  else watch();
+})()`, pageBinding)
+
+// selectionScript returns the selected text, in a focused field or the page.
+const selectionScript = `(() => {
+  const a = document.activeElement;
+  if (a && (a.tagName === "INPUT" || a.tagName === "TEXTAREA") && typeof a.selectionStart === "number")
+    return a.value.slice(a.selectionStart, a.selectionEnd);
+  return String(getSelection() ?? "");
+})()`
+
+// Viewport is a viewer's view size in CSS pixels, its device pixel ratio,
+// and the JPEG quality it wants.
+type Viewport struct {
+	Width, Height int
+	DPR           float64
+	Quality       int
+}
+
+func (v Viewport) clamp() Viewport {
+	v.Width = min(max(v.Width, 200), 3840)
+	v.Height = min(max(v.Height, 200), 2160)
+	if v.DPR <= 0 {
+		v.DPR = 1
+	}
+	v.DPR = math.Round(min(max(v.DPR, 1), 2)*100) / 100 // 2: the browser renders at most at --force-device-scale-factor
+	if v.Quality == 0 {
+		v.Quality = 70
+	}
+	v.Quality = min(max(v.Quality, 20), 95)
+	return v
+}
+
+// ViewportOf reads the viewport fields of an attach or resize message.
+func ViewportOf(m protocol.BrowserClientMsg) Viewport {
+	return Viewport{Width: m.Width, Height: m.Height, DPR: m.DPR, Quality: m.Quality}
+}
+
+type event struct {
+	method string
+	params json.RawMessage
+}
+
+// eventQueue is unbounded so the CDP reader never blocks on a busy tab.
+type eventQueue struct {
+	mu     sync.Mutex
+	items  []event
+	signal chan struct{}
+}
+
+func (q *eventQueue) push(e event) {
+	q.mu.Lock()
+	q.items = append(q.items, e)
+	q.mu.Unlock()
+	select {
+	case q.signal <- struct{}{}:
+	default:
+	}
+}
+
+func (q *eventQueue) pop(ctx context.Context) (event, bool) {
+	for {
+		q.mu.Lock()
+		if len(q.items) > 0 {
+			e := q.items[0]
+			q.items[0] = event{}
+			q.items = q.items[1:]
+			q.mu.Unlock()
+			return e, true
+		}
+		q.mu.Unlock()
+		select {
+		case <-q.signal:
+		case <-ctx.Done():
+			return event{}, false
+		}
+	}
+}
+
+type inputItem struct {
+	c   Client // nil for the tab's own requests
+	msg protocol.BrowserClientMsg
+}
+
+type screencastFrame struct {
+	ackID         int
+	jpeg          []byte
+	width, height int
+}
+
+type sentFrame struct {
+	hdr  protocol.BrowserFrame
+	jpeg []byte
+}
+
+type viewerState struct {
+	seq int64 // last frame sent
+	// lagging viewers didn't drain within drainWait. Frames stop waiting for
+	// them until they catch up, so one slow or dead link doesn't hold back
+	// the others; they get the newest frame whenever they have room.
+	lagging bool
+}
+
+// Tab is one page, shown to any number of viewers.
+type Tab struct {
+	m                   *Manager
+	key                 string
+	br                  *chrome
+	targetID, sessionID string
+
+	ctx    context.Context
+	cancel context.CancelFunc
+	events eventQueue
+	input  chan inputItem
+	frames chan screencastFrame
+
+	mu      sync.Mutex
+	viewers map[Client]*viewerState
+	state   protocol.BrowserState
+	cursor  string
+	last    *sentFrame
+	seq     int64
+
+	// Owned by the input goroutine.
+	vp      Viewport
+	vpSet   bool
+	casting bool
+	// Owned by the event goroutine: popups this tab opened, not yet adopted.
+	popups map[string]bool
+}
+
+func newTab(m *Manager, key string, br *chrome, targetID, sessionID string) *Tab {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Tab{
+		m: m, key: key, br: br, targetID: targetID, sessionID: sessionID,
+		ctx: ctx, cancel: cancel,
+		events:  eventQueue{signal: make(chan struct{}, 1)},
+		input:   make(chan inputItem, 256),
+		frames:  make(chan screencastFrame, 4),
+		viewers: map[Client]*viewerState{},
+		state:   protocol.BrowserState{T: "state", URL: "about:blank"},
+		popups:  map[string]bool{},
+	}
+}
+
+func (t *Tab) call(method string, params, out any) error {
+	ctx, cancel := context.WithTimeout(t.ctx, callWait)
+	defer cancel()
+	return t.br.conn.call(ctx, t.sessionID, method, params, out)
+}
+
+func (t *Tab) setup(ctx context.Context) error {
+	for _, c := range []struct {
+		method string
+		params any
+	}{
+		{"Page.enable", nil},
+		{"Runtime.enable", nil},
+		// Headless pages never have focus otherwise: no caret, no :focus.
+		{"Emulation.setFocusEmulationEnabled", map[string]any{"enabled": true}},
+		{"Emulation.setUserAgentOverride", map[string]any{"userAgent": t.br.userAgent}},
+		{"Runtime.addBinding", map[string]any{"name": pageBinding}},
+		{"Page.addScriptToEvaluateOnNewDocument", map[string]any{"source": pageScript}},
+		{"Runtime.evaluate", map[string]any{"expression": pageScript}},
+	} {
+		if err := t.br.conn.call(ctx, t.sessionID, c.method, c.params, nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (t *Tab) run() {
+	go t.inputLoop()
+	go t.frameLoop()
+	for {
+		e, ok := t.events.pop(t.ctx)
+		if !ok {
+			return
+		}
+		t.handleEvent(e)
+	}
+}
+
+// shut stops the tab and tells its viewers why (unless reason is empty).
+func (t *Tab) shut(reason string) {
+	t.cancel()
+	t.mu.Lock()
+	viewers := t.viewers
+	t.viewers = map[Client]*viewerState{}
+	t.mu.Unlock()
+	for c := range viewers {
+		c.Closed(reason)
+	}
+}
+
+func (t *Tab) url() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.state.URL
+}
+
+func (t *Tab) watched() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.viewers) > 0
+}
+
+func (t *Tab) attach(c Client, vp Viewport) {
+	t.mu.Lock()
+	t.viewers[c] = &viewerState{}
+	state, cursor := t.state, t.cursor
+	t.mu.Unlock()
+	c.Send(state)
+	if cursor != "" {
+		c.Send(protocol.BrowserCursor{T: "cursor", Cursor: cursor})
+	}
+	t.enqueue(c, protocol.BrowserClientMsg{T: "resize", Width: vp.Width, Height: vp.Height, DPR: vp.DPR, Quality: vp.Quality})
+}
+
+func (t *Tab) detach(c Client) {
+	t.mu.Lock()
+	delete(t.viewers, c)
+	empty := len(t.viewers) == 0
+	t.mu.Unlock()
+	if empty {
+		t.enqueue(nil, protocol.BrowserClientMsg{T: "idle"})
+	}
+}
+
+func (t *Tab) enqueue(c Client, msg protocol.BrowserClientMsg) {
+	select {
+	case t.input <- inputItem{c, msg}:
+	case <-t.ctx.Done():
+	default:
+		slog.Warn("browser input queue full, dropping", "t", msg.T)
+	}
+}
+
+func (t *Tab) broadcast(msg any) {
+	t.mu.Lock()
+	viewers := make([]Client, 0, len(t.viewers))
+	for c := range t.viewers {
+		viewers = append(viewers, c)
+	}
+	t.mu.Unlock()
+	for _, c := range viewers {
+		c.Send(msg)
+	}
+}
+
+func (t *Tab) updateState(fn func(s *protocol.BrowserState)) {
+	t.mu.Lock()
+	next := t.state
+	fn(&next)
+	changed := next != t.state
+	t.state = next
+	t.mu.Unlock()
+	if changed {
+		t.broadcast(next)
+	}
+}
+
+// --- input ------------------------------------------------------------------
+
+func (t *Tab) inputLoop() {
+	var next *inputItem
+	for {
+		var it inputItem
+		if next != nil {
+			it, next = *next, nil
+		} else {
+			select {
+			case it = <-t.input:
+			case <-t.ctx.Done():
+				return
+			}
+		}
+		// Only the latest of a run of pointer moves matters.
+		if isMove(it.msg) {
+		drain:
+			for {
+				select {
+				case n := <-t.input:
+					if isMove(n.msg) {
+						it = n
+						continue
+					}
+					next = &n
+					break drain
+				default:
+					break drain
+				}
+			}
+		}
+		if err := t.handleInput(it); err != nil && t.ctx.Err() == nil {
+			slog.Debug("browser input", "t", it.msg.T, "err", err)
+		}
+	}
+}
+
+func isMove(m protocol.BrowserClientMsg) bool { return m.T == "mouse" && m.Kind == "move" }
+
+var mouseTypes = map[string]string{"move": "mouseMoved", "down": "mousePressed", "up": "mouseReleased", "wheel": "mouseWheel"}
+
+var buttonNames = []string{"left", "middle", "right", "back", "forward"}
+
+func (t *Tab) handleInput(it inputItem) error {
+	m := it.msg
+	switch m.T {
+	case "resize":
+		return t.setViewport(ViewportOf(m).clamp())
+	case "idle":
+		if t.casting && !t.watched() {
+			t.casting = false
+			return t.call("Page.stopScreencast", nil, nil)
+		}
+	case "navigate":
+		u, err := checkURL(m.URL)
+		if err != nil {
+			if it.c != nil {
+				it.c.Send(protocol.BrowserNotice{T: "notice", Message: err.Error()})
+			}
+			return nil
+		}
+		return t.call("Page.navigate", map[string]any{"url": u}, nil)
+	case "back", "forward":
+		var h struct {
+			CurrentIndex int `json:"currentIndex"`
+			Entries      []struct {
+				ID int `json:"id"`
+			} `json:"entries"`
+		}
+		if err := t.call("Page.getNavigationHistory", nil, &h); err != nil {
+			return err
+		}
+		i := h.CurrentIndex - 1
+		if m.T == "forward" {
+			i = h.CurrentIndex + 1
+		}
+		if i < 0 || i >= len(h.Entries) {
+			return nil
+		}
+		return t.call("Page.navigateToHistoryEntry", map[string]any{"entryId": h.Entries[i].ID}, nil)
+	case "reload":
+		return t.call("Page.reload", nil, nil)
+	case "stop":
+		return t.call("Page.stopLoading", nil, nil)
+	case "mouse":
+		typ, ok := mouseTypes[m.Kind]
+		if !ok {
+			return nil
+		}
+		button := "none"
+		switch {
+		case typ == "mousePressed" || typ == "mouseReleased":
+			if m.Button >= 0 && m.Button < len(buttonNames) {
+				button = buttonNames[m.Button]
+			}
+		case typ == "mouseMoved" && m.Buttons&1 != 0:
+			button = "left"
+		case typ == "mouseMoved" && m.Buttons&4 != 0:
+			button = "middle"
+		case typ == "mouseMoved" && m.Buttons&2 != 0:
+			button = "right"
+		}
+		p := map[string]any{
+			"type": typ, "x": m.X, "y": m.Y, "modifiers": m.Modifiers,
+			"button": button, "buttons": m.Buttons, "pointerType": "mouse",
+		}
+		if typ == "mousePressed" || typ == "mouseReleased" {
+			p["clickCount"] = max(m.ClickCount, 1)
+		}
+		if typ == "mouseWheel" {
+			p["deltaX"], p["deltaY"] = m.DeltaX, m.DeltaY
+		}
+		return t.call("Input.dispatchMouseEvent", p, nil)
+	case "key":
+		typ := "keyUp"
+		if m.Kind == "down" {
+			typ = "rawKeyDown"
+			if m.Text != "" {
+				typ = "keyDown" // also produces keypress and input
+			}
+		}
+		p := map[string]any{
+			"type": typ, "modifiers": m.Modifiers, "key": m.Key, "code": m.Code,
+			"windowsVirtualKeyCode": m.KeyCode, "nativeVirtualKeyCode": m.KeyCode,
+			"location": m.Location, "autoRepeat": m.Repeat, "isKeypad": m.Location == 3,
+		}
+		if typ == "keyDown" {
+			p["text"], p["unmodifiedText"] = m.Text, m.Text
+		}
+		return t.call("Input.dispatchKeyEvent", p, nil)
+	case "text":
+		if m.Text == "" {
+			return nil
+		}
+		return t.call("Input.insertText", map[string]any{"text": m.Text}, nil)
+	case "copy":
+		var r struct {
+			Result struct {
+				Value string `json:"value"`
+			} `json:"result"`
+		}
+		if err := t.call("Runtime.evaluate", map[string]any{"expression": selectionScript, "returnByValue": true}, &r); err != nil {
+			return err
+		}
+		if it.c != nil && r.Result.Value != "" {
+			it.c.Send(protocol.BrowserClipboard{T: "clipboard", Text: r.Result.Value})
+		}
+	}
+	return nil
+}
+
+// checkURL allows web pages and about:blank.
+func checkURL(raw string) (string, error) {
+	if raw == "about:blank" {
+		return raw, nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return "", fmt.Errorf("can't open %q: only http and https pages", raw)
+	}
+	return u.String(), nil
+}
+
+func (t *Tab) setViewport(vp Viewport) error {
+	if t.vpSet && vp == t.vp && t.casting {
+		return nil
+	}
+	if !t.vpSet || vp.Width != t.vp.Width || vp.Height != t.vp.Height || vp.DPR != t.vp.DPR {
+		if err := t.call("Emulation.setDeviceMetricsOverride", map[string]any{
+			"width": vp.Width, "height": vp.Height, "deviceScaleFactor": vp.DPR, "mobile": false,
+		}, nil); err != nil {
+			return err
+		}
+	}
+	t.vp, t.vpSet = vp, true
+	if t.casting {
+		_ = t.call("Page.stopScreencast", nil, nil)
+	}
+	t.casting = true
+	return t.call("Page.startScreencast", map[string]any{
+		"format":        "jpeg",
+		"quality":       vp.Quality,
+		"maxWidth":      int(math.Ceil(float64(vp.Width) * vp.DPR)),
+		"maxHeight":     int(math.Ceil(float64(vp.Height) * vp.DPR)),
+		"everyNthFrame": 1,
+	}, nil)
+}
+
+// --- frames -----------------------------------------------------------------
+
+// frameLoop fans frames out to viewers. Chrome sends the next frame only
+// after an ack, and the ack waits briefly for viewers to drain, so frames
+// don't pile up in a queue; a viewer that can't keep up skips to the newest
+// frame instead of holding back the rest.
+func (t *Tab) frameLoop() {
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case f := <-t.frames:
+			t.mu.Lock()
+			t.seq++
+			t.last = &sentFrame{
+				hdr:  protocol.BrowserFrame{T: "frame", Seq: t.seq, Size: len(f.jpeg), Width: f.width, Height: f.height},
+				jpeg: f.jpeg,
+			}
+			t.mu.Unlock()
+			t.flush()
+			t.waitDrain()
+			_ = t.call("Page.screencastFrameAck", map[string]any{"sessionId": f.ackID}, nil)
+		case <-tick.C:
+			// Catch up viewers that skipped the last frame or just attached.
+			t.flush()
+		case <-t.ctx.Done():
+			return
+		}
+	}
+}
+
+// flush sends the latest frame to every viewer that lacks it and has room.
+func (t *Tab) flush() {
+	t.mu.Lock()
+	last := t.last
+	if last == nil {
+		t.mu.Unlock()
+		return
+	}
+	var to []Client
+	for c, st := range t.viewers {
+		if st.seq < last.hdr.Seq && c.Buffered() < lowWater {
+			st.seq = last.hdr.Seq
+			st.lagging = false
+			to = append(to, c)
+		}
+	}
+	t.mu.Unlock()
+	for _, c := range to {
+		c.Frame(last.hdr, last.jpeg)
+	}
+}
+
+func (t *Tab) waitDrain() {
+	deadline := time.Now().Add(drainWait)
+	for {
+		t.mu.Lock()
+		var busy []*viewerState
+		for c, st := range t.viewers {
+			if !st.lagging && c.Buffered() >= lowWater {
+				busy = append(busy, st)
+			}
+		}
+		if len(busy) > 0 && !time.Now().Before(deadline) {
+			for _, st := range busy {
+				st.lagging = true
+			}
+			busy = nil
+		}
+		t.mu.Unlock()
+		if len(busy) == 0 {
+			return
+		}
+		select {
+		case <-time.After(5 * time.Millisecond):
+		case <-t.ctx.Done():
+			return
+		}
+	}
+}
+
+// --- events -----------------------------------------------------------------
+
+func (t *Tab) handleEvent(e event) {
+	switch e.method {
+	case "Page.screencastFrame":
+		var p struct {
+			Data      []byte `json:"data"`
+			SessionID int    `json:"sessionId"`
+			Metadata  struct {
+				DeviceWidth  float64 `json:"deviceWidth"`
+				DeviceHeight float64 `json:"deviceHeight"`
+			} `json:"metadata"`
+		}
+		if json.Unmarshal(e.params, &p) != nil {
+			return
+		}
+		f := screencastFrame{ackID: p.SessionID, jpeg: p.Data, width: int(math.Round(p.Metadata.DeviceWidth)), height: int(math.Round(p.Metadata.DeviceHeight))}
+		select {
+		case t.frames <- f:
+		case <-t.ctx.Done():
+		}
+	case "Page.frameStartedLoading", "Page.frameStoppedLoading":
+		var p struct {
+			FrameID string `json:"frameId"`
+		}
+		if json.Unmarshal(e.params, &p) == nil && p.FrameID == t.targetID {
+			loading := e.method == "Page.frameStartedLoading"
+			t.updateState(func(s *protocol.BrowserState) { s.Loading = loading })
+		}
+	case "Page.frameNavigated":
+		var p struct {
+			Frame struct {
+				ParentID string `json:"parentId"`
+				URL      string `json:"url"`
+				Fragment string `json:"urlFragment"`
+			} `json:"frame"`
+		}
+		if json.Unmarshal(e.params, &p) == nil && p.Frame.ParentID == "" {
+			t.updateState(func(s *protocol.BrowserState) { s.URL = p.Frame.URL + p.Frame.Fragment })
+			t.refreshHistory()
+		}
+	case "Page.navigatedWithinDocument":
+		var p struct {
+			FrameID string `json:"frameId"`
+			URL     string `json:"url"`
+		}
+		if json.Unmarshal(e.params, &p) == nil && p.FrameID == t.targetID {
+			t.updateState(func(s *protocol.BrowserState) { s.URL = p.URL })
+			t.refreshHistory()
+		}
+	case "Target.targetInfoChanged":
+		var p struct {
+			TargetInfo targetInfo `json:"targetInfo"`
+		}
+		if json.Unmarshal(e.params, &p) != nil {
+			return
+		}
+		info := p.TargetInfo
+		if info.TargetID == t.targetID {
+			// The page script reports titles; this only fills in pages it
+			// can't run in, like Chrome's error pages.
+			if info.Title != "" && info.Title != info.URL {
+				t.updateState(func(s *protocol.BrowserState) { s.Title = info.Title })
+			}
+		} else if t.popups[info.TargetID] {
+			t.adoptPopup(info)
+		}
+	case "Target.targetCreated":
+		var p struct {
+			TargetInfo targetInfo `json:"targetInfo"`
+		}
+		if json.Unmarshal(e.params, &p) == nil && p.TargetInfo.Type == "page" && p.TargetInfo.OpenerID == t.targetID {
+			t.popups[p.TargetInfo.TargetID] = true
+			t.m.watchTarget(p.TargetInfo.TargetID, t)
+			t.adoptPopup(p.TargetInfo)
+		}
+	case "Target.targetDestroyed", "Target.targetCrashed":
+		var p struct {
+			TargetID string `json:"targetId"`
+		}
+		if json.Unmarshal(e.params, &p) != nil {
+			return
+		}
+		if p.TargetID == t.targetID {
+			go t.m.tabGone(t)
+		} else if t.popups[p.TargetID] {
+			delete(t.popups, p.TargetID)
+			t.m.unwatchTarget(p.TargetID)
+		}
+	case "Inspector.targetCrashed":
+		t.broadcast(protocol.BrowserNotice{T: "notice", Message: "The page crashed; reloading"})
+		_ = t.call("Page.reload", nil, nil)
+	case "Page.javascriptDialogOpening":
+		var p struct {
+			Type          string `json:"type"`
+			Message       string `json:"message"`
+			DefaultPrompt string `json:"defaultPrompt"`
+		}
+		if json.Unmarshal(e.params, &p) != nil {
+			return
+		}
+		// A dialog blocks the page until answered, and there's no UI for one.
+		_ = t.call("Page.handleJavaScriptDialog", map[string]any{"accept": true, "promptText": p.DefaultPrompt}, nil)
+		if p.Type != "beforeunload" {
+			t.broadcast(protocol.BrowserNotice{T: "notice", Message: fmt.Sprintf("The page showed a %s, answered OK: %s", p.Type, p.Message)})
+		}
+	case "Runtime.bindingCalled":
+		var p struct {
+			Name    string `json:"name"`
+			Payload string `json:"payload"`
+		}
+		if json.Unmarshal(e.params, &p) != nil || p.Name != pageBinding {
+			return
+		}
+		kind, value, _ := strings.Cut(p.Payload, ":")
+		switch kind {
+		case "c":
+			t.mu.Lock()
+			changed := t.cursor != value
+			t.cursor = value
+			t.mu.Unlock()
+			if changed {
+				t.broadcast(protocol.BrowserCursor{T: "cursor", Cursor: value})
+			}
+		case "t":
+			t.updateState(func(s *protocol.BrowserState) { s.Title = value })
+		}
+	}
+}
+
+// adoptPopup loads a page that asked for a new window (target=_blank,
+// window.open) in this tab instead, once its URL is known.
+func (t *Tab) adoptPopup(info targetInfo) {
+	if info.URL == "" || info.URL == "about:blank" {
+		return
+	}
+	delete(t.popups, info.TargetID)
+	t.m.unwatchTarget(info.TargetID)
+	_ = t.br.conn.call(t.ctx, "", "Target.closeTarget", map[string]any{"targetId": info.TargetID}, nil)
+	t.enqueue(nil, protocol.BrowserClientMsg{T: "navigate", URL: info.URL})
+}
+
+func (t *Tab) refreshHistory() {
+	var h struct {
+		CurrentIndex int   `json:"currentIndex"`
+		Entries      []any `json:"entries"`
+	}
+	if t.call("Page.getNavigationHistory", nil, &h) != nil {
+		return
+	}
+	t.updateState(func(s *protocol.BrowserState) {
+		s.CanGoBack = h.CurrentIndex > 0
+		s.CanGoForward = h.CurrentIndex < len(h.Entries)-1
+	})
+}
