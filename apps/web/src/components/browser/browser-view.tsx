@@ -115,14 +115,15 @@ export interface AnnotationDraft {
  */
 export function BrowserView({
   peer,
-  projectId,
+  threadId,
   generation,
   remoteOs,
   onClose,
   onAnnotate,
 }: {
   peer: DevicePeer;
-  projectId: string;
+  /** The thread whose browser page this shows. */
+  threadId: string;
   /** Peer connection generation; a new one means reopen the channel. */
   generation: number;
   remoteOs?: string;
@@ -266,7 +267,7 @@ export function BrowserView({
     setError(null);
     let chan: BrowserChannel;
     try {
-      chan = peer.openBrowser(projectId, {
+      chan = peer.openBrowser(threadId, {
         onOpen: () => {
           chan.send({ t: "attach", ...(viewport() ?? { width: 800, height: 600, dpr: 1, quality: 65 }) });
         },
@@ -322,7 +323,7 @@ export function BrowserView({
       for (const done of picks.current.values()) done(null);
       picks.current.clear();
     };
-  }, [peer, projectId, generation, attachKey, viewport, draw, showNotice]);
+  }, [peer, threadId, generation, attachKey, viewport, draw, showNotice]);
 
   // The tab follows this view's size while it fills the panel.
   useEffect(() => {

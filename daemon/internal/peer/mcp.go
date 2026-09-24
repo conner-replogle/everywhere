@@ -19,8 +19,12 @@ const mcpName = "everywhere"
 // a token of its own, and lets it use the browser tools without asking.
 // The config goes in a private file: on the command line, other users on
 // the machine could read the token from the process list.
-func (s *Server) claudeArgs(threadID, projectID string) ([]string, func(), error) {
-	endpoint, token, revoke, err := s.mcp.Grant(mcp.Caller{ThreadID: threadID, ProjectID: projectID})
+func (s *Server) claudeArgs(threadID, _ string) ([]string, func(), error) {
+	key, err := s.browserKey(threadID)
+	if err != nil {
+		return nil, nil, err
+	}
+	endpoint, token, revoke, err := s.mcp.Grant(mcp.Caller{ThreadID: threadID, Browser: key})
 	if err != nil {
 		return nil, nil, err
 	}

@@ -1,7 +1,7 @@
 package protocol
 
 // ---------------------------------------------------------------------------
-// Browser channel browser:<projectId>: a Chromium tab on the device, shown as
+// Browser channel browser:<threadId>: a thread's Chromium tab on the device, shown as
 // a JPEG screencast. JSON text frames both ways; each daemon "frame" header
 // is followed by the JPEG as binary chunks totalling Size bytes.
 // ---------------------------------------------------------------------------

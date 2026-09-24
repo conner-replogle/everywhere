@@ -23,7 +23,7 @@ func testServer(t *testing.T) (*Server, *httptest.Server) {
 				if err := json.Unmarshal(args, &a); err != nil {
 					return nil, err
 				}
-				return Text(c.ThreadID+"/"+c.ProjectID+":"+a.Say).Image([]byte{1, 2, 3}, "image/png"), nil
+				return Text(c.ThreadID+"/"+c.Browser+":"+a.Say).Image([]byte{1, 2, 3}, "image/png"), nil
 			},
 		},
 		{
@@ -77,7 +77,7 @@ func rpc(t *testing.T, url, token, body string) map[string]any {
 
 func TestHandshakeAndTools(t *testing.T) {
 	s, hs := testServer(t)
-	token := s.AddToken(Caller{ThreadID: "t1", ProjectID: "p1"})
+	token := s.AddToken(Caller{ThreadID: "t1", Browser: "p1"})
 
 	init := rpc(t, hs.URL, token, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"x","version":"1"}}}`)
 	res := init["result"].(map[string]any)

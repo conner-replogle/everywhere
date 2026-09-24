@@ -692,10 +692,10 @@ export class DevicePeer {
     return new AgentChannel(ch, handlers);
   }
 
-  /** Opens a `browser:<projectId>` channel to the project's browser tab. Throws if not connected. */
-  openBrowser(projectId: string, handlers: BrowserHandlers): BrowserChannel {
+  /** Opens a `browser:<threadId>` channel to the thread's browser page. Throws if not connected. */
+  openBrowser(threadId: string, handlers: BrowserHandlers): BrowserChannel {
     if (!this.pc || this.snap.state !== "connected") throw new Error("Not connected to device");
-    const ch = this.pc.createDataChannel(`${BROWSER_CHANNEL_PREFIX}${projectId}`, { ordered: true });
+    const ch = this.pc.createDataChannel(`${BROWSER_CHANNEL_PREFIX}${threadId}`, { ordered: true });
     return new BrowserChannel(ch, handlers);
   }
 }

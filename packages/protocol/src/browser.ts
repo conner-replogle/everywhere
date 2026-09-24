@@ -1,7 +1,7 @@
 // Mirrors daemon/internal/protocol/browser.go.
 
 /**
- * Browser channel `browser:<projectId>`: a Chromium tab on the device, shown
+ * Browser channel `browser:<threadId>`: a Chromium tab on the device, shown
  * as a JPEG screencast. JSON text frames both ways; each daemon `frame` header
  * is followed by the JPEG as binary chunks totalling `size` bytes. The client
  * sends `attach` first. While the tab's viewport mode is `fill`, the last

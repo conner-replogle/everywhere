@@ -118,7 +118,7 @@ func TestAutomationTools(t *testing.T) {
 	srv := mcp.NewServer("everywhere", "test", Tools(m))
 	hs := httptest.NewServer(srv)
 	defer hs.Close()
-	c := &mcpClient{t: t, url: hs.URL, token: srv.AddToken(mcp.Caller{ThreadID: "th", ProjectID: "p"})}
+	c := &mcpClient{t: t, url: hs.URL, token: srv.AddToken(mcp.Caller{ThreadID: "th", Browser: "p"})}
 
 	// A viewer sees what the agent does.
 	v := newFakeViewer()

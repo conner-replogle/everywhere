@@ -109,7 +109,7 @@ function ThreadPage() {
   };
 
   const openTab = async (kind: TabKind, focus = true) => {
-    // One browser per project: a second tab would show the same page.
+    // One browser per thread: a second tab would show the same page.
     const existing = kind === "browser" && tabs.data?.find((t) => t.kind === "browser");
     if (existing) {
       if (focus) setActive(existing.id);
@@ -202,7 +202,7 @@ function ThreadPage() {
           <Suspense>
             <BrowserView
               peer={peer}
-              projectId={thread.projectId}
+              threadId={legacyBrowser ? thread.projectId : threadId}
               generation={conn.generation}
               remoteOs={info.data?.os}
               onAnnotate={

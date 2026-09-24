@@ -150,6 +150,7 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 			for _, t := range append(tabs, t) {
 				s.stopThread(t)
 			}
+			s.browsers.Close(t.ID, "The thread was archived", false)
 		}
 		s.fillStatus(&t)
 		s.broadcast(protocol.EventThreadsChanged)
@@ -313,13 +314,32 @@ func (s *Server) agentThreads(threads []protocol.Thread) map[string]store.AgentT
 }
 
 // killThread stops a deleted thread's shell or claude and cleans up after
-// it; a is its agent record (claude threads only).
+// it; a is its agent record (claude threads only). A thread's browser page
+// goes with the thread or its browser tab.
 func (s *Server) killThread(t protocol.Thread, a store.AgentThread, keepWorktree bool) {
-	if t.Kind == protocol.ThreadClaude {
+	switch {
+	case t.Kind == protocol.ThreadClaude:
 		s.agents.Remove(t.ID, a, keepWorktree)
-	} else {
+	case t.Kind == protocol.ThreadBrowser:
+		s.browsers.Close(t.ParentID, "The browser tab was closed", true)
+	default:
 		s.stopThread(t)
 	}
+	if t.ParentID == "" {
+		s.browsers.Close(t.ID, "The thread was deleted", true)
+	}
+}
+
+// browserKey is whose browser page a thread or tab uses: its thread's.
+func (s *Server) browserKey(id string) (string, error) {
+	t, err := s.store.GetThread(id)
+	if err != nil {
+		return "", err
+	}
+	if t.ParentID != "" {
+		return t.ParentID, nil
+	}
+	return t.ID, nil
 }
 
 func gitInfo(dir string) protocol.GitInfo {

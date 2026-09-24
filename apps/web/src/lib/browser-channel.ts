@@ -1,4 +1,4 @@
-// The browser:<projectId> channel: reassembles screencast frames (a JSON
+// The browser:<threadId> channel: reassembles screencast frames (a JSON
 // header, then the JPEG in binary chunks) and carries input the other way.
 
 import type { BrowserClientMsg, BrowserDaemonMsg } from "@everywhere/protocol";

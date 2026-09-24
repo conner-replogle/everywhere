@@ -1,8 +1,8 @@
 // Package mcp is a small Model Context Protocol server over the Streamable
 // HTTP transport, answering with plain JSON (never SSE). The daemon uses it
 // to give the claude processes it starts tools of its own, like driving the
-// project's browser tab. Each process gets a bearer token that identifies
-// its thread, so tools act on the caller's project.
+// thread's browser tab. Each process gets a bearer token that identifies
+// its thread, so tools act on the caller's thread.
 //
 // Spec: https://modelcontextprotocol.io/specification/2025-06-18
 package mcp
@@ -35,8 +35,10 @@ const maxBody = 4 << 20
 
 // Caller identifies who a token was granted to.
 type Caller struct {
-	ThreadID  string
-	ProjectID string
+	ThreadID string
+	// Browser is the key of the browser tab its tools drive: the thread,
+	// or for a tab, the thread it belongs to.
+	Browser string
 }
 
 // Tool is one callable tool.

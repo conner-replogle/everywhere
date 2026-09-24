@@ -13,7 +13,7 @@ something you run in a terminal. Harness-specific support comes later.
   **terminal** (a shell, spawned lazily when a client opens the thread) or a
   **claude** thread (a Claude Code conversation; see Claude threads).
 - **Tab**: a view opened inside a thread next to the thread itself: a
-  terminal, a claude conversation, the project's browser, or a files view.
+  terminal, a claude conversation, the thread's browser, or a files view.
   See Tabs.
 - **Client**: a browser tab on the website (later: desktop/mobile apps, which
   are viewers only).
@@ -206,10 +206,13 @@ closing the tab never removes it). `threads.list` leaves tabs out.
 - **`file:<id>` channel**, one per read: `{t:"read", path}` →
   `{t:"start", size, modTime}`, binary chunks, `{t:"end"}` or `{t:"error"}`.
   Files over 25 MB are refused.
-- A browser tab shows the project's one browser page, the same one claude's
-  browser tools drive, so a thread has at most one. It opens by itself when
-  claude starts using the browser, unless the user closed it in the last two
-  minutes.
+- **Browser**: each thread has its own page in the daemon's Chromium, on
+  `browser:<threadId>` (a tab's id means its thread's page). A browser tab
+  shows it, so a thread has at most one; claude's browser tools, from the
+  thread or any of its claude tabs, drive the same page. It opens by itself
+  when claude starts using the browser, unless the user closed it in the last
+  two minutes. Closing the browser tab or deleting the thread closes the page;
+  archiving closes it but remembers its URL.
 
 ### Install (`curl -fsSL https://ai.replogle.dev/i/<token> | sh`)
 

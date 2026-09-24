@@ -13,10 +13,10 @@ import (
 
 // browserClient adapts a browser:<projectId> data channel to browser.Client.
 type browserClient struct {
-	s         *Server
-	dc        *webrtc.DataChannel
-	once      sync.Once
-	projectID string
+	s    *Server
+	dc   *webrtc.DataChannel
+	once sync.Once
+	key  string
 
 	mu       sync.Mutex
 	attached bool
@@ -73,18 +73,25 @@ func (c *browserClient) detach() {
 	c.attached = false
 	c.mu.Unlock()
 	if was {
-		c.s.browsers.Detach(c.projectID, c)
+		c.s.browsers.Detach(c.key, c)
 	}
 }
 
 func (c *browserClient) close() { c.once.Do(func() { _ = c.dc.Close() }) }
 
-func (s *Server) serveBrowser(p *peer, dc *webrtc.DataChannel, projectID string) {
-	if _, err := s.store.GetProject(projectID); err != nil {
-		_ = dc.Close()
-		return
+// serveBrowser serves a browser:<threadId> channel. A tab's id means its
+// thread's browser.
+func (s *Server) serveBrowser(p *peer, dc *webrtc.DataChannel, id string) {
+	key, err := s.browserKey(id)
+	if err != nil {
+		// Web apps from before tabs ask for browser:<projectId>.
+		if _, err := s.store.GetProject(id); err != nil {
+			_ = dc.Close()
+			return
+		}
+		key = id
 	}
-	c := &browserClient{s: s, dc: dc, projectID: projectID}
+	c := &browserClient{s: s, dc: dc, key: key}
 	p.mu.Lock()
 	if p.browsers == nil { // peer already closed
 		p.mu.Unlock()
@@ -104,7 +111,7 @@ func (s *Server) serveBrowser(p *peer, dc *webrtc.DataChannel, projectID string)
 			// Starting the browser takes a moment; don't hold up the channel.
 			attaching.Do(func() {
 				go func() {
-					if err := s.browsers.Attach(context.Background(), projectID, c, browser.ViewportOf(m)); err != nil {
+					if err := s.browsers.Attach(context.Background(), key, c, browser.ViewportOf(m)); err != nil {
 						c.Send(protocol.BrowserError{T: "error", Message: err.Error()})
 						return
 					}
@@ -114,13 +121,13 @@ func (s *Server) serveBrowser(p *peer, dc *webrtc.DataChannel, projectID string)
 					if !gone {
 						// Under the lock, so later messages can't overtake these.
 						for _, m := range c.early {
-							s.browsers.Handle(projectID, c, m)
+							s.browsers.Handle(key, c, m)
 						}
 					}
 					c.early = nil
 					c.mu.Unlock()
 					if gone { // closed while the browser was starting
-						s.browsers.Detach(projectID, c)
+						s.browsers.Detach(key, c)
 					}
 				}()
 			})
@@ -130,7 +137,7 @@ func (s *Server) serveBrowser(p *peer, dc *webrtc.DataChannel, projectID string)
 		defer c.mu.Unlock()
 		switch {
 		case c.attached:
-			s.browsers.Handle(projectID, c, m)
+			s.browsers.Handle(key, c, m)
 		case len(c.early) < maxEarly:
 			c.early = append(c.early, m)
 		}

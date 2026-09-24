@@ -9,26 +9,59 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/browser"
 	"github.com/conner-replogle/everywhere/daemon/internal/mcp"
+	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
+	"github.com/conner-replogle/everywhere/daemon/internal/store"
 )
 
-func mcpTestServer(t *testing.T) *Server {
+// mcpTestServer returns a server with a claude thread to grant tools to.
+func mcpTestServer(t *testing.T) (*Server, string) {
 	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	p, err := st.CreateProject(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	th, err := st.CreateThread(p.ID, "", protocol.ThreadClaude)
+	if err != nil {
+		t.Fatal(err)
+	}
 	bm := browser.NewManager(t.TempDir())
 	t.Cleanup(bm.Shutdown)
-	s := &Server{browsers: bm, mcp: mcp.NewServer("everywhere", "test", browser.Tools(bm)), mcpDir: t.TempDir()}
+	s := &Server{store: st, browsers: bm, mcp: mcp.NewServer("everywhere", "test", browser.Tools(bm)), mcpDir: t.TempDir()}
 	t.Cleanup(s.mcp.Close)
-	return s
+	return s, th.ID
+}
+
+func TestBrowserKey(t *testing.T) {
+	s, th := mcpTestServer(t)
+	tab, err := s.store.CreateTab(th, protocol.ThreadClaude, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{th, tab.ID} {
+		if key, err := s.browserKey(id); err != nil || key != th {
+			t.Errorf("browserKey(%s) = %q %v, want the thread's", id, key, err)
+		}
+	}
+	if _, err := s.browserKey("missing"); err == nil {
+		t.Error("unknown thread has a browser")
+	}
 }
 
 func TestClaudeArgs(t *testing.T) {
-	s := mcpTestServer(t)
-	args, release, err := s.claudeArgs("th1", "p1")
+	s, th := mcpTestServer(t)
+	args, release, err := s.claudeArgs(th, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,8 +127,8 @@ func TestLiveMCP(t *testing.T) {
 	}))
 	defer site.Close()
 
-	s := mcpTestServer(t)
-	args, release, err := s.claudeArgs("th1", "p1")
+	s, th := mcpTestServer(t)
+	args, release, err := s.claudeArgs(th, "")
 	if err != nil {
 		t.Fatal(err)
 	}

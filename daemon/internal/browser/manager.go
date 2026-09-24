@@ -31,7 +31,7 @@ type Client interface {
 	Closed(reason string)
 }
 
-// Manager owns the browser process and one tab per key (a project id).
+// Manager owns the browser process and one tab per key (a thread id).
 type Manager struct {
 	dir string
 
@@ -148,6 +148,30 @@ func (m *Manager) Handle(key string, c Client, msg protocol.BrowserClientMsg) {
 	if t != nil {
 		t.enqueue(c, msg)
 	}
+}
+
+// Close closes key's tab, if it's open. With forget, a later tab for key
+// starts blank instead of reopening the page.
+func (m *Manager) Close(key, reason string, forget bool) {
+	m.mu.Lock()
+	t := m.tabs[key]
+	delete(m.tabs, key)
+	if forget {
+		delete(m.lastURL, key)
+	} else if t != nil {
+		if u := t.url(); u != "" {
+			m.lastURL[key] = u
+		}
+	}
+	m.mu.Unlock()
+	if t == nil {
+		return
+	}
+	m.unroute(t)
+	t.shut(reason)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = t.br.conn.call(ctx, "", "Target.closeTarget", map[string]any{"targetId": t.targetID}, nil)
 }
 
 // Shutdown closes the browser.

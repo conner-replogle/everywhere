@@ -29,7 +29,7 @@ func ToolNames() []string {
 	return names
 }
 
-// Tools returns the MCP tools that drive the caller's project tab.
+// Tools returns the MCP tools that drive the caller's thread's tab.
 func Tools(m *Manager) []mcp.Tool {
 	tools := make([]mcp.Tool, 0, len(toolDefs))
 	for _, d := range toolDefs {
@@ -39,10 +39,10 @@ func Tools(m *Manager) []mcp.Tool {
 			InputSchema: json.RawMessage(d.schema),
 			Annotations: d.annotations,
 			Call: func(ctx context.Context, c mcp.Caller, args json.RawMessage) (*mcp.Result, error) {
-				if c.ProjectID == "" {
-					return nil, errors.New("this session has no project to browse for")
+				if c.Browser == "" {
+					return nil, errors.New("this session has no thread to browse for")
 				}
-				t, err := m.Use(ctx, c.ProjectID)
+				t, err := m.Use(ctx, c.Browser)
 				if err != nil {
 					return nil, fmt.Errorf("starting the browser: %w", err)
 				}
@@ -76,7 +76,7 @@ const targetProps = `
 var toolDefs = []toolDef{
 	{
 		name: "browser_status", title: "Browser status", annotations: readOnly,
-		description: "Report the state of this project's browser tab (a headless Chrome on the user's machine, which the user may also be watching in the everywhere app): URL, title, whether it is loading, the viewport setting, the emulated color scheme, and whether anyone is watching.",
+		description: "Report the state of this thread's browser tab (a headless Chrome on the user's machine, which the user may also be watching in the everywhere app): URL, title, whether it is loading, the viewport setting, the emulated color scheme, and whether anyone is watching.",
 		schema:      `{"type": "object", "properties": {}}`,
 		run: func(_ context.Context, t *Tab, _ json.RawMessage) (*mcp.Result, error) {
 			return mcp.JSON(statusOf(t))
@@ -84,7 +84,7 @@ var toolDefs = []toolDef{
 	},
 	{
 		name: "browser_navigate", title: "Navigate browser", annotations: safe,
-		description: "Open a page in this project's browser tab. Give {url} for any http(s) page (a URL without a scheme gets http for localhost and https otherwise), or {port, path} for a dev server on this machine (http://localhost:PORT/path). The browser runs on the same machine as the project, so localhost works. Returns the page's status once it reaches readiness.",
+		description: "Open a page in this thread's browser tab. Give {url} for any http(s) page (a URL without a scheme gets http for localhost and https otherwise), or {port, path} for a dev server on this machine (http://localhost:PORT/path). The browser runs on the same machine as the project, so localhost works. Returns the page's status once it reaches readiness.",
 		schema: `{"type": "object", "properties": {
     "url": {"type": "string", "description": "Page URL, e.g. http://localhost:5173/settings or example.com."},
     "port": {"type": "integer", "minimum": 1, "maximum": 65535, "description": "Dev-server port on this machine, instead of url."},
@@ -131,7 +131,7 @@ var toolDefs = []toolDef{
 	},
 	{
 		name: "browser_resize", title: "Resize browser viewport", annotations: withIdempotent(safe),
-		description: "Size this project's browser viewport. {mode:'fill'} follows the size of whoever is watching (1280x800 when nobody is); {mode:'freeform', width, height} sets an exact size in CSS pixels; {mode:'preset', preset, orientation?} emulates a device, including its touch input and, for phones and tablets, a mobile user agent (applied on the next page load). Presets: " + presetList() + ".",
+		description: "Size this thread's browser viewport. {mode:'fill'} follows the size of whoever is watching (1280x800 when nobody is); {mode:'freeform', width, height} sets an exact size in CSS pixels; {mode:'preset', preset, orientation?} emulates a device, including its touch input and, for phones and tablets, a mobile user agent (applied on the next page load). Presets: " + presetList() + ".",
 		schema: `{"type": "object", "required": ["mode"], "properties": {
     "mode": {"type": "string", "enum": ["fill", "preset", "freeform"]},
     "preset": {"type": "string", "description": "Device preset id, for mode preset."},
@@ -156,7 +156,7 @@ var toolDefs = []toolDef{
 	},
 	{
 		name: "browser_set_appearance", title: "Set browser appearance", annotations: withIdempotent(safe),
-		description: "Emulate prefers-color-scheme in this project's browser tab: light or dark, or system to stop emulating and follow the machine's setting.",
+		description: "Emulate prefers-color-scheme in this thread's browser tab: light or dark, or system to stop emulating and follow the machine's setting.",
 		schema: `{"type": "object", "required": ["colorScheme"], "properties": {
     "colorScheme": {"type": "string", "enum": ["light", "dark", "system"]}
   }}`,
@@ -181,7 +181,7 @@ var toolDefs = []toolDef{
 	},
 	{
 		name: "browser_snapshot", title: "Inspect browser page", annotations: readOnly,
-		description: "Inspect this project's browser tab before acting on it. Returns the URL and title, the page's visible text (up to 20000 characters), up to 200 visible elements (interactive ones, headings, images) with a CSS selector, role, accessible name and viewport rectangle in CSS pixels, recent console messages and errors, failed network requests, recent browser actions, and a screenshot of the viewport (scaled to at most 1280px). Set includeImage=false for text only. Set save=true to also save a full-resolution PNG and get its absolute path back as screenshotPath; to show the user the screenshot, put ![description](screenshotPath) in your reply. The image in the tool result itself is not shown to the user.",
+		description: "Inspect this thread's browser tab before acting on it. Returns the URL and title, the page's visible text (up to 20000 characters), up to 200 visible elements (interactive ones, headings, images) with a CSS selector, role, accessible name and viewport rectangle in CSS pixels, recent console messages and errors, failed network requests, recent browser actions, and a screenshot of the viewport (scaled to at most 1280px). Set includeImage=false for text only. Set save=true to also save a full-resolution PNG and get its absolute path back as screenshotPath; to show the user the screenshot, put ![description](screenshotPath) in your reply. The image in the tool result itself is not shown to the user.",
 		schema: `{"type": "object", "properties": {
     "includeImage": {"type": "boolean", "description": "Include a screenshot in the result. Default true."},
     "save": {"type": "boolean", "description": "Save a full-resolution PNG screenshot and return its path. Default false."}
@@ -225,7 +225,7 @@ var toolDefs = []toolDef{
 	},
 	{
 		name: "browser_click", title: "Click in browser", annotations: acting,
-		description: "Click one element in this project's browser tab, like a user with a mouse: it is scrolled into view and clicked at its centre. Target it by CSS selector, by its visible text, or by x/y viewport coordinates in CSS pixels (as in browser_snapshot). Fails if nothing or more than one visible element matches. Use browser_snapshot first to find targets.",
+		description: "Click one element in this thread's browser tab, like a user with a mouse: it is scrolled into view and clicked at its centre. Target it by CSS selector, by its visible text, or by x/y viewport coordinates in CSS pixels (as in browser_snapshot). Fails if nothing or more than one visible element matches. Use browser_snapshot first to find targets.",
 		schema: `{"type": "object", "properties": {` + targetProps + `,
     "x": {"type": "number", "description": "Viewport x in CSS pixels, with y."},
     "y": {"type": "number", "description": "Viewport y in CSS pixels, with x."},
@@ -257,7 +257,7 @@ var toolDefs = []toolDef{
 	},
 	{
 		name: "browser_type", title: "Type in browser", annotations: acting,
-		description: "Type literal text into this project's browser tab. With selector or target, that field is clicked to focus it first; otherwise the text goes to whatever has focus. clear=true replaces the field's contents; submit=true presses Enter afterwards.",
+		description: "Type literal text into this thread's browser tab. With selector or target, that field is clicked to focus it first; otherwise the text goes to whatever has focus. clear=true replaces the field's contents; submit=true presses Enter afterwards.",
 		schema: `{"type": "object", "required": ["text"], "properties": {
     "text": {"type": "string", "description": "The text to type."},
     "selector": {"type": "string", "description": "CSS selector of the field. It must match exactly one visible element."},
@@ -295,7 +295,7 @@ var toolDefs = []toolDef{
 	},
 	{
 		name: "browser_press", title: "Press key in browser", annotations: acting,
-		description: "Press one key in this project's browser tab, sent to whatever has focus. Keys: Enter, Tab, Escape, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, F1-F12, Space, or a single character. Hold modifiers with modifiers:['Control'] or write a combination like 'Control+a'.",
+		description: "Press one key in this thread's browser tab, sent to whatever has focus. Keys: Enter, Tab, Escape, Backspace, Delete, ArrowUp/Down/Left/Right, Home, End, PageUp, PageDown, F1-F12, Space, or a single character. Hold modifiers with modifiers:['Control'] or write a combination like 'Control+a'.",
 		schema: `{"type": "object", "required": ["key"], "properties": {
     "key": {"type": "string", "description": "Key name or single character."},
     "modifiers": {"type": "array", "items": {"type": "string", "enum": ["Alt", "Control", "Meta", "Shift"]}, "description": "Modifier keys held while pressing key."}
@@ -319,7 +319,7 @@ var toolDefs = []toolDef{
 	},
 	{
 		name: "browser_scroll", title: "Scroll browser", annotations: safe,
-		description: "Scroll this project's browser tab with the mouse wheel: over the middle of the viewport, or over an element (to scroll a scrollable container). Positive deltaY scrolls down, positive deltaX right, in CSS pixels. Returns the scroll position before and after.",
+		description: "Scroll this thread's browser tab with the mouse wheel: over the middle of the viewport, or over an element (to scroll a scrollable container). Positive deltaY scrolls down, positive deltaX right, in CSS pixels. Returns the scroll position before and after.",
 		schema: `{"type": "object", "properties": {` + targetProps + `,
     "deltaX": {"type": "number", "description": "Horizontal distance. Default 0."},
     "deltaY": {"type": "number", "description": "Vertical distance. Default 0."}
@@ -353,7 +353,7 @@ var toolDefs = []toolDef{
 	},
 	{
 		name: "browser_evaluate", title: "Evaluate JavaScript in browser", annotations: acting,
-		description: "Evaluate a JavaScript expression in the main frame of this project's browser tab, like the DevTools console (top-level await works), and return {value}: the result as JSON, up to 64 KB. Values that aren't JSON-serializable (DOM nodes, functions) come back as {} or null. The expression may change the page. Prefer browser_snapshot and the other tools; use this for inspection they can't do.",
+		description: "Evaluate a JavaScript expression in the main frame of this thread's browser tab, like the DevTools console (top-level await works), and return {value}: the result as JSON, up to 64 KB. Values that aren't JSON-serializable (DOM nodes, functions) come back as {} or null. The expression may change the page. Prefer browser_snapshot and the other tools; use this for inspection they can't do.",
 		schema: `{"type": "object", "required": ["expression"], "properties": {
     "expression": {"type": "string", "description": "JavaScript expression, e.g. document.title or [...document.querySelectorAll('li')].map(li => li.textContent)."},
     "awaitPromise": {"type": "boolean", "description": "Wait for a returned promise and return its value. Default true."}
@@ -382,7 +382,7 @@ var toolDefs = []toolDef{
 	},
 	{
 		name: "browser_wait_for", title: "Wait for browser page", annotations: readOnly,
-		description: "Wait until this project's browser tab matches every given condition: a CSS selector matching a visible element, text appearing in the page's visible text (case-sensitive), and/or the URL containing a substring. Use after actions whose effects are asynchronous.",
+		description: "Wait until this thread's browser tab matches every given condition: a CSS selector matching a visible element, text appearing in the page's visible text (case-sensitive), and/or the URL containing a substring. Use after actions whose effects are asynchronous.",
 		schema: `{"type": "object", "properties": {
     "selector": {"type": "string", "description": "CSS selector that must match a visible element."},
     "text": {"type": "string", "description": "Text that must appear in the page's visible text."},
