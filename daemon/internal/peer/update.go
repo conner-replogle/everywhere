@@ -82,6 +82,7 @@ func (s *Server) applyUpdate() (protocol.UpdateResult, error) {
 		return protocol.UpdateResult{}, fmt.Errorf("installing %s: %w", info.Latest, err)
 	}
 	restarting = true
+	s.agents.MarkForContinuation()
 	go func() {
 		time.Sleep(500 * time.Millisecond)
 		slog.Info("restarting into new version", "version", info.Latest)

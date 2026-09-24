@@ -9,12 +9,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/claude"
+	"github.com/conner-replogle/everywhere/daemon/internal/gitx"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/store"
 )
@@ -33,6 +36,11 @@ type Store interface {
 	SetAgentSessionID(threadID, sessionID string) error
 	SetAgentModel(threadID, model string) error
 	SetAgentPermissionMode(threadID, mode string) error
+	SetAgentWorkspace(threadID, workspace, baseBranch string) error
+	SetAgentWorktree(threadID, path, branch string) error
+	SetAgentContinue(threadID string, cont bool) error
+	AgentThreadsToContinue() ([]string, error)
+	SetAgentContext(threadID string, usage json.RawMessage) error
 	AppendAgentEvent(threadID string, event json.RawMessage) (store.AgentEvent, error)
 	AgentEvents(threadID string, afterSeq int64, limit int) ([]store.AgentEvent, bool, error)
 }
@@ -47,6 +55,7 @@ type process interface {
 	Interrupt(context.Context) error
 	SetPermissionMode(context.Context, string) error
 	SetModel(context.Context, string) error
+	ContextUsage(context.Context) (claude.ContextUsage, error)
 	Close()
 }
 
@@ -54,6 +63,10 @@ type Manager struct {
 	// IdleTimeout stops a claude process after this long without a turn.
 	// The next prompt resumes the conversation.
 	IdleTimeout time.Duration
+	// WorktreeDir holds the worktrees of threads that run in one.
+	WorktreeDir string
+
+	attachments attachmentStore
 
 	store    Store
 	onChange func() // called when a thread's running state or status changes
@@ -67,11 +80,20 @@ type Manager struct {
 	sessions map[string]*session
 	models   []protocol.AgentModel
 	account  *protocol.AgentAccount
+	infoAt   time.Time // when models/account were last refreshed
+
+	probeMu sync.Mutex // one Info probe at a time
 }
 
-func NewManager(st Store, onChange func()) *Manager {
+// How long Info reuses what the last claude start reported.
+const infoTTL = 10 * time.Minute
+
+// NewManager keeps worktrees and attachments under dataDir.
+func NewManager(st Store, dataDir string, onChange func()) *Manager {
 	m := &Manager{
 		IdleTimeout: 30 * time.Minute,
+		WorktreeDir: filepath.Join(dataDir, "worktrees"),
+		attachments: attachmentStore{root: filepath.Join(dataDir, "attachments")},
 		store:       st,
 		onChange:    onChange,
 		sessions:    map[string]*session{},
@@ -134,6 +156,70 @@ func (m *Manager) Kill(threadID string) {
 	}
 }
 
+// Remove cleans up after a deleted claude thread: its process, its
+// attachments and, unless keepWorktree, its worktree (the branch stays). a
+// is the thread as it was before deletion.
+func (m *Manager) Remove(threadID string, a store.AgentThread, keepWorktree bool) {
+	m.Kill(threadID)
+	if err := m.attachments.remove(threadID); err != nil {
+		slog.Warn("removing attachments", "thread", threadID, "err", err)
+	}
+	if a.Worktree == "" || keepWorktree {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if err := gitx.RemoveWorktree(ctx, a.Dir, a.Worktree); err != nil {
+		slog.Warn("removing worktree", "thread", threadID, "path", a.Worktree, "err", err)
+	}
+}
+
+// MarkForContinuation records which threads are mid-turn, so that
+// ContinueMarked resumes them after the daemon restarts (for an update).
+func (m *Manager) MarkForContinuation() {
+	m.mu.Lock()
+	sessions := make([]*session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		sessions = append(sessions, s)
+	}
+	m.mu.Unlock()
+	for _, s := range sessions {
+		s.call(func() {
+			if s.proc == nil || !s.turnActive {
+				return
+			}
+			if err := m.store.SetAgentContinue(s.threadID, true); err != nil {
+				slog.Warn("marking thread to continue", "thread", s.threadID, "err", err)
+				return
+			}
+			s.emit(protocol.AgentEvent{Type: "notice", Text: "The daemon is updating; this turn continues when it's back"})
+		})
+	}
+}
+
+// ContinueMarked continues the turns MarkForContinuation recorded. Each
+// thread is tried once: the mark is cleared first, so a turn that keeps
+// failing can't loop.
+func (m *Manager) ContinueMarked() {
+	ids, err := m.store.AgentThreadsToContinue()
+	if err != nil {
+		slog.Warn("listing threads to continue", "err", err)
+		return
+	}
+	for _, id := range ids {
+		if err := m.store.SetAgentContinue(id, false); err != nil {
+			slog.Warn("clearing continue mark", "thread", id, "err", err)
+			continue
+		}
+		s, err := m.session(id)
+		if err != nil {
+			continue
+		}
+		slog.Info("continuing claude thread after restart", "thread", id)
+		s.do(s.continueTurn)
+	}
+}
+
 // Shutdown stops every claude process.
 func (m *Manager) Shutdown() {
 	m.mu.Lock()
@@ -176,8 +262,41 @@ func (m *Manager) noteInit(init claude.InitResponse) {
 		account = &protocol.AgentAccount{Email: a.Email, SubscriptionType: a.SubscriptionType}
 	}
 	m.mu.Lock()
-	m.models, m.account = models, account
+	m.models, m.account, m.infoAt = models, account, time.Now()
 	m.mu.Unlock()
+}
+
+// Info reports whether claude is usable here and its models and account.
+// Without a recent session to learn them from, it starts a throwaway claude
+// just for the initialize handshake (no prompt, so no API use).
+func (m *Manager) Info(ctx context.Context) protocol.AgentInfo {
+	m.probeMu.Lock()
+	defer m.probeMu.Unlock()
+	if info, ok := m.cachedInfo(); ok {
+		return info
+	}
+	home, _ := os.UserHomeDir()
+	p, err := m.start(ctx, claude.Options{Dir: home})
+	if err != nil {
+		return protocol.AgentInfo{Error: err.Error(), Models: []protocol.AgentModel{}}
+	}
+	go func() {
+		for range p.Messages() {
+		}
+	}()
+	m.noteInit(p.Init())
+	p.Close()
+	info, _ := m.cachedInfo()
+	return info
+}
+
+func (m *Manager) cachedInfo() (protocol.AgentInfo, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.infoAt.IsZero() || time.Since(m.infoAt) > infoTTL {
+		return protocol.AgentInfo{}, false
+	}
+	return protocol.AgentInfo{Available: true, Models: m.models, Account: m.account}, true
 }
 
 func (m *Manager) initInfo() ([]protocol.AgentModel, *protocol.AgentAccount) {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -64,7 +66,10 @@ func (p *fakeProc) SetPermissionMode(_ context.Context, mode string) error {
 	return nil
 }
 func (p *fakeProc) SetModel(context.Context, string) error { return nil }
-func (p *fakeProc) Close()                                 { p.exit(nil) }
+func (p *fakeProc) ContextUsage(context.Context) (claude.ContextUsage, error) {
+	return claude.ContextUsage{TotalTokens: 30_000, MaxTokens: 200_000}, nil
+}
+func (p *fakeProc) Close() { p.exit(nil) }
 
 func (p *fakeProc) exit(err error) {
 	p.mu.Lock()
@@ -209,7 +214,7 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	h := &harness{t: t, st: st, thread: th.ID}
-	h.m = NewManager(st, func() {})
+	h.m = NewManager(st, t.TempDir(), func() {})
 	h.m.start = func(_ context.Context, o claude.Options) (process, error) {
 		p := &fakeProc{opts: o, msgs: make(chan claude.Message, 100)}
 		h.mu.Lock()
@@ -438,5 +443,215 @@ func TestClipJSON(t *testing.T) {
 	var v map[string]string
 	if err := json.Unmarshal(out, &v); err != nil || v["file_path"] != "a.go" || len(v["content"]) > maxInputString+64 {
 		t.Fatalf("clipped to %d bytes: %v", len(out), err)
+	}
+}
+
+func TestInfoProbesOnceThenCaches(t *testing.T) {
+	h := newHarness(t)
+	info := h.m.Info(context.Background())
+	if !info.Available || len(info.Models) != 1 || info.Account == nil || info.Account.Email != "me@example.com" {
+		t.Fatalf("Info = %+v", info)
+	}
+	p := h.proc(0)
+	eventually(t, "probe to close", func() bool { p.mu.Lock(); defer p.mu.Unlock(); return p.closed })
+	h.m.Info(context.Background())
+	h.mu.Lock()
+	n := len(h.procs)
+	h.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("second Info started claude again (%d starts)", n)
+	}
+}
+
+func TestInfoReportsMissingClaude(t *testing.T) {
+	h := newHarness(t)
+	h.m.start = func(context.Context, claude.Options) (process, error) { return nil, claude.ErrNotInstalled }
+	if info := h.m.Info(context.Background()); info.Available || !strings.Contains(info.Error, "not installed") {
+		t.Fatalf("Info = %+v", info)
+	}
+}
+
+// gitRepo makes a one-commit repository on branch main.
+func gitRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q", "-b", "main"},
+		{"-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init"},
+	} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	return dir
+}
+
+// claudeThreadIn adds a project for dir and a claude thread in it.
+func (h *harness) claudeThreadIn(dir string) string {
+	h.t.Helper()
+	p, err := h.st.CreateProject(dir, "")
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	th, err := h.st.CreateThread(p.ID, "", protocol.ThreadClaude)
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	return th.ID
+}
+
+func TestWorktreeWorkspace(t *testing.T) {
+	h := newHarness(t)
+	repo := gitRepo(t)
+	h.thread = h.claudeThreadIn(repo)
+	c := h.attach(0)
+
+	h.do(c, protocol.AgentClientMsg{T: "setWorkspace", Workspace: "worktree", BaseBranch: "main"})
+	eventually(t, "worktree mode", func() bool { return c.state().Workspace.Mode == "worktree" })
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "hi"})
+	p := h.proc(0)
+	h.waitStatus(c, "working")
+
+	ws := c.state().Workspace
+	if !ws.Locked || ws.Branch != "everywhere/"+h.thread || !strings.HasPrefix(p.opts.Dir, h.m.WorktreeDir) || p.opts.Dir != ws.Path {
+		t.Fatalf("workspace %+v, claude ran in %q", ws, p.opts.Dir)
+	}
+	if _, err := os.Stat(filepath.Join(ws.Path, ".git")); err != nil {
+		t.Fatalf("no worktree at %s: %v", ws.Path, err)
+	}
+	if got := eventTypes(c.events()); !strings.Contains(got, "notice") {
+		t.Fatalf("no worktree notice in %s", got)
+	}
+
+	// Locked once started.
+	h.do(c, protocol.AgentClientMsg{T: "setWorkspace", Workspace: "local"})
+	eventually(t, "lock error", func() bool { return len(c.errors()) == 1 })
+
+	// Deleting the thread removes the worktree but keeps the branch.
+	a, _ := h.st.AgentThread(h.thread)
+	h.m.Remove(h.thread, a, false)
+	if _, err := os.Stat(ws.Path); !os.IsNotExist(err) {
+		t.Fatalf("worktree survived: %v", err)
+	}
+	out, _ := exec.Command("git", "-C", repo, "branch", "--list", ws.Branch).Output()
+	if !strings.Contains(string(out), ws.Branch) {
+		t.Fatal("branch was deleted with the worktree")
+	}
+}
+
+func TestWorktreeNeedsGit(t *testing.T) {
+	h := newHarness(t)
+	h.thread = h.claudeThreadIn(t.TempDir())
+	c := h.attach(0)
+	h.do(c, protocol.AgentClientMsg{T: "setWorkspace", Workspace: "worktree"})
+	eventually(t, "error", func() bool { return len(c.errors()) == 1 })
+	if !strings.Contains(c.errors()[0], "git repository") || c.state().Workspace.Mode != "local" {
+		t.Fatalf("errors %v, workspace %+v", c.errors(), c.state().Workspace)
+	}
+}
+
+func TestAttachments(t *testing.T) {
+	h := newHarness(t)
+	img, err := h.m.SaveUpload(h.thread, "img00001", "shot.png", "image/png", 4, strings.NewReader("\x89PNG"))
+	if err != nil || img.Kind != "image" {
+		t.Fatalf("image upload: %+v, %v", img, err)
+	}
+	doc, err := h.m.SaveUpload(h.thread, "doc00001", "../../notes.txt", "text/plain", 5, strings.NewReader("hello"))
+	if err != nil || doc.Kind != "file" || doc.Name != "notes.txt" {
+		t.Fatalf("file upload: %+v, %v", doc, err)
+	}
+	if _, err := h.m.SaveUpload(h.thread, "short001", "a.txt", "text/plain", 10, strings.NewReader("abc")); err == nil {
+		t.Fatal("accepted an upload shorter than its declared size")
+	}
+	if _, err := h.m.SaveUpload(h.thread, "big00001", "a.png", "image/png", MaxImageBytes+1, strings.NewReader("")); err == nil {
+		t.Fatal("accepted an oversized image")
+	}
+
+	c := h.attach(0)
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "look", Attachments: []string{img.ID, doc.ID}})
+	p := h.proc(0)
+	h.waitStatus(c, "working")
+	p.mu.Lock()
+	content := p.sent[0].Content
+	p.mu.Unlock()
+	if len(content) != 2 || content[0].Type != "image" || content[0].Source.MediaType != "image/png" {
+		t.Fatalf("content = %+v", content)
+	}
+	text := content[1].Text
+	if !strings.HasPrefix(text, "look\n\n") || !strings.Contains(text, `[Attached file "notes.txt" is saved at: `) {
+		t.Fatalf("prompt text = %q", text)
+	}
+	if len(p.opts.AddDirs) != 1 || !strings.Contains(text, p.opts.AddDirs[0]) {
+		t.Fatalf("claude can't reach the attachments: add dirs %v", p.opts.AddDirs)
+	}
+	var user protocol.AgentEvent
+	for _, e := range c.events() {
+		if e.Type == "user" {
+			user = e
+		}
+	}
+	if len(user.Attachments) != 2 || user.Attachments[1].Name != "notes.txt" {
+		t.Fatalf("user event attachments = %+v", user.Attachments)
+	}
+
+	h.do(c, protocol.AgentClientMsg{T: "send", Attachments: []string{"missing01"}})
+	eventually(t, "missing attachment error", func() bool { return len(c.errors()) == 1 })
+}
+
+func TestContextUsage(t *testing.T) {
+	h := newHarness(t)
+	c := h.attach(0)
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "hi"})
+	p := h.proc(0)
+	eventually(t, "context", func() bool { return c.state().Context != nil })
+	if u := c.state().Context; u.Used != 30_000 || u.Max != 200_000 || u.Percentage != 15 {
+		t.Fatalf("context = %+v", u)
+	}
+	// Live estimate from the next API call's usage.
+	p.emit(`{"type":"stream_event","event":{"type":"message_start","message":{"id":"m","usage":{"input_tokens":10,"cache_read_input_tokens":40000,"cache_creation_input_tokens":0}}}}`)
+	eventually(t, "live context", func() bool { return c.state().Context.Used == 40_010 })
+	// Stopped threads still show the last known usage.
+	if a, _ := h.st.AgentThread(h.thread); !strings.Contains(string(a.Context), `"used":30000`) {
+		t.Fatalf("stored context = %s", a.Context)
+	}
+}
+
+func TestContinueAfterUpdate(t *testing.T) {
+	h := newHarness(t)
+	c := h.attach(0)
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "long task"})
+	p := h.proc(0)
+	p.emit(`{"type":"system","subtype":"init","session_id":"sess-1"}`)
+	h.waitStatus(c, "working")
+	eventually(t, "session id", func() bool { return c.state().SessionID == "sess-1" })
+
+	h.m.MarkForContinuation()
+	h.m.Shutdown()
+	if a, _ := h.st.AgentThread(h.thread); !a.Continue {
+		t.Fatal("thread wasn't marked to continue")
+	}
+
+	// The restarted daemon picks the turn back up, once.
+	h.m = NewManager(h.st, t.TempDir(), func() {})
+	h.m.start = func(_ context.Context, o claude.Options) (process, error) {
+		np := &fakeProc{opts: o, msgs: make(chan claude.Message, 100)}
+		h.mu.Lock()
+		h.procs = append(h.procs, np)
+		h.mu.Unlock()
+		return np, nil
+	}
+	t.Cleanup(h.m.Shutdown)
+	h.m.ContinueMarked()
+	p2 := h.proc(1)
+	eventually(t, "continuation prompt", func() bool {
+		p2.mu.Lock()
+		defer p2.mu.Unlock()
+		return len(p2.sent) == 1 && p2.sent[0].Content[0].Text == continuePrompt
+	})
+	if p2.opts.Resume != "sess-1" {
+		t.Fatalf("continued without resuming: %+v", p2.opts)
+	}
+	if a, _ := h.st.AgentThread(h.thread); a.Continue {
+		t.Fatal("continue mark wasn't cleared")
 	}
 }

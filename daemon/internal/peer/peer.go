@@ -74,7 +74,9 @@ func (p *peer) closeChannels() {
 	}
 }
 
-func NewServer(st *store.Store, info protocol.DeviceInfo) *Server {
+// NewServer serves the store's projects and threads; claude threads keep
+// their worktrees and attachments under dataDir.
+func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string) *Server {
 	se := webrtc.SettingEngine{}
 	// Skip container/VM bridges; they only slow ICE down. Tailscale's
 	// interface is what actually connects.
@@ -95,9 +97,12 @@ func NewServer(st *store.Store, info protocol.DeviceInfo) *Server {
 	}
 	threadsChanged := func() { s.broadcast(protocol.EventThreadsChanged) }
 	s.terms = term.NewManager(st, threadsChanged)
-	s.agents = agent.NewManager(st, threadsChanged)
+	s.agents = agent.NewManager(st, dataDir, threadsChanged)
 	return s
 }
+
+// ContinueAgents resumes claude turns that a daemon update interrupted.
+func (s *Server) ContinueAgents() { s.agents.ContinueMarked() }
 
 // SetSignaler sets how answers and candidates reach browsers.
 func (s *Server) SetSignaler(fn Signaler) {
@@ -216,6 +221,8 @@ func (s *Server) answer(from, sid, sdp string) error {
 			s.serveTerm(p, dc, strings.TrimPrefix(label, protocol.TermChannelPrefix))
 		case strings.HasPrefix(label, protocol.AgentChannelPrefix):
 			s.serveAgent(p, dc, strings.TrimPrefix(label, protocol.AgentChannelPrefix))
+		case strings.HasPrefix(label, protocol.UploadChannelPrefix):
+			s.serveUpload(dc, strings.TrimPrefix(label, protocol.UploadChannelPrefix))
 		default:
 			_ = dc.Close()
 		}

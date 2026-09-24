@@ -238,6 +238,18 @@ func (s *Session) SetPermissionMode(ctx context.Context, mode string) error {
 	return err
 }
 
+// ContextUsage reports how full the context window is. It answers from the
+// last response's usage and local estimates, without API calls.
+func (s *Session) ContextUsage(ctx context.Context) (ContextUsage, error) {
+	resp, err := s.control(ctx, map[string]any{"subtype": "get_context_usage", "detail": "summary"})
+	if err != nil {
+		return ContextUsage{}, err
+	}
+	var u ContextUsage
+	err = json.Unmarshal(resp, &u)
+	return u, err
+}
+
 func (s *Session) SetModel(ctx context.Context, model string) error {
 	_, err := s.control(ctx, map[string]any{"subtype": "set_model", "model": model})
 	return err

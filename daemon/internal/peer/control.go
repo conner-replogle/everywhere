@@ -1,6 +1,7 @@
 package peer
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,9 +9,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/pion/webrtc/v4"
 
+	"github.com/conner-replogle/everywhere/daemon/internal/gitx"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/store"
 )
@@ -41,9 +44,9 @@ func (s *Server) serveControl(p *peer, dc *webrtc.DataChannel) {
 			out, _ := json.Marshal(resp)
 			_ = dc.SendText(string(out))
 		}
-		// Requests are answered in order, except the ones that go out to
-		// GitHub, which would hold up everything behind them.
-		if req.Method == "device.checkUpdate" || req.Method == "device.update" {
+		// Requests are answered in order, except slow ones (GitHub, starting
+		// claude), which would hold up everything behind them.
+		if req.Method == "device.checkUpdate" || req.Method == "device.update" || req.Method == "agent.info" {
 			go handle()
 		} else {
 			handle()
@@ -55,11 +58,12 @@ type empty struct{}
 
 func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 	var params struct {
-		ID        string `json:"id"`
-		Name      string `json:"name"`
-		Path      string `json:"path"`
-		ProjectID string `json:"projectId"`
-		Kind      string `json:"kind"`
+		ID           string `json:"id"`
+		Name         string `json:"name"`
+		Path         string `json:"path"`
+		ProjectID    string `json:"projectId"`
+		Kind         string `json:"kind"`
+		KeepWorktree bool   `json:"keepWorktree"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &params); err != nil {
@@ -70,6 +74,10 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 	switch method {
 	case "device.info":
 		return s.info, nil
+	case "agent.info":
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		return s.agents.Info(ctx), nil
 	case "device.checkUpdate":
 		return s.checkUpdate()
 	case "device.update":
@@ -94,6 +102,7 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		agentThreads := s.agentThreads(threads)
 		if err := s.store.DeleteProject(params.ID); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				return nil, errors.New("project not found (the home project can't be deleted)")
@@ -101,7 +110,7 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 			return nil, err
 		}
 		for _, t := range threads {
-			s.killThread(t)
+			s.killThread(t, agentThreads[t.ID], false)
 		}
 		s.broadcast(protocol.EventProjectsChanged)
 		s.broadcast(protocol.EventThreadsChanged)
@@ -131,15 +140,23 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		agentThreads := s.agentThreads([]protocol.Thread{t})
 		if err := s.store.DeleteThread(params.ID); err != nil {
 			return nil, err
 		}
-		s.killThread(t)
+		s.killThread(t, agentThreads[t.ID], params.KeepWorktree)
 		s.broadcast(protocol.EventThreadsChanged)
 		return empty{}, nil
 
 	case "fs.listDirs":
 		return listDirs(params.Path)
+
+	case "git.info":
+		p, err := s.store.GetProject(params.ProjectID)
+		if err != nil {
+			return nil, err
+		}
+		return gitInfo(p.Path), nil
 	}
 	return nil, fmt.Errorf("unknown method %q", method)
 }
@@ -153,12 +170,44 @@ func (s *Server) fillStatus(t *protocol.Thread) {
 	}
 }
 
-func (s *Server) killThread(t protocol.Thread) {
+// agentThreads looks up the claude threads among threads, for cleaning up
+// after they're deleted.
+func (s *Server) agentThreads(threads []protocol.Thread) map[string]store.AgentThread {
+	out := map[string]store.AgentThread{}
+	for _, t := range threads {
+		if t.Kind != protocol.ThreadClaude {
+			continue
+		}
+		if a, err := s.store.AgentThread(t.ID); err == nil {
+			out[t.ID] = a
+		}
+	}
+	return out
+}
+
+// killThread stops a deleted thread's shell or claude and cleans up after
+// it; a is its agent record (claude threads only).
+func (s *Server) killThread(t protocol.Thread, a store.AgentThread, keepWorktree bool) {
 	if t.Kind == protocol.ThreadClaude {
-		s.agents.Kill(t.ID)
+		s.agents.Remove(t.ID, a, keepWorktree)
 	} else {
 		s.terms.Kill(t.ID)
 	}
+}
+
+func gitInfo(dir string) protocol.GitInfo {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	info := protocol.GitInfo{Branches: []string{}}
+	if !gitx.IsRepo(ctx, dir) {
+		return info
+	}
+	info.IsRepo = true
+	info.Current = gitx.CurrentBranch(ctx, dir)
+	if b, err := gitx.Branches(ctx, dir); err == nil {
+		info.Branches = b
+	}
+	return info
 }
 
 // listDirs lists subdirectory names only; file contents are never read.

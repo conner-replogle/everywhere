@@ -57,6 +57,17 @@ CREATE TABLE agent_events (
   PRIMARY KEY (thread_id, seq)
 ) WITHOUT ROWID;
 `,
+	// 3: where a claude thread runs (the project checkout or its own git
+	// worktree), whether it should continue after a daemon update, and its
+	// last known context usage.
+	`
+ALTER TABLE threads ADD COLUMN agent_workspace TEXT NOT NULL DEFAULT 'local';
+ALTER TABLE threads ADD COLUMN agent_base_branch TEXT;
+ALTER TABLE threads ADD COLUMN agent_worktree TEXT;
+ALTER TABLE threads ADD COLUMN agent_branch TEXT;
+ALTER TABLE threads ADD COLUMN agent_continue INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE threads ADD COLUMN agent_context TEXT;
+`,
 }
 
 type Store struct {
@@ -308,20 +319,33 @@ func (s *Store) MarkSpawned(threadID string) error {
 
 // AgentThread is what the agent manager needs to run a claude thread.
 type AgentThread struct {
-	Dir            string
+	ProjectID      string
+	Dir            string // the project directory
 	SessionID      string // "" until the first turn
 	Model          string // "" means the CLI's default
 	PermissionMode string
+	// Workspace is "local" (run in Dir) or "worktree" (run in a worktree of
+	// Dir's repository, created on the first prompt from BaseBranch, or the
+	// current branch when that's empty).
+	Workspace  string
+	BaseBranch string
+	Worktree   string // the worktree's path once created
+	Branch     string // the worktree's branch once created
+	// Continue asks for the interrupted turn to be continued on startup.
+	Continue bool
+	Context  json.RawMessage // last known context usage, or nil
 }
 
 func (s *Store) AgentThread(threadID string) (AgentThread, error) {
 	var a AgentThread
-	var session, model sql.NullString
+	var session, model, base, worktree, branch, ctxUsage sql.NullString
 	var kind string
 	err := s.db.QueryRow(`
-SELECT p.path, t.kind, t.agent_session_id, t.agent_model, t.agent_permission_mode
+SELECT t.project_id, p.path, t.kind, t.agent_session_id, t.agent_model, t.agent_permission_mode,
+       t.agent_workspace, t.agent_base_branch, t.agent_worktree, t.agent_branch, t.agent_continue, t.agent_context
 FROM threads t JOIN projects p ON p.id = t.project_id WHERE t.id = ?`, threadID,
-	).Scan(&a.Dir, &kind, &session, &model, &a.PermissionMode)
+	).Scan(&a.ProjectID, &a.Dir, &kind, &session, &model, &a.PermissionMode,
+		&a.Workspace, &base, &worktree, &branch, &a.Continue, &ctxUsage)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
 	}
@@ -329,7 +353,49 @@ FROM threads t JOIN projects p ON p.id = t.project_id WHERE t.id = ?`, threadID,
 		return a, fmt.Errorf("thread %s is a %s thread", threadID, kind)
 	}
 	a.SessionID, a.Model = session.String, model.String
+	a.BaseBranch, a.Worktree, a.Branch = base.String, worktree.String, branch.String
+	if ctxUsage.Valid {
+		a.Context = json.RawMessage(ctxUsage.String)
+	}
 	return a, err
+}
+
+// SetAgentWorkspace chooses where a thread runs. It's only meant to change
+// before the thread's first prompt.
+func (s *Store) SetAgentWorkspace(threadID, workspace, baseBranch string) error {
+	return s.execOne("UPDATE threads SET agent_workspace = ?, agent_base_branch = NULLIF(?, '') WHERE id = ?",
+		workspace, baseBranch, threadID)
+}
+
+// SetAgentWorktree records the worktree created for a thread.
+func (s *Store) SetAgentWorktree(threadID, path, branch string) error {
+	return s.execOne("UPDATE threads SET agent_worktree = ?, agent_branch = ? WHERE id = ?", path, branch, threadID)
+}
+
+func (s *Store) SetAgentContinue(threadID string, cont bool) error {
+	return s.execOne("UPDATE threads SET agent_continue = ? WHERE id = ?", cont, threadID)
+}
+
+// AgentThreadsToContinue lists threads marked to continue after a restart.
+func (s *Store) AgentThreadsToContinue() ([]string, error) {
+	rows, err := s.db.Query("SELECT id FROM threads WHERE kind = ? AND agent_continue = 1", protocol.ThreadClaude)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func (s *Store) SetAgentContext(threadID string, usage json.RawMessage) error {
+	return s.execOne("UPDATE threads SET agent_context = ? WHERE id = ?", string(usage), threadID)
 }
 
 func (s *Store) SetAgentSessionID(threadID, sessionID string) error {

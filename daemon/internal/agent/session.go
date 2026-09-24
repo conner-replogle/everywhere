@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/claude"
+	"github.com/conner-replogle/everywhere/daemon/internal/gitx"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/store"
 )
@@ -32,6 +35,13 @@ const (
 	maxInputBytes  = 64 << 10 // per tool input
 	maxInputString = 16 << 10 // per string inside an oversized tool input
 	maxTitleRunes  = 60
+
+	workspaceLocal    = "local"
+	workspaceWorktree = "worktree"
+
+	// What a turn interrupted by a daemon update is continued with, as in
+	// t3code.
+	continuePrompt = "Continue where you left off."
 )
 
 var (
@@ -70,6 +80,13 @@ type session struct {
 }
 
 func newSession(m *Manager, threadID string, a store.AgentThread) *session {
+	var usage *protocol.AgentContext
+	if a.Context != nil {
+		usage = new(protocol.AgentContext)
+		if json.Unmarshal(a.Context, usage) != nil {
+			usage = nil
+		}
+	}
 	s := &session{
 		m:        m,
 		threadID: threadID,
@@ -85,6 +102,14 @@ func newSession(m *Manager, threadID string, a store.AgentThread) *session {
 			PermissionMode: a.PermissionMode,
 			Pending:        []protocol.AgentRequest{},
 			Streaming:      []protocol.AgentStreaming{},
+			Workspace: protocol.AgentWorkspace{
+				Mode:       a.Workspace,
+				BaseBranch: a.BaseBranch,
+				Path:       a.Worktree,
+				Branch:     a.Branch,
+				Locked:     a.SessionID != "" || a.Worktree != "",
+			},
+			Context: usage,
 		},
 	}
 	s.pub.Store(&published{status: statusStopped})
@@ -96,6 +121,19 @@ func newSession(m *Manager, threadID string, a store.AgentThread) *session {
 func (s *session) do(f func()) {
 	select {
 	case s.cmds <- f:
+	case <-s.exited:
+	}
+}
+
+// call runs f on the session goroutine and waits for it.
+func (s *session) call(f func()) {
+	done := make(chan struct{})
+	s.do(func() {
+		defer close(done)
+		f()
+	})
+	select {
+	case <-done:
 	case <-s.exited:
 	}
 }
@@ -161,7 +199,7 @@ func (s *session) handle(c Client, msg protocol.AgentClientMsg) {
 	var err error
 	switch msg.T {
 	case "send":
-		err = s.send(msg.Text)
+		err = s.send(msg.Text, msg.Attachments)
 	case "interrupt":
 		s.interrupt()
 	case "respond":
@@ -170,6 +208,8 @@ func (s *session) handle(c Client, msg protocol.AgentClientMsg) {
 		err = s.setMode(msg.Mode)
 	case "setModel":
 		err = s.setModel(msg.Model)
+	case "setWorkspace":
+		err = s.setWorkspace(msg.Workspace, msg.BaseBranch)
 	default:
 		err = fmt.Errorf("unknown request %q", msg.T)
 	}
@@ -179,21 +219,52 @@ func (s *session) handle(c Client, msg protocol.AgentClientMsg) {
 	s.changed()
 }
 
-func (s *session) send(text string) error {
+func (s *session) send(text string, attachmentIDs []string) error {
 	text = strings.TrimSpace(text)
-	if text == "" {
+	if text == "" && len(attachmentIDs) == 0 {
 		return nil
 	}
+	files, err := s.m.attachments.resolve(s.threadID, attachmentIDs)
+	if err != nil {
+		return err
+	}
 	if err := s.ensureProc(); err != nil {
+		return err
+	}
+	content, err := promptContent(text, files)
+	if err != nil {
 		return err
 	}
 	id := newUUID()
 	if !s.turnActive {
 		s.beginTurn()
 	}
-	s.emit(protocol.AgentEvent{Type: "user", ID: id, Text: text})
-	s.maybeTitle(text)
-	return s.proc.Send(claude.UserMessage{UUID: id, Content: []claude.ContentBlock{claude.Text(text)}})
+	ev := protocol.AgentEvent{Type: "user", ID: id, Text: text}
+	for _, f := range files {
+		ev.Attachments = append(ev.Attachments, f.AgentAttachment)
+	}
+	s.emit(ev)
+	if text != "" {
+		s.maybeTitle(text)
+	}
+	return s.proc.Send(claude.UserMessage{UUID: id, Content: content})
+}
+
+// continueTurn restarts a turn that a daemon update interrupted.
+func (s *session) continueTurn() {
+	if err := s.ensureProc(); err != nil {
+		s.emit(protocol.AgentEvent{Type: "notice", Text: "Couldn't continue after the daemon update: " + err.Error()})
+		s.changed()
+		return
+	}
+	if !s.turnActive {
+		s.beginTurn()
+	}
+	s.emit(protocol.AgentEvent{Type: "notice", Text: "Continuing after the daemon update"})
+	if err := s.proc.Send(claude.UserMessage{Content: []claude.ContentBlock{claude.Text(continuePrompt)}}); err != nil {
+		slog.Warn("continuing claude turn", "thread", s.threadID, "err", err)
+	}
+	s.changed()
 }
 
 func (s *session) ensureProc() error {
@@ -209,20 +280,126 @@ func (s *session) ensureProc() error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
 	defer cancel()
+	fail := func(err error) error {
+		s.state.Status, s.state.Error = statusError, err.Error()
+		return err
+	}
+	dir, err := s.workdir(ctx, a)
+	if err != nil {
+		return fail(err)
+	}
+	attachDir, err := s.m.attachments.dir(s.threadID)
+	if err != nil {
+		return fail(err)
+	}
 	p, err := s.m.start(ctx, claude.Options{
-		Dir:            a.Dir,
+		Dir:            dir,
 		Model:          a.Model,
 		PermissionMode: a.PermissionMode,
 		Resume:         a.SessionID,
+		AddDirs:        []string{attachDir}, // so claude can read attached files
 	})
 	if err != nil {
-		s.state.Status, s.state.Error = statusError, err.Error()
-		return err
+		return fail(err)
 	}
 	s.proc, s.procMsgs = p, p.Messages()
 	s.m.noteInit(p.Init())
 	s.state.Status = statusIdle
+	s.state.Workspace.Locked = true
+	s.refreshContext()
 	return nil
+}
+
+// workdir is where claude runs: the project directory, or the thread's
+// worktree, which the first start creates.
+func (s *session) workdir(ctx context.Context, a store.AgentThread) (string, error) {
+	if a.Workspace != workspaceWorktree {
+		return a.Dir, nil
+	}
+	// The project may be a subdirectory of its repository; run in the same
+	// subdirectory of the worktree.
+	prefix, err := gitx.Prefix(ctx, a.Dir)
+	if err != nil {
+		return "", fmt.Errorf("worktree mode needs a git repository: %w", err)
+	}
+	if a.Worktree != "" {
+		if err := gitx.EnsureWorktree(ctx, a.Dir, a.Worktree, a.Branch); err != nil {
+			return "", err
+		}
+		return filepath.Join(a.Worktree, prefix), nil
+	}
+	base := a.BaseBranch
+	if base == "" {
+		base = gitx.CurrentBranch(ctx, a.Dir)
+	}
+	if base == "" {
+		base = "HEAD"
+	}
+	path := filepath.Join(s.m.WorktreeDir, filepath.Base(a.Dir)+"-"+a.ProjectID, s.threadID)
+	branch := "everywhere/" + s.threadID
+	if err := gitx.AddWorktree(ctx, a.Dir, path, branch, base); err != nil {
+		return "", err
+	}
+	if err := s.m.store.SetAgentWorktree(s.threadID, path, branch); err != nil {
+		return "", err
+	}
+	s.state.Workspace.Path, s.state.Workspace.Branch = path, branch
+	s.emit(protocol.AgentEvent{Type: "notice", Text: fmt.Sprintf("Working in a new worktree on branch %s, from %s", branch, base)})
+	return filepath.Join(path, prefix), nil
+}
+
+func (s *session) setWorkspace(mode, baseBranch string) error {
+	if s.state.Workspace.Locked {
+		return errors.New("the workspace can't change once the thread has started")
+	}
+	switch mode {
+	case workspaceLocal:
+		baseBranch = ""
+	case workspaceWorktree:
+		a, err := s.m.store.AgentThread(s.threadID)
+		if err != nil {
+			return err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
+		defer cancel()
+		if !gitx.IsRepo(ctx, a.Dir) {
+			return errors.New("worktrees need the project to be a git repository")
+		}
+	default:
+		return fmt.Errorf("unknown workspace %q", mode)
+	}
+	if err := s.m.store.SetAgentWorkspace(s.threadID, mode, baseBranch); err != nil {
+		return err
+	}
+	s.state.Workspace.Mode, s.state.Workspace.BaseBranch = mode, baseBranch
+	return nil
+}
+
+// refreshContext asks claude how full the context window is.
+func (s *session) refreshContext() {
+	if s.proc == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
+	defer cancel()
+	u, err := s.proc.ContextUsage(ctx)
+	if err != nil {
+		slog.Debug("claude context usage", "thread", s.threadID, "err", err)
+		return
+	}
+	s.setContext(u.TotalTokens, u.MaxTokens)
+	if raw, err := json.Marshal(s.state.Context); err == nil {
+		if err := s.m.store.SetAgentContext(s.threadID, raw); err != nil {
+			slog.Warn("saving context usage", "thread", s.threadID, "err", err)
+		}
+	}
+}
+
+func (s *session) setContext(used, max int) {
+	if max <= 0 {
+		return
+	}
+	s.state.Context = &protocol.AgentContext{Used: used, Max: max, Percentage: float64(used) * 100 / float64(max)}
 }
 
 func (s *session) interrupt() {
@@ -393,6 +570,7 @@ func (s *session) onSystem(msg claude.Message) {
 		}
 	case "compact_boundary":
 		s.emit(protocol.AgentEvent{Type: "notice", Text: "Conversation compacted"})
+		s.refreshContext()
 	}
 }
 
@@ -402,7 +580,12 @@ func (s *session) onStreamEvent(msg claude.Message) {
 			Type    string `json:"type"`
 			Index   int    `json:"index"`
 			Message struct {
-				ID string `json:"id"`
+				ID    string `json:"id"`
+				Usage struct {
+					InputTokens         int `json:"input_tokens"`
+					CacheCreationTokens int `json:"cache_creation_input_tokens"`
+					CacheReadTokens     int `json:"cache_read_input_tokens"`
+				} `json:"usage"`
 			} `json:"message"`
 			ContentBlock struct {
 				Type string `json:"type"`
@@ -426,6 +609,13 @@ func (s *session) onStreamEvent(msg claude.Message) {
 	switch ev.Type {
 	case "message_start":
 		s.msgID = ev.Message.ID
+		// Everything sent to the model for this call is now in context; the
+		// exact figure comes from claude when the turn ends.
+		if c := s.state.Context; c != nil {
+			u := ev.Message.Usage
+			s.setContext(u.InputTokens+u.CacheCreationTokens+u.CacheReadTokens, c.Max)
+			s.changed()
+		}
 	case "content_block_start":
 		if kind := streamKind(ev.ContentBlock.Type); kind != "" {
 			s.state.Streaming = append(s.state.Streaming, protocol.AgentStreaming{Key: key, Kind: kind})
@@ -548,6 +738,7 @@ func (s *session) onResult(msg claude.Message) {
 		}
 	}
 	s.endTurn(ev)
+	s.refreshContext()
 }
 
 func (s *session) onPermission(req *claude.PermissionRequest) {

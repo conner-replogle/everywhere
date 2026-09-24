@@ -137,3 +137,20 @@ type Result struct {
 	SessionID      string  `json:"session_id"`
 	TerminalReason string  `json:"terminal_reason,omitempty"`
 }
+
+// ContextUsage is the answer to get_context_usage (what /context shows).
+type ContextUsage struct {
+	Model       string `json:"model"`
+	TotalTokens int    `json:"totalTokens"`
+	// MaxTokens is the usable window; RawMaxTokens the model's full window.
+	MaxTokens    int                    `json:"maxTokens"`
+	RawMaxTokens int                    `json:"rawMaxTokens"`
+	Percentage   float64                `json:"percentage"`
+	Categories   []ContextUsageCategory `json:"categories"`
+}
+
+type ContextUsageCategory struct {
+	Name   string `json:"name"`
+	Tokens int    `json:"tokens"`
+	Kind   string `json:"kind"` // used | free | buffer | deferred
+}

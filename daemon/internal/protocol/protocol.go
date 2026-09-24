@@ -56,9 +56,10 @@ type SignalOut struct {
 // ---------------------------------------------------------------------------
 
 const (
-	ControlChannel     = "control"
-	TermChannelPrefix  = "term:"
-	AgentChannelPrefix = "agent:"
+	ControlChannel      = "control"
+	TermChannelPrefix   = "term:"
+	AgentChannelPrefix  = "agent:"
+	UploadChannelPrefix = "upload:"
 )
 
 type DeviceInfo struct {
@@ -73,8 +74,10 @@ type DeviceInfo struct {
 }
 
 const (
-	FeatureClaude = "claude" // claude threads and the agent channel
-	FeatureUpdate = "update" // device.checkUpdate and device.update
+	FeatureClaude      = "claude"      // claude threads and the agent channel
+	FeatureUpdate      = "update"      // device.checkUpdate and device.update
+	FeatureWorktrees   = "worktrees"   // claude threads in their own worktree; git.info
+	FeatureAttachments = "attachments" // upload channels and send attachments
 )
 
 // UpdateInfo is the result of device.checkUpdate.
@@ -207,10 +210,12 @@ type TermError struct {
 
 // AgentClientMsg is a frame from the browser, discriminated by T:
 //   - attach {afterSeq}: must come first; replays events after afterSeq
-//   - send {text}: a prompt; starts or resumes claude as needed
+//   - send {text, attachments?}: a prompt; starts or resumes claude as needed.
+//     Attachments are ids from finished uploads.
 //   - interrupt
 //   - respond {requestId, decision, message?, answers?}
 //   - setMode {mode}, setModel {model}
+//   - setWorkspace {workspace, baseBranch}: before the first prompt only
 type AgentClientMsg struct {
 	T         string            `json:"t"`
 	AfterSeq  int64             `json:"afterSeq,omitempty"`
@@ -221,6 +226,10 @@ type AgentClientMsg struct {
 	Answers   map[string]string `json:"answers,omitempty"`  // question requests: question -> answer
 	Mode      string            `json:"mode,omitempty"`
 	Model     string            `json:"model,omitempty"`
+	// Workspace is local | worktree.
+	Workspace   string   `json:"workspace,omitempty"`
+	BaseBranch  string   `json:"baseBranch,omitempty"`
+	Attachments []string `json:"attachments,omitempty"`
 }
 
 // Frames from the daemon, discriminated by T.
@@ -274,6 +283,59 @@ type AgentState struct {
 	Account        *AgentAccount    `json:"account,omitempty"`
 	// RateLimit is claude's latest rate_limit_info, passed through.
 	RateLimit json.RawMessage `json:"rateLimit,omitempty"`
+	Workspace AgentWorkspace  `json:"workspace"`
+	// Context is how full the context window is, when known.
+	Context *AgentContext `json:"context,omitempty"`
+}
+
+// AgentWorkspace is where a claude thread runs.
+type AgentWorkspace struct {
+	Mode       string `json:"mode"` // local | worktree
+	BaseBranch string `json:"baseBranch,omitempty"`
+	Path       string `json:"path,omitempty"` // the worktree, once created
+	Branch     string `json:"branch,omitempty"`
+	// Locked means the thread has started, so the workspace is fixed.
+	Locked bool `json:"locked"`
+}
+
+type AgentContext struct {
+	Used       int     `json:"used"` // tokens in the context window
+	Max        int     `json:"max"`  // usable window size
+	Percentage float64 `json:"percentage"`
+}
+
+// AgentAttachment is a file uploaded for a prompt.
+type AgentAttachment struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Kind      string `json:"kind"` // image | file
+	MediaType string `json:"mediaType"`
+	Size      int64  `json:"size"`
+}
+
+// Upload channel upload:<id>, one per file: the client sends UploadStart as
+// text, the file as binary chunks, then {"t":"end"}; the daemon answers
+// with UploadResult and closes. The id must be 8-64 of [a-z0-9].
+type (
+	UploadStart struct {
+		T         string `json:"t"` // "start"
+		ThreadID  string `json:"threadId"`
+		Name      string `json:"name"`
+		MediaType string `json:"mediaType"`
+		Size      int64  `json:"size"`
+	}
+	UploadResult struct {
+		T          string           `json:"t"` // done | error
+		Attachment *AgentAttachment `json:"attachment,omitempty"`
+		Message    string           `json:"message,omitempty"`
+	}
+)
+
+// GitInfo is the result of git.info for a project.
+type GitInfo struct {
+	IsRepo   bool     `json:"isRepo"`
+	Current  string   `json:"current"` // checked-out branch, "" if detached
+	Branches []string `json:"branches"`
 }
 
 // AgentRequest is a prompt waiting for the user.
@@ -295,6 +357,15 @@ type AgentStreaming struct {
 	Text string `json:"text"`
 }
 
+// AgentInfo describes the device's Claude Code install (agent.info), so the
+// web app can offer models before a thread's first message.
+type AgentInfo struct {
+	Available bool          `json:"available"`
+	Error     string        `json:"error,omitempty"` // why it isn't available
+	Models    []AgentModel  `json:"models"`
+	Account   *AgentAccount `json:"account,omitempty"`
+}
+
 type AgentModel struct {
 	Value       string `json:"value"`
 	DisplayName string `json:"displayName"`
@@ -308,7 +379,7 @@ type AgentAccount struct {
 
 // AgentEvent is one persisted entry in a claude thread's log. Type selects
 // which fields are set:
-//   - user {id, text}: a prompt
+//   - user {id, text, attachments?}: a prompt
 //   - assistant, thinking {id, text, streamKey?}: a completed block
 //   - tool {id, name, input}: a tool call; id is the tool_use id
 //   - toolResult {id, output, isError}: id matches the tool event
@@ -338,4 +409,6 @@ type AgentEvent struct {
 	Status     string            `json:"status,omitempty"`
 	CostUSD    float64           `json:"costUsd,omitempty"`
 	DurationMS int64             `json:"durationMs,omitempty"`
+	// Attachments are the files sent with a user prompt.
+	Attachments []AgentAttachment `json:"attachments,omitempty"`
 }

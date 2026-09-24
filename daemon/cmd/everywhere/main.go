@@ -149,8 +149,8 @@ func daemon(args []string) error {
 	home, _ := os.UserHomeDir()
 	srv := peer.NewServer(st, protocol.DeviceInfo{
 		Hostname: hostname, Home: home, OS: runtime.GOOS, Arch: runtime.GOARCH, Version: version.Version,
-		Features: []string{protocol.FeatureClaude, protocol.FeatureUpdate},
-	})
+		Features: []string{protocol.FeatureClaude, protocol.FeatureUpdate, protocol.FeatureWorktrees, protocol.FeatureAttachments},
+	}, config.DataDir())
 	defer srv.Shutdown()
 	srv.ICEServers = (&ice.Provider{Server: cfg.Server, Credential: credential}).Servers
 	go srv.ICEServers() // warm the cache so the first connection doesn't wait
@@ -162,6 +162,7 @@ func daemon(args []string) error {
 		OnClientRevoked: srv.CloseClient,
 	}
 	srv.SetSignaler(hc.Send)
+	go srv.ContinueAgents() // turns interrupted by an update
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

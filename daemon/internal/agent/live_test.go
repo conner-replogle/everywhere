@@ -37,7 +37,7 @@ func TestLive(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	m := NewManager(st, func() {})
+	m := NewManager(st, t.TempDir(), func() {})
 	defer m.Shutdown()
 	realStart := m.start
 	m.start = func(ctx context.Context, o claude.Options) (process, error) {

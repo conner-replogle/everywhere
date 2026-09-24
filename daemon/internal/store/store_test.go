@@ -137,6 +137,29 @@ func TestAgentThreads(t *testing.T) {
 	if a, _ := s.AgentThread(th.ID); a.SessionID != "sess" || a.Model != "haiku" || a.PermissionMode != "plan" {
 		t.Fatalf("after updates: %+v", a)
 	}
+	if a, _ := s.AgentThread(th.ID); a.Workspace != "local" || a.Worktree != "" || a.Continue || a.Context != nil {
+		t.Fatalf("workspace defaults: %+v", a)
+	}
+	if err := s.SetAgentWorkspace(th.ID, "worktree", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAgentWorktree(th.ID, "/wt", "everywhere/x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAgentContinue(th.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAgentContext(th.ID, json.RawMessage(`{"used":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	a, _ = s.AgentThread(th.ID)
+	if a.Workspace != "worktree" || a.BaseBranch != "main" || a.Worktree != "/wt" || a.Branch != "everywhere/x" ||
+		!a.Continue || string(a.Context) != `{"used":1}` {
+		t.Fatalf("after workspace updates: %+v", a)
+	}
+	if ids, err := s.AgentThreadsToContinue(); err != nil || len(ids) != 1 || ids[0] != th.ID {
+		t.Fatalf("AgentThreadsToContinue = %v, %v", ids, err)
+	}
 
 	for i := range 5 {
 		e, err := s.AppendAgentEvent(th.ID, json.RawMessage(fmt.Sprintf(`{"n":%d}`, i)))
