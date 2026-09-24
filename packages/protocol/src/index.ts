@@ -217,7 +217,12 @@ export type AgentClientMsg =
   /** "" means claude's default model. */
   | { t: "setModel"; model: string }
   /** Before the first prompt only. baseBranch "" means the current branch. */
-  | { t: "setWorkspace"; workspace: "local" | "worktree"; baseBranch?: string };
+  | { t: "setWorkspace"; workspace: "local" | "worktree"; baseBranch?: string }
+  /** "" means the model's default effort. */
+  | { t: "setEffort"; effort: EffortLevel | "" }
+  | { t: "setThinking"; thinking: boolean };
+
+export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
 export type AgentDaemonMsg =
   | { t: "event"; seq: number; at: number; event: AgentEvent }
@@ -247,6 +252,32 @@ export interface AgentState {
   workspace: AgentWorkspace;
   /** How full the context window is, when known. */
   context?: AgentContext;
+  /** Configured effort; "" means the model's default. Absent on older daemons. */
+  effort?: EffortLevel | "";
+  /** Whether extended thinking is on. Absent on older daemons. */
+  thinking?: boolean;
+  /** Slash commands a prompt can start with. Absent on older daemons. */
+  commands?: AgentCommand[];
+  /** Claude's guess at the next prompt, until one is sent. */
+  suggestion?: string;
+  /** The plan's usage windows, when known. */
+  limits?: AgentLimit[];
+}
+
+export interface AgentCommand {
+  name: string;
+  description: string;
+  argumentHint?: string;
+}
+
+/** One rate-limit window of the claude.ai plan. */
+export interface AgentLimit {
+  /** five_hour | seven_day | seven_day_opus | ... */
+  window: string;
+  /** Fraction of the window used, 0-1. */
+  used: number;
+  /** Unix ms; 0 if unknown. */
+  resetsAt: number;
 }
 
 export interface AgentWorkspace {
@@ -279,6 +310,8 @@ export interface AgentInfo {
   error?: string;
   models: AgentModel[];
   account?: { email?: string; subscriptionType?: string };
+  commands?: AgentCommand[];
+  limits?: AgentLimit[];
 }
 
 export interface GitInfo {
@@ -320,6 +353,10 @@ export interface AgentModel {
   value: string;
   displayName: string;
   description?: string;
+  /** Effort levels the model accepts; absent when it has no effort control. */
+  effortLevels?: EffortLevel[];
+  /** Whether the model can think. */
+  thinking?: boolean;
 }
 
 interface AgentEventBase {
@@ -354,4 +391,6 @@ export type AgentEvent = AgentEventBase &
         durationMs?: number;
       }
     | { type: "notice"; text: string }
+    /** What a local slash command (e.g. /cost) printed. */
+    | { type: "commandOutput"; text: string }
   );

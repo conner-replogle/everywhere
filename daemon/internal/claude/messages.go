@@ -112,11 +112,13 @@ type Account struct {
 }
 
 type Model struct {
-	Value                 string   `json:"value"`
-	ResolvedModel         string   `json:"resolvedModel,omitempty"`
-	DisplayName           string   `json:"displayName"`
-	Description           string   `json:"description,omitempty"`
-	SupportedEffortLevels []string `json:"supportedEffortLevels,omitempty"`
+	Value                    string   `json:"value"`
+	ResolvedModel            string   `json:"resolvedModel,omitempty"`
+	DisplayName              string   `json:"displayName"`
+	Description              string   `json:"description,omitempty"`
+	SupportsEffort           bool     `json:"supportsEffort,omitempty"`
+	SupportedEffortLevels    []string `json:"supportedEffortLevels,omitempty"`
+	SupportsAdaptiveThinking bool     `json:"supportsAdaptiveThinking,omitempty"`
 }
 
 type SlashCommand struct {
@@ -153,4 +155,16 @@ type ContextUsageCategory struct {
 	Name   string `json:"name"`
 	Tokens int    `json:"tokens"`
 	Kind   string `json:"kind"` // used | free | buffer | deferred
+}
+
+// Usage is the answer to get_usage.
+type Usage struct {
+	SubscriptionType    string                     `json:"subscription_type"`
+	RateLimitsAvailable bool                       `json:"rate_limits_available"`
+	RateLimits          map[string]*UsageRateLimit `json:"rate_limits"`
+}
+
+type UsageRateLimit struct {
+	Utilization *float64 `json:"utilization"`
+	ResetsAt    *string  `json:"resets_at"` // RFC 3339
 }

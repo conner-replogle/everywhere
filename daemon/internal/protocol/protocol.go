@@ -218,6 +218,9 @@ type TermError struct {
 //   - respond {requestId, decision, message?, answers?}
 //   - setMode {mode}, setModel {model}
 //   - setWorkspace {workspace, baseBranch}: before the first prompt only
+//   - setEffort {effort}: low | medium | high | xhigh | max, or "" for the
+//     model's default
+//   - setThinking {thinking}
 type AgentClientMsg struct {
 	T         string            `json:"t"`
 	AfterSeq  int64             `json:"afterSeq,omitempty"`
@@ -232,6 +235,8 @@ type AgentClientMsg struct {
 	Workspace   string   `json:"workspace,omitempty"`
 	BaseBranch  string   `json:"baseBranch,omitempty"`
 	Attachments []string `json:"attachments,omitempty"`
+	Effort      string   `json:"effort,omitempty"`
+	Thinking    *bool    `json:"thinking,omitempty"`
 }
 
 // Frames from the daemon, discriminated by T.
@@ -288,6 +293,29 @@ type AgentState struct {
 	Workspace AgentWorkspace  `json:"workspace"`
 	// Context is how full the context window is, when known.
 	Context *AgentContext `json:"context,omitempty"`
+	// Effort is the configured effort level; "" means the model's default.
+	Effort string `json:"effort"`
+	// Thinking is whether extended thinking is on.
+	Thinking bool `json:"thinking"`
+	// Commands are the slash commands a prompt can start with.
+	Commands []AgentCommand `json:"commands"`
+	// Suggestion is claude's guess at the next prompt, until one is sent.
+	Suggestion string `json:"suggestion,omitempty"`
+	// Limits are the plan's usage windows, when known.
+	Limits []AgentLimit `json:"limits,omitempty"`
+}
+
+type AgentCommand struct {
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	ArgumentHint string `json:"argumentHint,omitempty"`
+}
+
+// AgentLimit is one rate-limit window of the claude.ai plan.
+type AgentLimit struct {
+	Window   string  `json:"window"`   // five_hour | seven_day | seven_day_opus | ...
+	Used     float64 `json:"used"`     // fraction of the window used, 0-1
+	ResetsAt int64   `json:"resetsAt"` // unix ms; 0 if unknown
 }
 
 // AgentWorkspace is where a claude thread runs.
@@ -362,16 +390,21 @@ type AgentStreaming struct {
 // AgentInfo describes the device's Claude Code install (agent.info), so the
 // web app can offer models before a thread's first message.
 type AgentInfo struct {
-	Available bool          `json:"available"`
-	Error     string        `json:"error,omitempty"` // why it isn't available
-	Models    []AgentModel  `json:"models"`
-	Account   *AgentAccount `json:"account,omitempty"`
+	Available bool           `json:"available"`
+	Error     string         `json:"error,omitempty"` // why it isn't available
+	Models    []AgentModel   `json:"models"`
+	Account   *AgentAccount  `json:"account,omitempty"`
+	Commands  []AgentCommand `json:"commands"`
+	Limits    []AgentLimit   `json:"limits,omitempty"`
 }
 
 type AgentModel struct {
-	Value       string `json:"value"`
-	DisplayName string `json:"displayName"`
-	Description string `json:"description,omitempty"`
+	Value        string   `json:"value"`
+	DisplayName  string   `json:"displayName"`
+	Description  string   `json:"description,omitempty"`
+	EffortLevels []string `json:"effortLevels,omitempty"` // empty: no effort control
+	// Thinking is whether the model can think (adaptively).
+	Thinking bool `json:"thinking,omitempty"`
 }
 
 type AgentAccount struct {
@@ -390,6 +423,7 @@ type AgentAccount struct {
 //   - turn {status, text?, costUsd?, durationMs?}: status is started |
 //     completed | interrupted | error
 //   - notice {text}: e.g. compaction, claude exiting
+//   - commandOutput {text}: what a local slash command printed
 //
 // ParentID is set on events from a subagent: the id of the tool call that
 // started it.

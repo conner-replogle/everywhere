@@ -157,6 +157,18 @@ func TestAgentThreads(t *testing.T) {
 		!a.Continue || string(a.Context) != `{"used":1}` {
 		t.Fatalf("after workspace updates: %+v", a)
 	}
+	if !a.Thinking || a.Effort != "" {
+		t.Fatalf("effort/thinking defaults: %+v", a)
+	}
+	if err := s.SetAgentEffort(th.ID, "max"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAgentThinking(th.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if a, _ := s.AgentThread(th.ID); a.Effort != "max" || a.Thinking {
+		t.Fatalf("after effort/thinking: %+v", a)
+	}
 	if ids, err := s.AgentThreadsToContinue(); err != nil || len(ids) != 1 || ids[0] != th.ID {
 		t.Fatalf("AgentThreadsToContinue = %v, %v", ids, err)
 	}

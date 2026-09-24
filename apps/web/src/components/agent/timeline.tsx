@@ -21,7 +21,12 @@ interface ToolItem {
 
 type Item =
   | ToolItem
-  | { kind: "event"; key: number; at: number; event: Ev<"user" | "assistant" | "thinking" | "notice" | "request" | "turn"> };
+  | {
+      kind: "event";
+      key: number;
+      at: number;
+      event: Ev<"user" | "assistant" | "thinking" | "notice" | "request" | "turn" | "commandOutput">;
+    };
 
 /**
  * Folds the flat log into what's drawn: each tool call collects its result
@@ -117,6 +122,8 @@ function ItemView({ item, cwd }: { item: Item; cwd?: string }) {
       return <Thinking text={e.text} />;
     case "notice":
       return <div className="text-center text-xs text-muted-foreground">— {e.text} —</div>;
+    case "commandOutput":
+      return <Output text={e.text} />;
     case "request":
       return <RequestLine event={e} />;
     case "turn":

@@ -46,6 +46,7 @@ const (
 
 var (
 	permissionModes = []string{"default", "acceptEdits", "plan", "auto", "bypassPermissions"}
+	effortLevels    = []string{"low", "medium", "high", "xhigh", "max"}
 	// defaultThreadName matches names the store generates, which a first
 	// prompt replaces.
 	defaultThreadName = regexp.MustCompile(`^claude \d+$`)
@@ -109,7 +110,9 @@ func newSession(m *Manager, threadID string, a store.AgentThread) *session {
 				Branch:     a.Branch,
 				Locked:     a.SessionID != "" || a.Worktree != "",
 			},
-			Context: usage,
+			Context:  usage,
+			Effort:   a.Effort,
+			Thinking: a.Thinking,
 		},
 	}
 	s.pub.Store(&published{status: statusStopped})
@@ -210,6 +213,14 @@ func (s *session) handle(c Client, msg protocol.AgentClientMsg) {
 		err = s.setModel(msg.Model)
 	case "setWorkspace":
 		err = s.setWorkspace(msg.Workspace, msg.BaseBranch)
+	case "setEffort":
+		err = s.setEffort(msg.Effort)
+	case "setThinking":
+		if msg.Thinking == nil {
+			err = errors.New("setThinking needs thinking")
+		} else {
+			err = s.setThinking(*msg.Thinking)
+		}
 	default:
 		err = fmt.Errorf("unknown request %q", msg.T)
 	}
@@ -298,6 +309,9 @@ func (s *session) ensureProc() error {
 		PermissionMode: a.PermissionMode,
 		Resume:         a.SessionID,
 		AddDirs:        []string{attachDir}, // so claude can read attached files
+		Settings:       sessionSettings(a.Effort, a.Thinking),
+		// Predicted next prompts, shown as a hint in the composer.
+		PromptSuggestions: true,
 	})
 	if err != nil {
 		return fail(err)
@@ -307,6 +321,66 @@ func (s *session) ensureProc() error {
 	s.state.Status = statusIdle
 	s.state.Workspace.Locked = true
 	s.refreshContext()
+	s.refreshLimits()
+	return nil
+}
+
+// sessionSettings is the flag-settings layer a thread starts with.
+func sessionSettings(effort string, thinking bool) map[string]any {
+	settings := map[string]any{}
+	if effort != "" {
+		settings["effortLevel"] = effort
+	}
+	if !thinking {
+		settings["alwaysThinkingEnabled"] = false
+	}
+	return settings
+}
+
+// refreshLimits asks claude for the plan's usage windows, so they show
+// before the first turn reports them.
+func (s *session) refreshLimits() {
+	ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
+	defer cancel()
+	if u, err := s.proc.Usage(ctx); err == nil {
+		s.m.setLimits(limitsFromUsage(u))
+	}
+}
+
+func (s *session) setEffort(effort string) error {
+	if effort != "" && !slices.Contains(effortLevels, effort) {
+		return fmt.Errorf("unknown effort %q", effort)
+	}
+	if s.proc != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
+		defer cancel()
+		var v any = effort
+		if effort == "" {
+			v = nil // back to the model's default
+		}
+		if err := s.proc.ApplyFlagSettings(ctx, map[string]any{"effortLevel": v}); err != nil {
+			return err
+		}
+	}
+	if err := s.m.store.SetAgentEffort(s.threadID, effort); err != nil {
+		return err
+	}
+	s.state.Effort = effort
+	return nil
+}
+
+func (s *session) setThinking(on bool) error {
+	if s.proc != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
+		defer cancel()
+		if err := s.proc.ApplyFlagSettings(ctx, map[string]any{"alwaysThinkingEnabled": on}); err != nil {
+			return err
+		}
+	}
+	if err := s.m.store.SetAgentThinking(s.threadID, on); err != nil {
+		return err
+	}
+	s.state.Thinking = on
 	return nil
 }
 
@@ -543,6 +617,14 @@ func (s *session) handleMessage(msg claude.Message) {
 		}
 		if msg.Decode(&f) == nil {
 			s.state.RateLimit = f.Info
+			s.m.setLimits(limitsFromEvent(f.Info))
+		}
+	case "prompt_suggestion":
+		var f struct {
+			Suggestion string `json:"suggestion"`
+		}
+		if msg.Decode(&f) == nil && !s.turnActive {
+			s.state.Suggestion = strings.TrimSpace(f.Suggestion)
 		}
 	default:
 		return
@@ -554,10 +636,12 @@ func (s *session) onSystem(msg claude.Message) {
 	switch msg.Subtype {
 	case "init":
 		var f struct {
-			Model          string `json:"model"`
-			PermissionMode string `json:"permissionMode"`
+			Model            string   `json:"model"`
+			PermissionMode   string   `json:"permissionMode"`
+			TerminalCommands []string `json:"terminal_slash_commands"`
 		}
 		_ = msg.Decode(&f)
+		s.m.noteTerminalCommands(f.TerminalCommands)
 		s.state.ActiveModel = f.Model
 		if f.PermissionMode != "" {
 			s.state.PermissionMode = f.PermissionMode
@@ -571,6 +655,20 @@ func (s *session) onSystem(msg claude.Message) {
 	case "compact_boundary":
 		s.emit(protocol.AgentEvent{Type: "notice", Text: "Conversation compacted"})
 		s.refreshContext()
+	case "commands_changed":
+		var f struct {
+			Commands []claude.SlashCommand `json:"commands"`
+		}
+		if msg.Decode(&f) == nil {
+			s.m.setCommands(f.Commands)
+		}
+	case "local_command_output":
+		var f struct {
+			Content string `json:"content"`
+		}
+		if msg.Decode(&f) == nil && strings.TrimSpace(f.Content) != "" {
+			s.emit(protocol.AgentEvent{Type: "commandOutput", Text: clipText(f.Content, maxOutputBytes)})
+		}
 	}
 }
 
@@ -788,6 +886,7 @@ func (s *session) onExit() {
 
 func (s *session) beginTurn() {
 	s.turnActive, s.interrupted = true, false
+	s.state.Suggestion = ""
 	s.emit(protocol.AgentEvent{Type: "turn", Status: "started"})
 }
 
@@ -861,6 +960,8 @@ func (s *session) stateMsg() protocol.AgentStateMsg {
 	if st.Models == nil {
 		st.Models = []protocol.AgentModel{}
 	}
+	st.Commands = s.m.visibleCommands()
+	st.Limits = s.m.currentLimits()
 	return protocol.AgentStateMsg{T: "state", State: st}
 }
 

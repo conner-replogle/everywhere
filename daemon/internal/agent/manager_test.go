@@ -28,6 +28,7 @@ type fakeProc struct {
 	responses  []claude.PermissionResult
 	interrupts int
 	modes      []string
+	flags      []map[string]any
 	closed     bool
 	exitErr    error
 }
@@ -36,7 +37,15 @@ func (p *fakeProc) Messages() <-chan claude.Message { return p.msgs }
 func (p *fakeProc) Init() claude.InitResponse {
 	return claude.InitResponse{
 		Account: claude.Account{Email: "me@example.com"},
-		Models:  []claude.Model{{Value: "default", DisplayName: "Default"}},
+		Models: []claude.Model{{
+			Value: "default", DisplayName: "Default",
+			SupportsEffort: true, SupportedEffortLevels: []string{"low", "high", "max"}, SupportsAdaptiveThinking: true,
+		}},
+		Commands: []claude.SlashCommand{
+			{Name: "review", Description: "Review a PR", ArgumentHint: "<pr>"},
+			{Name: "compact", Description: "Compact the conversation"},
+			{Name: "exit", Description: "Exit the REPL"},
+		},
 	}
 }
 func (p *fakeProc) Err() error { p.mu.Lock(); defer p.mu.Unlock(); return p.exitErr }
@@ -66,6 +75,18 @@ func (p *fakeProc) SetPermissionMode(_ context.Context, mode string) error {
 	return nil
 }
 func (p *fakeProc) SetModel(context.Context, string) error { return nil }
+func (p *fakeProc) ApplyFlagSettings(_ context.Context, settings map[string]any) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.flags = append(p.flags, settings)
+	return nil
+}
+func (p *fakeProc) Usage(context.Context) (claude.Usage, error) {
+	used, resets := 42.0, "2026-09-24T03:00:00Z"
+	return claude.Usage{RateLimitsAvailable: true, RateLimits: map[string]*claude.UsageRateLimit{
+		"five_hour": {Utilization: &used, ResetsAt: &resets},
+	}}, nil
+}
 func (p *fakeProc) ContextUsage(context.Context) (claude.ContextUsage, error) {
 	return claude.ContextUsage{TotalTokens: 30_000, MaxTokens: 200_000}, nil
 }
@@ -653,5 +674,95 @@ func TestContinueAfterUpdate(t *testing.T) {
 	}
 	if a, _ := h.st.AgentThread(h.thread); a.Continue {
 		t.Fatal("continue mark wasn't cleared")
+	}
+}
+
+func TestCommandsSuggestionsAndLimits(t *testing.T) {
+	h := newHarness(t)
+	c := h.attach(0)
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "hi"})
+	p := h.proc(0)
+	if !p.opts.PromptSuggestions {
+		t.Fatal("claude started without prompt suggestions")
+	}
+	eventually(t, "limits from get_usage", func() bool {
+		l := c.state().Limits
+		return len(l) == 1 && l[0].Window == "five_hour" && l[0].Used == 0.42 && l[0].ResetsAt > 0
+	})
+	if m := c.state().Models[0]; len(m.EffortLevels) != 3 || !m.Thinking {
+		t.Fatalf("model = %+v", m)
+	}
+
+	// Terminal-only commands are hidden once claude names them.
+	p.emit(`{"type":"system","subtype":"init","session_id":"s","terminal_slash_commands":["exit"]}`)
+	p.emit(`{"type":"result","subtype":"success"}`)
+	h.waitStatus(c, "idle")
+	var names []string
+	for _, cmd := range c.state().Commands {
+		names = append(names, cmd.Name)
+	}
+	if strings.Join(names, ",") != "compact,review" {
+		t.Fatalf("commands = %v", names)
+	}
+
+	// A suggestion arrives after the turn and goes away when the next starts.
+	p.emit(`{"type":"prompt_suggestion","suggestion":"run the tests","uuid":"u","session_id":"s"}`)
+	eventually(t, "suggestion", func() bool { return c.state().Suggestion == "run the tests" })
+	p.emit(`{"type":"rate_limit_event","rate_limit_info":{"unifiedWindows":{"five_hour":{"utilization":0.5,"resetsAt":1790215800},"seven_day":{"utilization":0.1,"resetsAt":1790236800}}}}`)
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "run the tests"})
+	eventually(t, "suggestion cleared", func() bool { return c.state().Suggestion == "" })
+	eventually(t, "limits from rate_limit_event", func() bool {
+		l := c.state().Limits
+		return len(l) == 2 && l[0].Window == "five_hour" && l[0].Used == 0.5 && l[1].ResetsAt == 1790236800000
+	})
+
+	// Local command output lands in the log.
+	p.emit(`{"type":"system","subtype":"local_command_output","content":"Total cost: $0.01"}`)
+	eventually(t, "command output", func() bool {
+		evs := c.events()
+		return len(evs) > 0 && evs[len(evs)-1].Type == "commandOutput" && evs[len(evs)-1].Text == "Total cost: $0.01"
+	})
+}
+
+func TestEffortAndThinking(t *testing.T) {
+	h := newHarness(t)
+	c := h.attach(0)
+	h.waitStatus(c, "stopped")
+	if s := c.state(); !s.Thinking || s.Effort != "" {
+		t.Fatalf("defaults: effort %q thinking %v", s.Effort, s.Thinking)
+	}
+	off := false
+	h.do(c, protocol.AgentClientMsg{T: "setEffort", Effort: "max"})
+	h.do(c, protocol.AgentClientMsg{T: "setThinking", Thinking: &off})
+	h.do(c, protocol.AgentClientMsg{T: "setEffort", Effort: "ludicrous"})
+	eventually(t, "bad effort refused", func() bool { return len(c.errors()) == 1 })
+
+	// Stored settings apply when claude starts.
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "hi"})
+	p := h.proc(0)
+	if p.opts.Settings["effortLevel"] != "max" || p.opts.Settings["alwaysThinkingEnabled"] != false {
+		t.Fatalf("started with settings %v", p.opts.Settings)
+	}
+
+	// While running, changes go through apply_flag_settings.
+	on := true
+	h.do(c, protocol.AgentClientMsg{T: "setEffort", Effort: ""})
+	h.do(c, protocol.AgentClientMsg{T: "setThinking", Thinking: &on})
+	eventually(t, "flag settings", func() bool {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return len(p.flags) == 2
+	})
+	p.mu.Lock()
+	flags := p.flags
+	p.mu.Unlock()
+	if v, ok := flags[0]["effortLevel"]; !ok || v != nil {
+		t.Fatalf("clearing effort sent %v", flags[0])
+	}
+	if flags[1]["alwaysThinkingEnabled"] != true {
+		t.Fatalf("thinking on sent %v", flags[1])
+	}
+	if a, _ := h.st.AgentThread(h.thread); a.Effort != "" || !a.Thinking {
+		t.Fatalf("stored effort %q thinking %v", a.Effort, a.Thinking)
 	}
 }

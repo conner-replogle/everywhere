@@ -41,6 +41,8 @@ type Store interface {
 	SetAgentContinue(threadID string, cont bool) error
 	AgentThreadsToContinue() ([]string, error)
 	SetAgentContext(threadID string, usage json.RawMessage) error
+	SetAgentEffort(threadID, effort string) error
+	SetAgentThinking(threadID string, on bool) error
 	AppendAgentEvent(threadID string, event json.RawMessage) (store.AgentEvent, error)
 	AgentEvents(threadID string, afterSeq int64, limit int) ([]store.AgentEvent, bool, error)
 }
@@ -56,6 +58,8 @@ type process interface {
 	SetPermissionMode(context.Context, string) error
 	SetModel(context.Context, string) error
 	ContextUsage(context.Context) (claude.ContextUsage, error)
+	ApplyFlagSettings(context.Context, map[string]any) error
+	Usage(context.Context) (claude.Usage, error)
 	Close()
 }
 
@@ -76,11 +80,14 @@ type Manager struct {
 	bin      string
 	env      []string
 
-	mu       sync.Mutex
-	sessions map[string]*session
-	models   []protocol.AgentModel
-	account  *protocol.AgentAccount
-	infoAt   time.Time // when models/account were last refreshed
+	mu           sync.Mutex
+	sessions     map[string]*session
+	models       []protocol.AgentModel
+	account      *protocol.AgentAccount
+	commands     []protocol.AgentCommand
+	terminalOnly []string // commands claude's own terminal UI keeps to itself
+	limits       []protocol.AgentLimit
+	infoAt       time.Time // when models/account were last refreshed
 
 	probeMu sync.Mutex // one Info probe at a time
 }
@@ -249,23 +256,6 @@ func (m *Manager) session(threadID string) (*session, error) {
 	return s, nil
 }
 
-// noteInit remembers the models and account from a claude initialize; they
-// are the same for every thread, so threads that haven't started yet can
-// show them too.
-func (m *Manager) noteInit(init claude.InitResponse) {
-	models := make([]protocol.AgentModel, 0, len(init.Models))
-	for _, mo := range init.Models {
-		models = append(models, protocol.AgentModel{Value: mo.Value, DisplayName: mo.DisplayName, Description: mo.Description})
-	}
-	var account *protocol.AgentAccount
-	if a := init.Account; a.Email != "" || a.SubscriptionType != "" {
-		account = &protocol.AgentAccount{Email: a.Email, SubscriptionType: a.SubscriptionType}
-	}
-	m.mu.Lock()
-	m.models, m.account, m.infoAt = models, account, time.Now()
-	m.mu.Unlock()
-}
-
 // Info reports whether claude is usable here and its models and account.
 // Without a recent session to learn them from, it starts a throwaway claude
 // just for the initialize handshake (no prompt, so no API use).
@@ -285,6 +275,11 @@ func (m *Manager) Info(ctx context.Context) protocol.AgentInfo {
 		}
 	}()
 	m.noteInit(p.Init())
+	uctx, cancel := context.WithTimeout(ctx, controlTimeout)
+	if u, err := p.Usage(uctx); err == nil {
+		m.setLimits(limitsFromUsage(u))
+	}
+	cancel()
 	p.Close()
 	info, _ := m.cachedInfo()
 	return info
@@ -292,11 +287,14 @@ func (m *Manager) Info(ctx context.Context) protocol.AgentInfo {
 
 func (m *Manager) cachedInfo() (protocol.AgentInfo, bool) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.infoAt.IsZero() || time.Since(m.infoAt) > infoTTL {
+	fresh := !m.infoAt.IsZero() && time.Since(m.infoAt) <= infoTTL
+	info := protocol.AgentInfo{Available: true, Models: m.models, Account: m.account, Limits: m.limits}
+	m.mu.Unlock()
+	if !fresh {
 		return protocol.AgentInfo{}, false
 	}
-	return protocol.AgentInfo{Available: true, Models: m.models, Account: m.account}, true
+	info.Commands = m.visibleCommands()
+	return info, true
 }
 
 func (m *Manager) initInfo() ([]protocol.AgentModel, *protocol.AgentAccount) {

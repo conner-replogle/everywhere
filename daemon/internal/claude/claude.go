@@ -46,7 +46,12 @@ type Options struct {
 	Resume         string   // session id to resume
 	SessionID      string   // id for a new session (a UUID); ignored with Resume
 	AddDirs        []string // extra directories tools may access
-	Args           []string // extra CLI flags, appended last
+	// Settings go into the session's flag settings layer (--settings), the
+	// same layer ApplyFlagSettings changes mid-session.
+	Settings map[string]any
+	// PromptSuggestions asks for a predicted next prompt after each turn.
+	PromptSuggestions bool
+	Args              []string // extra CLI flags, appended last
 }
 
 // Session is one running CLI process.
@@ -131,7 +136,7 @@ func Start(ctx context.Context, o Options) (*Session, error) {
 	}()
 	go s.pump()
 
-	resp, err := s.control(ctx, map[string]any{"subtype": "initialize"})
+	resp, err := s.control(ctx, map[string]any{"subtype": "initialize", "promptSuggestions": o.PromptSuggestions})
 	if err != nil {
 		s.abort()
 		if exitErr := s.Err(); errors.Is(err, ErrExited) && exitErr != nil {
@@ -170,6 +175,10 @@ func buildArgs(o Options) []string {
 	}
 	for _, d := range o.AddDirs {
 		args = append(args, "--add-dir", d)
+	}
+	if len(o.Settings) > 0 {
+		b, _ := json.Marshal(o.Settings)
+		args = append(args, "--settings", string(b))
 	}
 	return append(args, o.Args...)
 }
@@ -236,6 +245,25 @@ func (s *Session) Interrupt(ctx context.Context) error {
 func (s *Session) SetPermissionMode(ctx context.Context, mode string) error {
 	_, err := s.control(ctx, map[string]any{"subtype": "set_permission_mode", "mode": mode})
 	return err
+}
+
+// ApplyFlagSettings merges settings into the session's flag settings layer,
+// e.g. effortLevel or alwaysThinkingEnabled. A nil value clears a key.
+func (s *Session) ApplyFlagSettings(ctx context.Context, settings map[string]any) error {
+	_, err := s.control(ctx, map[string]any{"subtype": "apply_flag_settings", "settings": settings})
+	return err
+}
+
+// Usage returns what /usage shows: the plan's rate-limit windows and the
+// session's totals. The shape is experimental upstream.
+func (s *Session) Usage(ctx context.Context) (Usage, error) {
+	resp, err := s.control(ctx, map[string]any{"subtype": "get_usage", "skip_behaviors": true})
+	if err != nil {
+		return Usage{}, err
+	}
+	var u Usage
+	err = json.Unmarshal(resp, &u)
+	return u, err
 }
 
 // ContextUsage reports how full the context window is. It answers from the

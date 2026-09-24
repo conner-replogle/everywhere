@@ -68,6 +68,11 @@ ALTER TABLE threads ADD COLUMN agent_branch TEXT;
 ALTER TABLE threads ADD COLUMN agent_continue INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE threads ADD COLUMN agent_context TEXT;
 `,
+	// 4: per-thread effort and thinking.
+	`
+ALTER TABLE threads ADD COLUMN agent_effort TEXT;
+ALTER TABLE threads ADD COLUMN agent_thinking INTEGER NOT NULL DEFAULT 1;
+`,
 }
 
 type Store struct {
@@ -336,18 +341,21 @@ type AgentThread struct {
 	// Continue asks for the interrupted turn to be continued on startup.
 	Continue bool
 	Context  json.RawMessage // last known context usage, or nil
+	Effort   string          // "" means the model's default
+	Thinking bool
 }
 
 func (s *Store) AgentThread(threadID string) (AgentThread, error) {
 	var a AgentThread
-	var session, model, base, worktree, branch, ctxUsage sql.NullString
+	var session, model, base, worktree, branch, ctxUsage, effort sql.NullString
 	var kind string
 	err := s.db.QueryRow(`
 SELECT t.project_id, p.path, t.kind, t.agent_session_id, t.agent_model, t.agent_permission_mode,
-       t.agent_workspace, t.agent_base_branch, t.agent_worktree, t.agent_branch, t.agent_continue, t.agent_context
+       t.agent_workspace, t.agent_base_branch, t.agent_worktree, t.agent_branch, t.agent_continue, t.agent_context,
+       t.agent_effort, t.agent_thinking
 FROM threads t JOIN projects p ON p.id = t.project_id WHERE t.id = ?`, threadID,
 	).Scan(&a.ProjectID, &a.Dir, &kind, &session, &model, &a.PermissionMode,
-		&a.Workspace, &base, &worktree, &branch, &a.Continue, &ctxUsage)
+		&a.Workspace, &base, &worktree, &branch, &a.Continue, &ctxUsage, &effort, &a.Thinking)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
 	}
@@ -356,6 +364,7 @@ FROM threads t JOIN projects p ON p.id = t.project_id WHERE t.id = ?`, threadID,
 	}
 	a.SessionID, a.Model = session.String, model.String
 	a.BaseBranch, a.Worktree, a.Branch = base.String, worktree.String, branch.String
+	a.Effort = effort.String
 	if ctxUsage.Valid {
 		a.Context = json.RawMessage(ctxUsage.String)
 	}
@@ -394,6 +403,14 @@ func (s *Store) AgentThreadsToContinue() ([]string, error) {
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+func (s *Store) SetAgentEffort(threadID, effort string) error {
+	return s.execOne("UPDATE threads SET agent_effort = NULLIF(?, '') WHERE id = ?", effort, threadID)
+}
+
+func (s *Store) SetAgentThinking(threadID string, on bool) error {
+	return s.execOne("UPDATE threads SET agent_thinking = ? WHERE id = ?", on, threadID)
 }
 
 func (s *Store) SetAgentContext(threadID string, usage json.RawMessage) error {

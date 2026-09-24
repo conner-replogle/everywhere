@@ -1,4 +1,4 @@
-import type { AgentModel, AgentState, PermissionMode } from "@everywhere/protocol";
+import type { AgentCommand, AgentLimit, AgentModel, AgentState, PermissionMode } from "@everywhere/protocol";
 import { ArrowUpIcon, ChevronDownIcon, PaperclipIcon, RotateCcwIcon, SquareIcon, XIcon } from "lucide-react";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useDevice } from "@/components/device-context";
@@ -13,7 +13,16 @@ import {
 import { type AgentThread, useAgentThread } from "@/lib/agent";
 import { type DevicePeer, useRpc } from "@/lib/peer";
 import { cn } from "@/lib/utils";
-import { AttachmentChips, ContextMeter, useAttachments, WorkspacePicker } from "./composer-parts";
+import {
+  AttachmentChips,
+  ContextMeter,
+  matchCommands,
+  ReasoningMenu,
+  SlashMenu,
+  UsageMeter,
+  useAttachments,
+  WorkspacePicker,
+} from "./composer-parts";
 import { PendingRequest } from "./pending";
 import { buildItems, Timeline } from "./timeline";
 
@@ -43,10 +52,12 @@ export function AgentView({
   const { state } = agent;
   const { info } = useDevice();
   const features = info.data?.features ?? [];
-  // Before the thread has run, the models come from a probe of the device's claude.
+  // Before the thread has run, models and commands come from a probe of the device's claude.
   const needModels = features.includes("worktrees") && !!state && state.models.length === 0;
   const agentInfo = useRpc(peer, "agent.info", {}, [], needModels);
   const models = state?.models.length ? state.models : (agentInfo.data?.models ?? []);
+  const commands = state?.commands?.length ? state.commands : (agentInfo.data?.commands ?? []);
+  const limits = state?.limits?.length ? state.limits : agentInfo.data?.limits;
   const unlocked = !!state && !state.workspace.locked;
   const git = useRpc(peer, "git.info", { projectId }, [], unlocked && features.includes("worktrees"));
   // Paths are shown relative to wherever claude works: the worktree, if any.
@@ -105,6 +116,8 @@ export function AgentView({
             peer={peer}
             threadId={threadId}
             models={models}
+            commands={commands}
+            limits={limits}
             git={git.data}
             canAttach={features.includes("attachments")}
           />
@@ -184,6 +197,8 @@ function Composer({
   peer,
   threadId,
   models,
+  commands,
+  limits,
   git,
   canAttach,
 }: {
@@ -192,16 +207,32 @@ function Composer({
   peer: DevicePeer;
   threadId: string;
   models: AgentModel[];
+  commands: AgentCommand[];
+  limits: AgentLimit[] | undefined;
   git: Parameters<typeof WorkspacePicker>[0]["git"];
   canAttach: boolean;
 }) {
   const [text, setText] = useState("");
+  // The "/" command menu: open while the text is a bare "/word".
+  const [slashIndex, setSlashIndex] = useState(0);
+  const [slashDismissed, setSlashDismissed] = useState(false);
+  const slashTyped = /^\/(\S*)$/.exec(text)?.[1];
+  const slashMatches = slashTyped === undefined || slashDismissed ? [] : matchCommands(commands, slashTyped);
+  useEffect(() => setSlashIndex(0), [slashTyped]);
   const [dragging, setDragging] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const files = useAttachments(peer, threadId);
   const { state } = agent;
   const ready = agent.attached && agent.synced;
+  const suggestion = !busy && text === "" ? state?.suggestion : undefined;
+  const model = models.find((m) => m.value === (state?.model || "default"));
+
+  const pickCommand = (c: AgentCommand) => {
+    setText(`/${c.name} `);
+    setSlashDismissed(false);
+    ref.current?.focus();
+  };
 
   // Grow with the text, up to a limit.
   useEffect(() => {
@@ -240,19 +271,47 @@ function Composer({
       }}
     >
       <AttachmentChips items={files.items} onRemove={files.remove} />
+      <SlashMenu matches={slashMatches} active={slashIndex} onPick={pickCommand} onHover={setSlashIndex} />
       <textarea
         ref={ref}
         value={text}
         rows={1}
         autoFocus
         disabled={!ready}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          setText(e.target.value);
+          if (!e.target.value.startsWith("/")) setSlashDismissed(false);
+        }}
         onPaste={(e) => {
           if (!canAttach || e.clipboardData.files.length === 0) return;
           e.preventDefault();
           files.add(e.clipboardData.files);
         }}
         onKeyDown={(e) => {
+          if (slashMatches.length > 0) {
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              e.preventDefault();
+              const n = slashMatches.length;
+              setSlashIndex((i) => (i + (e.key === "ArrowDown" ? 1 : n - 1)) % n);
+              return;
+            }
+            if ((e.key === "Enter" || e.key === "Tab") && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              const c = slashMatches[slashIndex] ?? slashMatches[0];
+              if (c) pickCommand(c);
+              return;
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              setSlashDismissed(true);
+              return;
+            }
+          }
+          if (suggestion && (e.key === "Tab" || e.key === "ArrowRight")) {
+            e.preventDefault();
+            setText(suggestion);
+            return;
+          }
           if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault();
             submit();
@@ -262,11 +321,17 @@ function Composer({
           }
         }}
         placeholder={
-          !ready ? "Connecting…" : busy ? "Add to the current turn… (Esc to stop)" : "Ask Claude to do something…"
+          !ready
+            ? "Connecting…"
+            : busy
+              ? "Add to the current turn… (Esc to stop)"
+              : suggestion
+                ? `${suggestion}  (Tab to use)`
+                : "Ask Claude to do something… (/ for commands)"
         }
         className="block max-h-60 w-full resize-none bg-transparent px-3 pt-2.5 pb-1 outline-none placeholder:text-muted-foreground disabled:opacity-50"
       />
-      <div className="flex min-w-0 items-center gap-1 px-1.5 pb-1.5">
+      <div className="flex min-w-0 flex-wrap items-center gap-1 px-1.5 pb-1.5">
         {canAttach && (
           <>
             <Button
@@ -299,6 +364,16 @@ function Composer({
           disabled={!ready}
           onPick={(model) => agent.send({ t: "setModel", model })}
         />
+        {state?.thinking !== undefined && (
+          <ReasoningMenu
+            model={model}
+            effort={state.effort ?? ""}
+            thinking={state.thinking}
+            disabled={!ready}
+            onEffort={(effort) => agent.send({ t: "setEffort", effort })}
+            onThinking={(thinking) => agent.send({ t: "setThinking", thinking })}
+          />
+        )}
         {state && (
           <WorkspacePicker
             workspace={state.workspace}
@@ -308,6 +383,7 @@ function Composer({
           />
         )}
         <StatusText state={state} />
+        <UsageMeter limits={limits} />
         <ContextMeter context={state?.context} />
         {busy ? (
           <Button

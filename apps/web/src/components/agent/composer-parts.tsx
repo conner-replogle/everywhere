@@ -1,13 +1,23 @@
 // Composer pieces around the text box: where the thread runs, how full the
 // context is, and attached files.
 
-import type { AgentAttachment, AgentContext, AgentWorkspace, GitInfo } from "@everywhere/protocol";
-import { ChevronDownIcon, FileIcon, GitBranchIcon, ImageIcon, LoaderIcon, XIcon } from "lucide-react";
+import type {
+  AgentAttachment,
+  AgentCommand,
+  AgentContext,
+  AgentLimit,
+  AgentModel,
+  AgentWorkspace,
+  EffortLevel,
+  GitInfo,
+} from "@everywhere/protocol";
+import { BrainIcon, CheckIcon, ChevronDownIcon, FileIcon, GitBranchIcon, ImageIcon, LoaderIcon, XIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuCheckboxItem,
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
@@ -267,4 +277,168 @@ function formatBytes(n: number): string {
   if (n >= 1 << 20) return `${(n / (1 << 20)).toFixed(1)} MB`;
   if (n >= 1024) return `${Math.round(n / 1024)} KB`;
   return `${n} B`;
+}
+
+// --- effort and thinking ---------------------------------------------------------
+
+const EFFORT_LABELS: Record<EffortLevel, string> = {
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Max",
+};
+
+/**
+ * How hard Claude thinks: the model's effort level and whether it uses
+ * extended thinking. Hidden for models that support neither.
+ */
+export function ReasoningMenu({
+  model,
+  effort,
+  thinking,
+  disabled,
+  onEffort,
+  onThinking,
+}: {
+  /** The selected model, if its capabilities are known. */
+  model: AgentModel | undefined;
+  effort: EffortLevel | "";
+  thinking: boolean;
+  disabled: boolean;
+  onEffort: (e: EffortLevel | "") => void;
+  onThinking: (on: boolean) => void;
+}) {
+  const levels = model?.effortLevels ?? [];
+  if (levels.length === 0 && !model?.thinking) return null;
+  const label = [effort ? EFFORT_LABELS[effort] : null, thinking ? null : "no thinking"].filter(Boolean).join(", ");
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild disabled={disabled}>
+        <Button
+          variant="ghost"
+          size="sm"
+          className={cn("h-6 px-2 font-normal", (effort === "max" || effort === "xhigh") && "text-primary")}
+          title="Effort and thinking"
+        >
+          <BrainIcon className="size-3" />
+          <span className="max-sm:hidden">{label || "Effort"}</span>
+          <ChevronDownIcon className="size-3" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" side="top">
+        {levels.length > 0 && (
+          <>
+            <DropdownMenuLabel>Effort</DropdownMenuLabel>
+            <DropdownMenuItem onSelect={() => onEffort("")}>
+              <span className={cn(effort === "" && "text-primary")}>Model default</span>
+              {effort === "" && <CheckIcon className="ml-auto" />}
+            </DropdownMenuItem>
+            {levels.map((l) => (
+              <DropdownMenuItem key={l} onSelect={() => onEffort(l)}>
+                <span className={cn(effort === l && "text-primary")}>{EFFORT_LABELS[l] ?? l}</span>
+                {effort === l && <CheckIcon className="ml-auto" />}
+              </DropdownMenuItem>
+            ))}
+          </>
+        )}
+        {model?.thinking && (
+          <>
+            {levels.length > 0 && <DropdownMenuSeparator />}
+            <DropdownMenuCheckboxItem
+              checked={thinking}
+              onCheckedChange={(on) => onThinking(on === true)}
+              onSelect={(e) => e.preventDefault()}
+            >
+              Extended thinking
+            </DropdownMenuCheckboxItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+// --- plan usage ---------------------------------------------------------------------
+
+const WINDOW_LABELS: Record<string, string> = {
+  five_hour: "5-hour",
+  seven_day: "7-day",
+  seven_day_opus: "7-day Opus",
+  seven_day_sonnet: "7-day Sonnet",
+  seven_day_oauth_apps: "7-day apps",
+};
+
+function resetsIn(ms: number): string {
+  if (!ms) return "";
+  const mins = Math.max(0, Math.round((ms - Date.now()) / 60_000));
+  if (mins < 60) return `resets in ${mins}m`;
+  const h = Math.floor(mins / 60);
+  if (h < 48) return `resets in ${h}h ${mins % 60}m`;
+  return `resets ${new Date(ms).toLocaleDateString(undefined, { weekday: "short", hour: "numeric" })}`;
+}
+
+/** The plan's busiest usage window, with every window in the tooltip. */
+export function UsageMeter({ limits }: { limits: AgentLimit[] | undefined }) {
+  if (!limits || limits.length === 0) return null;
+  const top = limits.reduce((a, b) => (b.used > a.used ? b : a));
+  const pct = Math.round(top.used * 100);
+  const tone = pct >= 90 ? "text-destructive" : pct >= 75 ? "text-warn" : "text-muted-foreground";
+  const detail = limits
+    .map((l) => `${WINDOW_LABELS[l.window] ?? l.window}: ${Math.round(l.used * 100)}% used${l.resetsAt ? `, ${resetsIn(l.resetsAt)}` : ""}`)
+    .join("\n");
+  return (
+    <span
+      className={cn("flex h-6 shrink-0 items-center px-1.5 text-xs tabular-nums", tone)}
+      title={`Plan usage\n${detail}`}
+    >
+      {(WINDOW_LABELS[top.window] ?? top.window).replace("-hour", "h").replace("-day", "d").split(" ")[0]} {pct}%
+    </span>
+  );
+}
+
+// --- slash commands -----------------------------------------------------------------
+
+/** Commands matching what's typed after "/", best matches first. */
+export function matchCommands(commands: AgentCommand[], typed: string): AgentCommand[] {
+  const q = typed.toLowerCase();
+  const starts = commands.filter((c) => c.name.toLowerCase().startsWith(q));
+  const contains = commands.filter(
+    (c) => !c.name.toLowerCase().startsWith(q) && (c.name.toLowerCase().includes(q) || (q.length > 2 && c.description.toLowerCase().includes(q))),
+  );
+  return [...starts, ...contains].slice(0, 8);
+}
+
+export function SlashMenu({
+  matches,
+  active,
+  onPick,
+  onHover,
+}: {
+  matches: AgentCommand[];
+  active: number;
+  onPick: (c: AgentCommand) => void;
+  onHover: (i: number) => void;
+}) {
+  if (matches.length === 0) return null;
+  return (
+    <div role="listbox" aria-label="Commands" className="mx-1.5 mt-1.5 grid max-h-64 overflow-y-auto rounded-md border bg-popover py-1">
+      {matches.map((c, i) => (
+        <button
+          key={c.name}
+          type="button"
+          role="option"
+          aria-selected={i === active}
+          onMouseDown={(e) => e.preventDefault()} // keep focus in the textarea
+          onMouseEnter={() => onHover(i)}
+          onClick={() => onPick(c)}
+          className={cn("flex min-w-0 items-baseline gap-2 px-2.5 py-1 text-left", i === active && "bg-accent")}
+        >
+          <span className="shrink-0 font-mono text-[12px] text-foreground">/{c.name}</span>
+          {c.argumentHint && <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{c.argumentHint}</span>}
+          <span className="min-w-0 truncate text-xs text-muted-foreground">{c.description}</span>
+        </button>
+      ))}
+    </div>
+  );
 }
