@@ -29,14 +29,22 @@ export type HubToClient =
 
 /** Sent by a daemon to the hub. `to` is a browser connection id. */
 export type DaemonToHub =
-  | { t: "hello"; version: string }
-  | { t: "signal"; to: string; sid: string; data: SignalData };
+  /** features: what the daemon supports over this socket; absent on older daemons. */
+  | { t: "hello"; version: string; features?: HubFeature[] }
+  | { t: "signal"; to: string; sid: string; data: SignalData }
+  /** Answers an rpc request. */
+  | { t: "rpc.result"; id: string; result?: unknown; error?: { message: string } };
+
+/** rpc: the daemon answers rpc requests (see RemoteMethods). */
+export type HubFeature = "rpc";
 
 /** Sent by the hub to a daemon. `from` is a browser connection id. */
 export type HubToDaemon =
   | { t: "signal"; from: string; sid: string; data: SignalData }
   /** The browser connection's session was signed out; close its peers. */
   | { t: "client.revoked"; connId: string }
+  /** A request from an agent using the account's MCP endpoint; answered with rpc.result. */
+  | { t: "rpc"; id: string; method: string; params: unknown }
   | { t: "error"; code: HubErrorCode; message: string };
 
 export type HubErrorCode = "device_offline" | "client_gone" | "daemon_too_old" | "bad_message" | "revoked";
@@ -218,6 +226,57 @@ export interface RpcMethods {
   "debug.peer": [Record<string, never>, PeerDebug];
 }
 export type RpcMethod = keyof RpcMethods;
+
+/**
+ * What the hub's rpc requests can call on a daemon: the control methods
+ * (except debug.peer and device.update), plus reading and driving threads
+ * for callers without a WebRTC connection.
+ */
+export interface RemoteMethods extends Omit<RpcMethods, "debug.peer" | "device.update"> {
+  "threads.get": [{ threadId: string }, Thread];
+  /** Threads whose name or claude prompts and replies contain query, newest match first. */
+  "threads.search": [{ query: string; limit?: number }, SearchHit[]];
+  /**
+   * A claude thread's state and the newest limit events after afterSeq (and
+   * before beforeSeq). waitMs: first wait up to that long (at most 50s) for
+   * a turn in progress to finish or block on a prompt.
+   */
+  "agent.read": [
+    { threadId: string; afterSeq?: number; beforeSeq?: number; limit?: number; waitMs?: number },
+    AgentRead,
+  ];
+  /** Any agent channel request but attach and history. */
+  "agent.request": [{ threadId: string; msg: AgentClientMsg }, Record<string, never>];
+  /** The end of a terminal's scrollback as plain text. */
+  "term.read": [{ threadId: string; maxBytes?: number }, TermRead];
+  /** Types into a terminal thread, starting its shell if needed. */
+  "term.write": [{ threadId: string; text: string }, Record<string, never>];
+}
+export type RemoteMethod = keyof RemoteMethods;
+
+export interface SearchHit {
+  threadId: string;
+  /** Around the newest matching message; absent when only the name matched. */
+  snippet?: string;
+  at: number;
+}
+
+export interface AgentRead {
+  thread: Thread;
+  /** Without models and commands. */
+  state: AgentState;
+  events: { seq: number; at: number; event: AgentEvent }[];
+  /** There are older events before these. */
+  more: boolean;
+  /** The newest event's seq (0 if none). */
+  lastSeq: number;
+}
+
+export interface TermRead {
+  thread: Thread;
+  output: string;
+  truncated: boolean;
+}
 
 export interface RpcRequest<M extends RpcMethod = RpcMethod> {
   id: number;

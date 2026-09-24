@@ -276,3 +276,48 @@ func TestTabs(t *testing.T) {
 		t.Errorf("tabs survive their thread: %+v", tabs)
 	}
 }
+
+func TestSearchAgentEvents(t *testing.T) {
+	s := open(t)
+	home, _ := s.ListProjects()
+	a, _ := s.CreateThread(home[0].ID, "deploy pipeline", protocol.ThreadClaude)
+	b, _ := s.CreateThread(home[0].ID, "", protocol.ThreadClaude)
+	for _, ev := range []string{
+		`{"type":"user","id":"1","text":"Why is the Frobnicator slow?"}`,
+		`{"type":"tool","id":"2","name":"Bash","input":{"command":"frobnicator"}}`,
+		`{"type":"assistant","id":"3","text":"The frobnicator takes 100%_ of CPU"}`,
+	} {
+		if _, err := s.AppendAgentEvent(b.ID, json.RawMessage(ev)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	hits, err := s.SearchAgentEvents("FROBNICATOR", 10)
+	if err != nil || len(hits) != 1 || hits[0].ThreadID != b.ID {
+		t.Fatalf("hits = %+v, %v", hits, err)
+	}
+	if hits[0].Snippet != "The frobnicator takes 100%_ of CPU" {
+		t.Errorf("snippet = %q (want the newest match)", hits[0].Snippet)
+	}
+	if hits, _ := s.SearchAgentEvents("deploy", 10); len(hits) != 1 || hits[0].ThreadID != a.ID || hits[0].Snippet != "" {
+		t.Errorf("name search = %+v", hits)
+	}
+	// A claude tab's messages find its thread.
+	tab, err := s.CreateTab(a.ID, protocol.ThreadClaude, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendAgentEvent(tab.ID, json.RawMessage(`{"type":"assistant","id":"4","text":"zebra crossing"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if hits, _ := s.SearchAgentEvents("zebra", 10); len(hits) != 1 || hits[0].ThreadID != a.ID {
+		t.Errorf("tab search = %+v", hits)
+	}
+	// LIKE wildcards in the query are literal.
+	if hits, _ := s.SearchAgentEvents("100%_", 10); len(hits) != 1 {
+		t.Errorf("literal %%_ = %+v", hits)
+	}
+	if hits, _ := s.SearchAgentEvents("0_o", 10); len(hits) != 0 {
+		t.Errorf("_ matched as a wildcard: %+v", hits)
+	}
+}

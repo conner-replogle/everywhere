@@ -32,8 +32,10 @@ something you run in a terminal. Harness-specific support comes later.
                 (all project/thread/terminal data)
 ```
 
-- The Worker never sees project, thread, or terminal data. Those live only on
-  the daemon (SQLite) and travel over WebRTC.
+- Browsers never send project, thread, or terminal data through the Worker.
+  It lives only on the daemon (SQLite) and travels over WebRTC. The exception
+  is agents using the MCP endpoint (see MCP): their requests and the answers
+  are relayed through the hub.
 - ICE prefers direct paths: LAN, Tailscale (the daemon's tailnet host candidate
   plus peer-reflexive discovery) and NAT traversal via STUN. Cloudflare Realtime
   TURN is the fallback. The Worker mints 12-hour credentials for browsers
@@ -113,7 +115,7 @@ tags `device:<id>` / `client:<connId>`, identity in `serializeAttachment`, and
 Messages (JSON):
 
 ```
-daemon → hub   { t: "hello", version }
+daemon → hub   { t: "hello", version, features? }                features: ["rpc"]
 hub → client   { t: "presence", online: [deviceId] }            on client connect
 hub → client   { t: "presence.update", deviceId, online }
 client → hub   { t: "signal", to: deviceId, sid, data }         data = SDP offer | ICE candidate
@@ -121,6 +123,8 @@ hub → daemon   { t: "signal", from: connId, sid, data }
 daemon → hub   { t: "signal", to: connId, sid, data }           answer | candidates
 hub → client   { t: "signal", from: deviceId, sid, data }
 hub → any      { t: "error", code, message }                    e.g. daemon_too_old, device_offline
+hub → daemon   { t: "rpc", id, method, params }                 from the MCP endpoint (RemoteMethods)
+daemon → hub   { t: "rpc.result", id, result? | error? }
 ```
 
 The hub updates `devices.last_seen_at` on daemon connect and disconnect. `MIN_DAEMON_VERSION`
@@ -280,6 +284,31 @@ same one the Agent SDK uses (`internal/claude`):
 - **Thread list**: `threads.list` reports `running` and `agentStatus`
   (stopped | starting | idle | working | waiting | error).
 
+## MCP (agents such as a ChatGPT connector)
+
+`POST /mcp` is an MCP server (Streamable HTTP, stateless JSON responses) that
+lets another agent use the account: list devices, projects and threads, read
+threads, create projects and threads, send messages, answer permission prompts
+and type into terminals. Tools are in `apps/worker/src/mcp-tools.ts`. It also
+has `search` and `fetch`, the pair ChatGPT expects.
+
+- **Auth**: OAuth 2.1 (`apps/worker/src/oauth.ts`). Discovery through
+  `/.well-known/oauth-protected-resource[/mcp]` and
+  `/.well-known/oauth-authorization-server`. Clients register themselves at
+  `/oauth/register` (RFC 7591). `/oauth/authorize` requires the normal web
+  sign-in and then shows a consent page; only S256 PKCE is accepted. Access
+  tokens last 1 hour and refresh tokens 30 days; refresh tokens rotate. Each
+  approval is a grant (`oauth_grants`), listed and revocable under Settings →
+  Security. Changing or resetting the password revokes every grant.
+- **Transport**: tool calls reach daemons through the AccountHub as `rpc`
+  messages on the daemon's existing socket. Daemons that announce the `rpc`
+  hub feature serve `RemoteMethods` (`daemon/internal/peer/remote.go`): the
+  control methods (except `debug.peer` and `device.update`), plus
+  `threads.get`, `threads.search`, `agent.read` (log page plus state,
+  optionally waiting for a turn to finish), `agent.request` (any agent-channel
+  request except attach/history), `term.read` (scrollback as plain text) and
+  `term.write` (typing; bypasses the writer role).
+
 ## Web app
 
 ```
@@ -290,6 +319,7 @@ same one the Agent SDK uses (`internal/claude`):
                                 claude: timeline, permission/question/plan cards, composer
                                 tab strip: the thread, then its tabs; ?tab=<id> picks one
 /settings/devices               add device (shows install command), rename, revoke
+/settings/security              password, 2FA, sessions, connected apps (MCP URL, revoke grants)
 ```
 
 A PeerConnection to a device is opened lazily the first time it's viewed and

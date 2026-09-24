@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import {
+  BotIcon,
   CheckIcon,
   LogOutIcon,
   MonitorIcon,
@@ -10,6 +11,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { CopyButton } from "@/components/copy-button";
 import {
   DisableTwoFactorDialog,
   RegenerateCodesDialog,
@@ -18,7 +20,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { api, PASSWORD_HINT, PASSWORD_MAX, PASSWORD_MIN, type Session } from "@/lib/api";
+import { api, type Connection, PASSWORD_HINT, PASSWORD_MAX, PASSWORD_MIN, type Session } from "@/lib/api";
 import { auth, useAuth } from "@/lib/auth";
 import { describeUserAgent } from "@/lib/user-agent";
 import { cn, errorMessage, timeAgo } from "@/lib/utils";
@@ -45,6 +47,7 @@ function SecuritySettings() {
       <PasswordSection onChanged={sessions.reload} />
       <TwoFactorSection />
       <SessionsSection {...sessions} />
+      <ConnectionsSection />
     </div>
   );
 }
@@ -118,7 +121,7 @@ function PasswordSection({ onChanged }: { onChanged: () => void }) {
   }
 
   return (
-    <Section title="Password" description="Changing it signs out every other session.">
+    <Section title="Password" description="Changing it signs out every other session and connected app.">
       <form onSubmit={submit} className="flex max-w-sm flex-col gap-3">
         {/* Lets password managers attach the new password to the right account. */}
         <input type="text" autoComplete="username" value={username} readOnly hidden />
@@ -393,6 +396,88 @@ function SessionsSection({ sessions, error, reload, setSessions }: SessionsState
           setSessions((list) => list?.filter((s) => s.current));
         }}
       />
+    </Section>
+  );
+}
+
+// --- connected apps ------------------------------------------------------------------
+
+function ConnectionsSection() {
+  const [data, setData] = useState<{ mcpUrl: string; connections: Connection[] } | undefined>(undefined);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    api
+      .connections()
+      .then((d) => {
+        setData(d);
+        setError(null);
+      })
+      .catch((e: unknown) => setError(errorMessage(e)));
+  }, []);
+  useEffect(load, [load]);
+
+  async function revoke(id: string) {
+    setBusy(id);
+    setError(null);
+    try {
+      await api.revokeConnection(id);
+      setData((d) => d && { ...d, connections: d.connections.filter((c) => c.id !== id) });
+    } catch (e) {
+      setError(errorMessage(e));
+      load();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <Section
+      title="Connected apps"
+      description={
+        <>
+          AI agents like ChatGPT can use your devices, projects and threads over MCP. Add this URL as a connector
+          (in ChatGPT: Settings → Apps &amp; Connectors, with developer mode on), then sign in here to approve it.
+        </>
+      }
+    >
+      {data && (
+        <div className="mb-4 flex items-center gap-2">
+          <code className="min-w-0 flex-1 truncate rounded-md border bg-terminal px-2.5 py-1.5 font-mono text-xs">
+            {data.mcpUrl}
+          </code>
+          <CopyButton text={data.mcpUrl} />
+        </div>
+      )}
+      {!data && !error && <p className="text-muted-foreground">Loading…</p>}
+      {data && data.connections.length === 0 && <p className="text-muted-foreground">No apps connected.</p>}
+      {data && data.connections.length > 0 && (
+        <ul className="-my-2 divide-y">
+          {data.connections.map((c) => (
+            <li key={c.id} className="flex items-center gap-3 py-2">
+              <BotIcon className="size-4 shrink-0 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <div className="truncate font-medium">
+                  {c.name}
+                  {c.hosts.length > 0 && <span className="font-normal text-muted-foreground"> · {c.hosts.join(", ")}</span>}
+                </div>
+                <div className="text-xs text-muted-foreground">
+                  Connected {timeAgo(c.createdAt)} · {c.lastUsedAt ? `last used ${timeAgo(c.lastUsedAt)}` : "not used yet"}
+                </div>
+              </div>
+              <Button size="sm" variant="ghost" disabled={busy === c.id} onClick={() => revoke(c.id)}>
+                Disconnect
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {error && (
+        <p role="alert" className="mt-3 text-destructive">
+          {error}
+        </p>
+      )}
     </Section>
   );
 }

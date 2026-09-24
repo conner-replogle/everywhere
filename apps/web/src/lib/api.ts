@@ -44,6 +44,17 @@ export const PASSWORD_MIN = 10;
 export const PASSWORD_MAX = 256;
 export const PASSWORD_HINT = `${PASSWORD_MIN}–${PASSWORD_MAX} characters.`;
 
+/** An app (e.g. a ChatGPT connector) the user let use the MCP endpoint. */
+export interface Connection {
+  id: string;
+  /** Self-reported by the app. */
+  name: string;
+  /** Where the app's sign-in redirects to. */
+  hosts: string[];
+  createdAt: number;
+  lastUsedAt: number | null;
+}
+
 export interface EnrollToken {
   command: string;
   expiresAt: number;
@@ -112,6 +123,9 @@ export const api = {
   sessions: async () => (await request<{ sessions: Session[] }>("GET", "/api/auth/sessions")).sessions,
   revokeSession: (id: string) => request<object>("DELETE", `/api/auth/sessions/${encodeURIComponent(id)}`),
   revokeOtherSessions: () => request<object>("POST", "/api/auth/sessions/revoke-others"),
+
+  connections: () => request<{ mcpUrl: string; connections: Connection[] }>("GET", "/api/connections"),
+  revokeConnection: (id: string) => request<object>("DELETE", `/api/connections/${encodeURIComponent(id)}`),
 
   devices: async () => (await request<{ devices: Device[] }>("GET", "/api/devices")).devices,
   renameDevice: (id: string, name: string) =>

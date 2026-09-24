@@ -595,6 +595,82 @@ ORDER BY seq DESC LIMIT ?`, threadID, afterSeq, beforeSeq, limit+1)
 	return events, truncated, rows.Err()
 }
 
+// SearchHit is a thread whose name or claude messages contain a query.
+type SearchHit struct {
+	ThreadID string `json:"threadId"`
+	// Snippet is the newest matching message, around the match; empty when
+	// only the name matched.
+	Snippet string `json:"snippet,omitempty"`
+	At      int64  `json:"at"`
+}
+
+// SearchAgentEvents finds up to limit threads whose name or prompts and
+// replies (in the thread or its claude tabs) contain query
+// (case-insensitive), most recently matched first. Tabs aren't hits of
+// their own.
+func (s *Store) SearchAgentEvents(query string, limit int) ([]SearchHit, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return []SearchHit{}, nil
+	}
+	like := "%" + strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(query) + "%"
+	rows, err := s.db.Query(`
+SELECT thread_id, at, text FROM (
+  SELECT id AS thread_id, COALESCE(last_opened_at, created_at) AS at, 0 AS seq, '' AS text
+  FROM threads WHERE parent_id IS NULL AND name LIKE ?1 ESCAPE '\'
+  UNION ALL
+  -- A claude tab's messages count as its thread's.
+  SELECT COALESCE(t.parent_id, t.id), e.at, e.seq, json_extract(e.event, '$.text')
+  FROM agent_events e JOIN threads t ON t.id = e.thread_id
+  WHERE json_extract(e.event, '$.type') IN ('user', 'assistant')
+    AND json_extract(e.event, '$.text') LIKE ?1 ESCAPE '\'
+)
+ORDER BY at DESC, seq DESC LIMIT 1000`, like)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []SearchHit{}
+	seen := map[string]bool{}
+	for rows.Next() {
+		var h SearchHit
+		var text sql.NullString
+		if err := rows.Scan(&h.ThreadID, &h.At, &text); err != nil {
+			return nil, err
+		}
+		if seen[h.ThreadID] {
+			continue
+		}
+		seen[h.ThreadID] = true
+		h.Snippet = snippet(text.String, query)
+		out = append(out, h)
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, rows.Err()
+}
+
+// snippet is up to about 200 characters of text around query's first match.
+func snippet(text, query string) string {
+	r := []rune(text)
+	i := strings.Index(strings.ToLower(text), strings.ToLower(query))
+	if i < 0 {
+		i = 0
+	}
+	at := len([]rune(text[:i]))
+	start := max(0, at-80)
+	end := min(len(r), at+120)
+	out := strings.Join(strings.Fields(string(r[start:end])), " ")
+	if start > 0 {
+		out = "…" + out
+	}
+	if end < len(r) {
+		out += "…"
+	}
+	return out
+}
+
 // --- helpers ----------------------------------------------------------------
 
 func (s *Store) execOne(q string, args ...any) error {

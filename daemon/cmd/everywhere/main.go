@@ -160,6 +160,7 @@ func daemon(args []string) error {
 		Credential:      credential,
 		OnSignal:        srv.HandleSignal,
 		OnClientRevoked: srv.CloseClient,
+		OnRPC:           srv.Remote,
 	}
 	srv.SetSignaler(hc.Send)
 	go srv.ContinueAgents() // turns interrupted by an update

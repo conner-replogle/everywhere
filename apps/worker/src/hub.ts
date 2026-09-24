@@ -3,14 +3,30 @@ import type {
   ClientToHub,
   DaemonToHub,
   HubErrorCode,
+  HubFeature,
   HubToClient,
   HubToDaemon,
+  RemoteMethod,
+  RemoteMethods,
 } from "@everywhere/protocol";
 import { HUB_PING, HUB_PONG } from "@everywhere/protocol";
 import { randomId } from "./crypto";
 import { versionAtLeast } from "./version";
 
-type Attachment = { kind: "device"; id: string; since?: number } | { kind: "client"; id: string; session: string };
+type Attachment =
+  | { kind: "device"; id: string; since?: number; features?: HubFeature[] }
+  | { kind: "client"; id: string; session: string };
+
+/** How a relayed rpc request ended. */
+export type DeviceRpcResult<T = unknown> =
+  | { ok: true; result: T }
+  | { ok: false; code: "offline" | "unsupported" | "timeout" | "error"; message: string };
+
+interface PendingRpc {
+  deviceId: string;
+  resolve: (r: DeviceRpcResult) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
 
 // Daemons ping every 15s (25s in older versions). A daemon whose network went away
 // leaves its socket open here with nothing coming through, so one that hasn't
@@ -25,9 +41,13 @@ export const HUB_SESSION_HEADER = "x-ew-session";
 /**
  * One per account. Holds a hibernatable WebSocket for every connected daemon
  * and browser tab, relays WebRTC signaling between them, and broadcasts device
- * presence. It never sees terminal data.
+ * presence. It never sees browsers' terminal data; the only project and thread
+ * data through it is rpc for agents using the MCP endpoint.
  */
 export class AccountHub extends DurableObject<Env> {
+  /** rpc requests waiting on a daemon. In memory: the caller's request keeps the DO awake. */
+  private pending = new Map<string, PendingRpc>();
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair(HUB_PING, HUB_PONG));
@@ -94,7 +114,24 @@ export class AccountHub extends DurableObject<Env> {
       if (!versionAtLeast(m.version, this.env.MIN_DAEMON_VERSION)) {
         this.fail(ws, "daemon_too_old", `daemon ${m.version} is older than ${this.env.MIN_DAEMON_VERSION}; run \`everywhere update\``);
         ws.close(4001, "daemon_too_old");
+        return;
       }
+      if (Array.isArray(m.features)) {
+        const features = m.features.filter((f): f is HubFeature => f === "rpc");
+        ws.serializeAttachment({ ...me, features } satisfies Attachment);
+      }
+      return;
+    }
+    if (m.t === "rpc.result") {
+      const p = typeof m.id === "string" ? this.pending.get(m.id) : undefined;
+      if (!p || p.deviceId !== me.id) return;
+      this.pending.delete(m.id);
+      clearTimeout(p.timer);
+      p.resolve(
+        m.error
+          ? { ok: false, code: "error", message: String(m.error.message ?? "failed") }
+          : { ok: true, result: m.result },
+      );
       return;
     }
     if (isSignal(m)) {
@@ -125,6 +162,44 @@ export class AccountHub extends DurableObject<Env> {
     if (this.ctx.getWebSockets().some((ws) => (ws.deserializeAttachment() as Attachment | null)?.kind === "device")) {
       await this.ctx.storage.setAlarm(Date.now() + SWEEP_INTERVAL_MS);
     }
+  }
+
+  /** The online devices, and which of them answer rpc requests. */
+  async devices(): Promise<{ id: string; rpc: boolean }[]> {
+    const out = new Map<string, boolean>();
+    for (const ws of this.ctx.getWebSockets()) {
+      const a = ws.deserializeAttachment() as Attachment | null;
+      if (a?.kind === "device" && this.live(ws)) out.set(a.id, !!a.features?.includes("rpc"));
+    }
+    return [...out].map(([id, rpc]) => ({ id, rpc }));
+  }
+
+  /**
+   * Relays a request to a daemon over its socket (for agents using the MCP
+   * endpoint, which have no WebRTC connection) and waits for the answer.
+   */
+  async deviceRpc<M extends RemoteMethod>(
+    deviceId: string,
+    method: M,
+    params: RemoteMethods[M][0],
+    timeoutMs = 30_000,
+  ): Promise<DeviceRpcResult<RemoteMethods[M][1]>> {
+    const ws = this.socket(`device:${deviceId}`);
+    if (!ws) return { ok: false, code: "offline", message: "the device is offline" };
+    const a = ws.deserializeAttachment() as Attachment;
+    if (a.kind !== "device" || !a.features?.includes("rpc")) {
+      return { ok: false, code: "unsupported", message: "the device's daemon is too old for this; update it" };
+    }
+    const id = randomId();
+    const result = new Promise<DeviceRpcResult>((resolve) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        resolve({ ok: false, code: "timeout", message: "the device didn't answer in time" });
+      }, timeoutMs);
+      this.pending.set(id, { deviceId, resolve, timer });
+    });
+    send(ws, { t: "rpc", id, method, params } satisfies HubToDaemon);
+    return (await result) as DeviceRpcResult<RemoteMethods[M][1]>;
   }
 
   /** Called by the Worker when a device is revoked. */
@@ -163,6 +238,12 @@ export class AccountHub extends DurableObject<Env> {
     if (me?.kind !== "device") return;
     // A replacement socket may already be open for the same device.
     if (this.socket(`device:${me.id}`, ws)) return;
+    for (const [id, p] of this.pending) {
+      if (p.deviceId !== me.id) continue;
+      this.pending.delete(id);
+      clearTimeout(p.timer);
+      p.resolve({ ok: false, code: "offline", message: "the device disconnected" });
+    }
     this.broadcast({ t: "presence.update", deviceId: me.id, online: false });
     await this.touchDevice(me.id);
   }

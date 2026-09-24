@@ -39,8 +39,10 @@ function Login() {
   const [notice, setNotice] = useState<string | null>(null);
 
   async function done() {
-    // Only follow same-origin paths back.
-    if (to?.startsWith("/") && !to.startsWith("//")) router.history.replace(to);
+    // Only follow same-origin paths back. The OAuth consent page is served
+    // by the Worker, not the app, so it needs a real page load.
+    if (to?.startsWith("/oauth/")) window.location.replace(to);
+    else if (to?.startsWith("/") && !to.startsWith("//")) router.history.replace(to);
     else await navigate({ to: "/", replace: true });
   }
 

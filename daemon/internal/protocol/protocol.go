@@ -27,8 +27,9 @@ type SignalData struct {
 	Candidate *IceCandidate `json:"candidate,omitempty"`
 }
 
-// HubToDaemon is a relayed signal from a browser, an error, or
-// "client.revoked" (a browser connection's session was signed out).
+// HubToDaemon is a relayed signal from a browser, an error,
+// "client.revoked" (a browser connection's session was signed out), or
+// "rpc" (a request from an agent using the account's MCP endpoint).
 type HubToDaemon struct {
 	T       string     `json:"t"`
 	ConnID  string     `json:"connId,omitempty"`
@@ -37,11 +38,28 @@ type HubToDaemon struct {
 	Data    SignalData `json:"data"`
 	Code    string     `json:"code,omitempty"`
 	Message string     `json:"message,omitempty"`
+	// rpc
+	ID     string          `json:"id,omitempty"`
+	Method string          `json:"method,omitempty"`
+	Params json.RawMessage `json:"params,omitempty"`
 }
 
 type Hello struct {
 	T       string `json:"t"` // "hello"
 	Version string `json:"version"`
+	// HubFeatures lists what the daemon supports over the hub socket.
+	Features []string `json:"features,omitempty"`
+}
+
+// HubFeatureRPC: the daemon answers "rpc" requests from the hub.
+const HubFeatureRPC = "rpc"
+
+// HubRPCResult answers a hub "rpc" request (T "rpc.result").
+type HubRPCResult struct {
+	T      string    `json:"t"`
+	ID     string    `json:"id"`
+	Result any       `json:"result,omitempty"`
+	Error  *RPCError `json:"error,omitempty"`
 }
 
 type SignalOut struct {

@@ -165,6 +165,33 @@ func (m *Manager) Takeover(threadID string, c Client, cols, rows uint16) {
 	c.Writer(true)
 }
 
+// Scrollback returns a copy of the thread's recent output, or nil if its
+// shell isn't running.
+func (m *Manager) Scrollback(threadID string) []byte {
+	s := m.get(threadID)
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]byte(nil), s.scrollback...)
+}
+
+// Type writes p to the thread's shell as keystrokes, whoever the writer is,
+// spawning the shell at cols x rows if it isn't running. It's for callers
+// with no terminal of their own (an agent over the hub's RPC).
+func (m *Manager) Type(threadID string, p []byte, cols, rows uint16) error {
+	s, spawned, err := m.getOrSpawn(threadID, cols, rows)
+	if err != nil {
+		return err
+	}
+	if spawned && m.onChange != nil {
+		m.onChange()
+	}
+	_, err = s.ptmx.Write(p)
+	return err
+}
+
 // Kill terminates a thread's shell (used when the thread is deleted).
 func (m *Manager) Kill(threadID string) {
 	if s := m.get(threadID); s != nil {

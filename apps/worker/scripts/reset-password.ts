@@ -27,6 +27,7 @@ const statements = [
   `UPDATE users SET password_hash = ${sqlString(hash)} WHERE username = ${sqlString(username)}`,
   `DELETE FROM sessions WHERE user_id = ${who}`,
   `DELETE FROM mfa_challenges WHERE user_id = ${who}`,
+  `DELETE FROM oauth_grants WHERE user_id = ${who}`,
 ];
 if (disable2fa) {
   statements.push(
@@ -59,6 +60,6 @@ if (res.status !== 0) {
   console.error(res.stderr || res.stdout);
   process.exit(1);
 }
-console.log(`Password for ${username} reset. All sessions were signed out${disable2fa ? " and 2FA was disabled" : ""}.`);
+console.log(`Password for ${username} reset. All sessions and connected apps were signed out${disable2fa ? " and 2FA was disabled" : ""}.`);
 console.log(`Temporary password: ${password}`);
 console.log("Sign in and change it under Settings → Security.");

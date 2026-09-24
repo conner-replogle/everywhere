@@ -9,6 +9,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -144,6 +146,57 @@ func (m *Manager) Handle(threadID string, c Client, msg protocol.AgentClientMsg)
 		return
 	}
 	s.do(func() { s.handle(c, msg) })
+}
+
+// Request runs a request other than attach for a caller with no channel
+// of its own (an agent over the hub's RPC) and returns its error.
+func (m *Manager) Request(threadID string, msg protocol.AgentClientMsg) error {
+	if msg.T == "attach" || msg.T == "history" {
+		return fmt.Errorf("%s needs a channel", msg.T)
+	}
+	s, err := m.session(threadID)
+	if err != nil {
+		return err
+	}
+	c := &errClient{}
+	ran := false
+	s.call(func() {
+		ran = true
+		s.handle(c, msg)
+	})
+	if !ran {
+		return errClosed
+	}
+	return c.err
+}
+
+// State is a thread's live state, as an attached client sees it.
+func (m *Manager) State(threadID string) (protocol.AgentState, error) {
+	s, err := m.session(threadID)
+	if err != nil {
+		return protocol.AgentState{}, err
+	}
+	var st protocol.AgentState
+	ran := false
+	s.call(func() {
+		ran = true
+		st = s.stateMsg().State
+	})
+	if !ran {
+		return st, errClosed
+	}
+	return st, nil
+}
+
+var errClosed = errors.New("this thread was closed")
+
+// errClient keeps the first error a request reports.
+type errClient struct{ err error }
+
+func (c *errClient) Send(frame any) {
+	if e, ok := frame.(protocol.AgentErrorMsg); ok && c.err == nil {
+		c.err = errors.New(e.Message)
+	}
 }
 
 // Status reports whether a thread has a claude process and its status.

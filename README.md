@@ -35,6 +35,17 @@ everywhere update
 everywhere uninstall [--purge]
 ```
 
+## Connecting ChatGPT (or another agent)
+
+The Worker serves an MCP server at `https://ai.replogle.dev/mcp`. An agent that
+connects to it can see every device's projects and threads, read them, create
+projects and threads, message claude threads and answer their permission
+prompts, and type into terminals. In ChatGPT, turn on developer mode
+(Settings → Apps & Connectors → Advanced), create a connector with that URL
+and OAuth authentication, then sign in and approve it. Connected apps are
+listed under Settings → Security, where you can disconnect them. Devices need
+a daemon that includes this feature (`everywhere update`).
+
 ## Security
 
 - **Accounts:** passwords are hashed with PBKDF2-SHA256 (100k iterations) and must be 10–256
@@ -49,6 +60,9 @@ everywhere uninstall [--purge]
 - **CSRF and hijacking:** state-changing API calls must be JSON from an allowed Origin, and the
   browser WebSocket checks Origin. Static pages have a strict CSP (`script-src 'self'`,
   `frame-ancestors 'none'`), HSTS, nosniff and no-referrer.
+- **Connected apps (MCP):** OAuth 2.1 with PKCE, behind your normal sign-in plus a consent page.
+  Access tokens last an hour and refresh tokens rotate. Tokens are stored hashed. Tool calls and
+  their results pass through the Worker, unlike browser traffic.
 - **Devices:** each daemon has its own bearer credential, stored hashed on the server and `0600`
   on the device. Removing a device revokes it immediately. Terminal data goes browser ↔ daemon
   over DTLS and never passes through the Worker.

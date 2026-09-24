@@ -37,6 +37,9 @@ type Client struct {
 	OnSignal   SignalHandler
 	// OnClientRevoked is called when a browser connection's session is signed out.
 	OnClientRevoked func(connID string)
+	// OnRPC, if set, answers requests relayed from agents using the
+	// account's MCP endpoint. It's called on its own goroutine.
+	OnRPC func(method string, params json.RawMessage) (any, error)
 
 	conn atomic.Pointer[websocket.Conn]
 }
@@ -102,7 +105,11 @@ func (c *Client) session(ctx context.Context) error {
 	defer c.conn.Store(nil)
 	slog.Info("connected to hub", "server", c.Server)
 
-	hello, _ := json.Marshal(protocol.Hello{T: "hello", Version: version.Version})
+	h := protocol.Hello{T: "hello", Version: version.Version}
+	if c.OnRPC != nil {
+		h.Features = []string{protocol.HubFeatureRPC}
+	}
+	hello, _ := json.Marshal(h)
 	if err := conn.Write(ctx, websocket.MessageText, hello); err != nil {
 		return err
 	}
@@ -176,8 +183,38 @@ func (c *Client) session(ctx context.Context) error {
 			if c.OnClientRevoked != nil {
 				c.OnClientRevoked(msg.ConnID)
 			}
+		case "rpc":
+			if c.OnRPC != nil {
+				go c.answer(conn, msg.ID, msg.Method, msg.Params)
+			}
 		case "error":
 			slog.Warn("hub error", "code", msg.Code, "message", msg.Message)
 		}
+	}
+}
+
+// maxRPCResult bounds an answer; the hub's sockets take up to 32 MiB.
+const maxRPCResult = 16 << 20
+
+// answer runs one hub RPC request and sends its result.
+func (c *Client) answer(conn *websocket.Conn, id, method string, params json.RawMessage) {
+	out := protocol.HubRPCResult{T: "rpc.result", ID: id}
+	result, err := c.OnRPC(method, params)
+	if err == nil {
+		out.Result = result
+	} else {
+		out.Error = &protocol.RPCError{Message: err.Error()}
+	}
+	b, err := json.Marshal(out)
+	if err == nil && len(b) > maxRPCResult {
+		err = fmt.Errorf("the answer is too large (%d MB)", len(b)>>20)
+	}
+	if err != nil {
+		b, _ = json.Marshal(protocol.HubRPCResult{T: "rpc.result", ID: id, Error: &protocol.RPCError{Message: err.Error()}})
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := conn.Write(ctx, websocket.MessageText, b); err != nil {
+		slog.Debug("hub rpc answer", "method", method, "err", err)
 	}
 }

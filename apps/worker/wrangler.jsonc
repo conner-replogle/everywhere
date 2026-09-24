@@ -11,7 +11,7 @@
     "directory": "../web/dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/i/*"]
+    "run_worker_first": ["/api/*", "/i/*", "/mcp", "/oauth/*", "/.well-known/*"]
   },
   "d1_databases": [
     {

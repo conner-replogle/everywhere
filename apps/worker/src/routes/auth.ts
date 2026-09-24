@@ -214,6 +214,8 @@ auth.post("/password", requireUser, async (c) => {
     .bind(await hashPassword(newPassword!), user.id)
     .run();
   await revokeSessions(c.env, user.id, await otherSessionIds(c.env, user.id, c.var.sessionId));
+  // Connected apps (MCP) go too, like every other session.
+  await c.env.DB.prepare("DELETE FROM oauth_grants WHERE user_id = ?").bind(user.id).run();
   return c.json({});
 });
 

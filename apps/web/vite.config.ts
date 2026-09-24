@@ -20,6 +20,9 @@ export default defineConfig({
     proxy: {
       "/api": { target: worker, ws: true, changeOrigin: false },
       "/i": { target: worker },
+      "/mcp": { target: worker },
+      "/oauth": { target: worker },
+      "/.well-known": { target: worker },
     },
   },
   build: { outDir: "dist" },

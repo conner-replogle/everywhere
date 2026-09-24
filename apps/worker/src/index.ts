@@ -3,6 +3,8 @@ import { bearerDevice } from "./auth";
 import { randomId, randomToken, sha256 } from "./crypto";
 import { HUB_ID_HEADER, HUB_KIND_HEADER, HUB_SESSION_HEADER } from "./hub";
 import { failingScript, installScript } from "./install";
+import { mcp } from "./mcp";
+import { oauth } from "./oauth";
 import { auth, requireUser } from "./routes/auth";
 import { iceServers, TURN_TTL_SECONDS } from "./turn";
 import { apiGuard, clientIp, originAllowed, rateLimited, tooMany } from "./security";
@@ -16,6 +18,9 @@ const app = new Hono<App>();
 
 app.use("/api/*", apiGuard);
 app.route("/api/auth", auth);
+// The MCP endpoint for agents, and the OAuth server that authorizes them.
+app.route("/", oauth);
+app.route("/", mcp);
 
 function hub(env: Env, accountId: string) {
   return env.HUB.get(env.HUB.idFromName(accountId));
@@ -54,6 +59,35 @@ app.delete("/api/devices/:id", requireUser, async (c) => {
     .run();
   if (res.meta.changes !== 1) return c.json({ error: "not found" }, 404);
   await hub(c.env, c.var.user.id).revokeDevice(id);
+  return c.json({});
+});
+
+// --- connected apps (OAuth grants for the MCP endpoint) ----------------------
+
+app.get("/api/connections", requireUser, async (c) => {
+  const { results } = await c.env.DB.prepare(
+    `SELECT g.id, c.name, c.redirect_uris, g.created_at AS createdAt, g.last_used_at AS lastUsedAt
+     FROM oauth_grants g JOIN oauth_clients c ON c.id = g.client_id
+     WHERE g.user_id = ? ORDER BY g.created_at DESC`,
+  )
+    .bind(c.var.user.id)
+    .all<{ id: string; name: string; redirect_uris: string; createdAt: number; lastUsedAt: number | null }>();
+  return c.json({
+    mcpUrl: `${c.env.PUBLIC_URL}/mcp`,
+    connections: results.map(({ redirect_uris, ...r }) => ({
+      ...r,
+      // Where the app said it lives; client names are self-reported.
+      hosts: [...new Set((JSON.parse(redirect_uris) as string[]).map((u) => new URL(u).host))],
+    })),
+  });
+});
+
+app.delete("/api/connections/:id", requireUser, async (c) => {
+  // RETURNING, not meta.changes: D1 counts the cascaded token rows too.
+  const row = await c.env.DB.prepare("DELETE FROM oauth_grants WHERE id = ? AND user_id = ? RETURNING id")
+    .bind(c.req.param("id"), c.var.user.id)
+    .first();
+  if (!row) return c.json({ error: "not found" }, 404);
   return c.json({});
 });
 
