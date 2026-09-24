@@ -72,7 +72,7 @@ func (s *Server) serveAgent(p *peer, dc *webrtc.DataChannel, threadID string) {
 
 		switch {
 		case m.T == "attach" && !attached:
-			if err := s.agents.Attach(threadID, c, m.AfterSeq); err != nil {
+			if err := s.agents.Attach(threadID, c, m.AfterSeq, m.Limit); err != nil {
 				c.mu.Lock()
 				c.attached = false
 				c.mu.Unlock()

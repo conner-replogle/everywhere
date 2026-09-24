@@ -44,7 +44,7 @@ type Store interface {
 	SetAgentEffort(threadID, effort string) error
 	SetAgentThinking(threadID string, on bool) error
 	AppendAgentEvent(threadID string, event json.RawMessage) (store.AgentEvent, error)
-	AgentEvents(threadID string, afterSeq int64, limit int) ([]store.AgentEvent, bool, error)
+	AgentEvents(threadID string, afterSeq, beforeSeq int64, limit int) ([]store.AgentEvent, bool, error)
 }
 
 // process is a running claude CLI; *claude.Session implements it.
@@ -113,14 +113,15 @@ func NewManager(st Store, dataDir string, onChange func()) *Manager {
 	return m
 }
 
-// Attach connects c to a thread: it replays events after afterSeq, then
-// sends the live state and every change after it.
-func (m *Manager) Attach(threadID string, c Client, afterSeq int64) error {
+// Attach connects c to a thread: it replays up to limit of the newest events
+// after afterSeq (0 means the most it will send), then sends the live state
+// and every change after it.
+func (m *Manager) Attach(threadID string, c Client, afterSeq int64, limit int) error {
 	s, err := m.session(threadID)
 	if err != nil {
 		return err
 	}
-	s.do(func() { s.attach(c, afterSeq) })
+	s.do(func() { s.attach(c, afterSeq, limit) })
 	return nil
 }
 

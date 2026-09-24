@@ -69,9 +69,10 @@ export interface DeviceInfo {
 /**
  * claude: claude threads and the agent channel. update: device.checkUpdate and
  * device.update. worktrees: claude threads in their own git worktree, and
- * git.info. attachments: upload channels and attachments on send.
+ * git.info. attachments: upload channels and attachments on send. history:
+ * the agent attach limit and history paging.
  */
-export type DeviceFeature = "claude" | "update" | "worktrees" | "attachments";
+export type DeviceFeature = "claude" | "update" | "worktrees" | "attachments" | "history";
 
 export interface UpdateInfo {
   current: string;
@@ -202,7 +203,10 @@ export type TermDaemonMsg =
  * after `afterSeq`, sends `synced`, then the live state and every change.
  */
 export type AgentClientMsg =
-  | { t: "attach"; afterSeq?: number }
+  /** limit (history): replay only the newest this many; the default is the most the daemon sends. */
+  | { t: "attach"; afterSeq?: number; limit?: number }
+  /** history: the page of events before beforeSeq, answered with a history frame. */
+  | { t: "history"; beforeSeq: number; limit?: number }
   /** attachments: ids of finished uploads. */
   | { t: "send"; text: string; attachments?: string[] }
   | { t: "interrupt" }
@@ -228,7 +232,10 @@ export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
 export type AgentDaemonMsg =
   | { t: "event"; seq: number; at: number; event: AgentEvent }
+  /** truncated: there are older events than the ones replayed. */
   | { t: "synced"; truncated: boolean }
+  /** Answers history: events oldest first; more when there are older ones still. */
+  | { t: "history"; events: { seq: number; at: number; event: AgentEvent }[]; more: boolean }
   | { t: "state"; state: AgentState }
   /** Appends to state.streaming[key]; not persisted. */
   | { t: "delta"; key: string; kind: "text" | "thinking"; text: string }

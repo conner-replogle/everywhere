@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -447,12 +448,16 @@ RETURNING seq`, threadID, e.At, string(event), threadID).Scan(&e.Seq)
 	return e, err
 }
 
-// AgentEvents returns a thread's events after afterSeq, oldest first. When
-// more than limit match, it returns the newest limit and truncated is true.
-func (s *Store) AgentEvents(threadID string, afterSeq int64, limit int) (events []AgentEvent, truncated bool, err error) {
+// AgentEvents returns a thread's events after afterSeq and, unless beforeSeq
+// is 0, before beforeSeq, oldest first. When more than limit match, it
+// returns the newest limit and truncated is true.
+func (s *Store) AgentEvents(threadID string, afterSeq, beforeSeq int64, limit int) (events []AgentEvent, truncated bool, err error) {
+	if beforeSeq <= 0 {
+		beforeSeq = math.MaxInt64
+	}
 	rows, err := s.db.Query(`
-SELECT seq, at, event FROM agent_events WHERE thread_id = ? AND seq > ?
-ORDER BY seq DESC LIMIT ?`, threadID, afterSeq, limit+1)
+SELECT seq, at, event FROM agent_events WHERE thread_id = ? AND seq > ? AND seq < ?
+ORDER BY seq DESC LIMIT ?`, threadID, afterSeq, beforeSeq, limit+1)
 	if err != nil {
 		return nil, false, err
 	}

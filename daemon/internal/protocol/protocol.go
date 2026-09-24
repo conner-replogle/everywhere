@@ -78,6 +78,7 @@ const (
 	FeatureUpdate      = "update"      // device.checkUpdate and device.update
 	FeatureWorktrees   = "worktrees"   // claude threads in their own worktree; git.info
 	FeatureAttachments = "attachments" // upload channels and send attachments
+	FeatureHistory     = "history"     // agent attach limit and history paging
 )
 
 // UpdateInfo is the result of device.checkUpdate.
@@ -211,7 +212,10 @@ type TermError struct {
 // ---------------------------------------------------------------------------
 
 // AgentClientMsg is a frame from the browser, discriminated by T:
-//   - attach {afterSeq}: must come first; replays events after afterSeq
+//   - attach {afterSeq, limit?}: must come first; replays the newest limit
+//     events after afterSeq
+//   - history {beforeSeq, limit?}: the page of events before beforeSeq, as
+//     a history frame to this client only
 //   - send {text, attachments?}: a prompt; starts or resumes claude as needed.
 //     Attachments are ids from finished uploads.
 //   - interrupt
@@ -224,6 +228,8 @@ type TermError struct {
 type AgentClientMsg struct {
 	T         string            `json:"t"`
 	AfterSeq  int64             `json:"afterSeq,omitempty"`
+	BeforeSeq int64             `json:"beforeSeq,omitempty"`
+	Limit     int               `json:"limit,omitempty"` // attach and history: page size
 	Text      string            `json:"text,omitempty"`
 	RequestID string            `json:"requestId,omitempty"`
 	Decision  string            `json:"decision,omitempty"` // allow | allowSession | deny
@@ -244,6 +250,18 @@ type (
 	// AgentEventMsg carries one persisted event (T "event").
 	AgentEventMsg struct {
 		T     string          `json:"t"`
+		Seq   int64           `json:"seq"`
+		At    int64           `json:"at"`
+		Event json.RawMessage `json:"event"`
+	}
+	// AgentHistoryMsg answers history (T "history"): events oldest first,
+	// and whether there are more before them.
+	AgentHistoryMsg struct {
+		T      string             `json:"t"`
+		Events []AgentLoggedEvent `json:"events"`
+		More   bool               `json:"more"`
+	}
+	AgentLoggedEvent struct {
 		Seq   int64           `json:"seq"`
 		At    int64           `json:"at"`
 		Event json.RawMessage `json:"event"`

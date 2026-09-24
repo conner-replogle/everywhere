@@ -37,6 +37,9 @@ export const MODES: { value: PermissionMode; label: string; hint: string }[] = [
 
 const BROWSER_TOOL = /^mcp__everywhere__browser_/;
 
+/** Timeline items drawn at first; earlier ones load on request. */
+const PAGE = 150;
+
 export function AgentView({
   peer,
   threadId,
@@ -82,17 +85,40 @@ export function AgentView({
   const git = useRpc(peer, "git.info", { projectId }, [], unlocked && features.includes("worktrees"));
   // Paths are shown relative to wherever claude works: the worktree, if any.
   const workdir = state?.workspace.path || cwd;
-  const items = useMemo(() => buildItems(agent.events), [agent.events]);
+  const allItems = useMemo(() => buildItems(agent.events), [agent.events]);
+  const [shown, setShown] = useState(PAGE);
+  const items = useMemo(() => allItems.slice(-shown), [allItems, shown]);
+  const hidden = allItems.length - items.length;
+  const canPage = features.includes("history");
   const busy = state?.status === "working" || state?.status === "waiting" || state?.status === "starting";
 
   // Follow new output while the user is at the bottom.
   const scrollRef = useRef<HTMLDivElement>(null);
   const atBottom = useRef(true);
   const lastTop = useRef(0);
+  // Set when earlier items are asked for, to keep the view where it was once
+  // they're added above; a page from the device may arrive renders later.
+  const heightBefore = useRef<number | null>(null);
+  const firstKey = items[0]?.key;
+  const lastFirstKey = useRef(firstKey);
   useLayoutEffect(() => {
     const el = scrollRef.current;
-    if (el && atBottom.current) el.scrollTop = el.scrollHeight;
+    const grewAbove = firstKey !== undefined && lastFirstKey.current !== undefined && firstKey < lastFirstKey.current;
+    lastFirstKey.current = firstKey;
+    if (!el) return;
+    if (grewAbove && heightBefore.current !== null) {
+      el.scrollTop += el.scrollHeight - heightBefore.current;
+      heightBefore.current = null;
+    } else if (atBottom.current) el.scrollTop = el.scrollHeight;
   });
+  const showEarlier = () => {
+    heightBefore.current = scrollRef.current?.scrollHeight ?? null;
+    if (hidden > 0) setShown((n) => n + PAGE);
+    else {
+      setShown(allItems.length + PAGE);
+      agent.loadEarlier();
+    }
+  };
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -111,8 +137,18 @@ export function AgentView({
         }}
       >
         <div className="mx-auto flex max-w-3xl flex-col gap-3 px-4 py-4">
-          {agent.truncated && (
-            <p className="text-center text-xs text-muted-foreground">Older messages aren't shown.</p>
+          {hidden > 0 || (agent.truncated && canPage) ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="self-center text-muted-foreground"
+              disabled={agent.loadingEarlier || (hidden === 0 && !agent.attached)}
+              onClick={showEarlier}
+            >
+              {agent.loadingEarlier ? "Loading earlier…" : hidden > 0 ? `Show earlier (${hidden})` : "Show earlier"}
+            </Button>
+          ) : (
+            agent.truncated && <p className="text-center text-xs text-muted-foreground">Older messages aren't shown.</p>
           )}
           {agent.synced && agent.events.length === 0 && <EmptyState />}
           <Timeline

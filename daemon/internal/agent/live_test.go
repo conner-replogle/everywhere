@@ -47,7 +47,7 @@ func TestLive(t *testing.T) {
 	}
 
 	c := &fakeClient{}
-	if err := m.Attach(th.ID, c, 0); err != nil {
+	if err := m.Attach(th.ID, c, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	wait := func(what string, cond func(protocol.AgentState) bool) protocol.AgentState {

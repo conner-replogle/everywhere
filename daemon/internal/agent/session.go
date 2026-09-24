@@ -186,8 +186,8 @@ func (s *session) run() {
 
 // --- client requests --------------------------------------------------------
 
-func (s *session) attach(c Client, afterSeq int64) {
-	events, truncated, err := s.m.store.AgentEvents(s.threadID, afterSeq, replayLimit)
+func (s *session) attach(c Client, afterSeq int64, limit int) {
+	events, truncated, err := s.m.store.AgentEvents(s.threadID, afterSeq, 0, pageLimit(limit))
 	if err != nil {
 		c.Send(errorMsg(err.Error()))
 		return
@@ -200,9 +200,35 @@ func (s *session) attach(c Client, afterSeq int64) {
 	s.clients[c] = true
 }
 
+// history sends the page of events before beforeSeq to c alone.
+func (s *session) history(c Client, beforeSeq int64, limit int) {
+	events, more, err := s.m.store.AgentEvents(s.threadID, 0, beforeSeq, pageLimit(limit))
+	if err != nil {
+		c.Send(errorMsg(err.Error()))
+		return
+	}
+	msg := protocol.AgentHistoryMsg{T: "history", Events: make([]protocol.AgentLoggedEvent, len(events)), More: more}
+	for i, e := range events {
+		msg.Events[i] = protocol.AgentLoggedEvent{Seq: e.Seq, At: e.At, Event: e.Event}
+	}
+	c.Send(msg)
+}
+
+// pageLimit caps a client's requested page size; 0 asks for the most.
+func pageLimit(limit int) int {
+	if limit <= 0 || limit > replayLimit {
+		return replayLimit
+	}
+	return limit
+}
+
 func (s *session) handle(c Client, msg protocol.AgentClientMsg) {
 	var err error
 	switch msg.T {
+	case "history":
+		// Only reads the log: nothing changed for other clients.
+		s.history(c, msg.BeforeSeq, msg.Limit)
+		return
 	case "send":
 		err = s.send(msg.Text, msg.Attachments)
 	case "interrupt":

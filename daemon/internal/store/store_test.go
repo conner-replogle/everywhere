@@ -179,19 +179,26 @@ func TestAgentThreads(t *testing.T) {
 			t.Fatalf("append %d: seq %d, %v", i, e.Seq, err)
 		}
 	}
-	events, truncated, err := s.AgentEvents(th.ID, 1, 2)
+	events, truncated, err := s.AgentEvents(th.ID, 1, 0, 2)
 	if err != nil || !truncated || len(events) != 2 || events[0].Seq != 4 || events[1].Seq != 5 {
 		t.Fatalf("AgentEvents(after 1, limit 2) = %+v truncated=%v %v", events, truncated, err)
 	}
-	events, truncated, _ = s.AgentEvents(th.ID, 3, 10)
+	events, truncated, _ = s.AgentEvents(th.ID, 3, 0, 10)
 	if truncated || len(events) != 2 || string(events[0].Event) != `{"n":3}` {
 		t.Fatalf("AgentEvents(after 3) = %+v truncated=%v", events, truncated)
+	}
+	events, more, _ := s.AgentEvents(th.ID, 0, 4, 2)
+	if !more || len(events) != 2 || events[0].Seq != 2 || events[1].Seq != 3 {
+		t.Fatalf("AgentEvents(before 4, limit 2) = %+v more=%v", events, more)
+	}
+	if events, more, _ = s.AgentEvents(th.ID, 0, 3, 10); more || len(events) != 2 || events[0].Seq != 1 {
+		t.Fatalf("AgentEvents(before 3) = %+v more=%v", events, more)
 	}
 
 	if err := s.DeleteThread(th.ID); err != nil {
 		t.Fatal(err)
 	}
-	if events, _, _ := s.AgentEvents(th.ID, 0, 10); len(events) != 0 {
+	if events, _, _ := s.AgentEvents(th.ID, 0, 0, 10); len(events) != 0 {
 		t.Errorf("events survived thread delete: %d", len(events))
 	}
 }

@@ -258,7 +258,7 @@ func (h *harness) proc(i int) *fakeProc {
 
 func (h *harness) attach(afterSeq int64) *fakeClient {
 	c := &fakeClient{}
-	if err := h.m.Attach(h.thread, c, afterSeq); err != nil {
+	if err := h.m.Attach(h.thread, c, afterSeq, 0); err != nil {
 		h.t.Fatal(err)
 	}
 	return c
@@ -337,6 +337,53 @@ func TestReattachReplaysAfterSeq(t *testing.T) {
 	eventually(t, "replay", func() bool { return late.state().Status == "idle" })
 	if got := eventTypes(late.events()); got != "turn:completed" {
 		t.Fatalf("replayed %s", got)
+	}
+}
+
+func TestAttachLimitAndHistory(t *testing.T) {
+	h := newHarness(t)
+	c := h.attach(0)
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "hi"})
+	p := h.proc(0)
+	p.emit(`{"type":"result","subtype":"success"}`)
+	h.waitStatus(c, "idle")
+	all := len(c.events())
+	if all < 3 {
+		t.Fatalf("only %d events", all)
+	}
+
+	// A new client asks for the newest event only, then pages back.
+	late := &fakeClient{}
+	if err := h.m.Attach(h.thread, late, 0, 1); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "replay", func() bool { return late.state().Status == "idle" })
+	late.mu.Lock()
+	first, synced := late.frames[0].(protocol.AgentEventMsg), late.frames[1].(protocol.AgentSyncedMsg)
+	late.mu.Unlock()
+	if first.Seq != int64(all) || !synced.Truncated {
+		t.Fatalf("attach with limit 1: seq %d, truncated %v", first.Seq, synced.Truncated)
+	}
+
+	h.do(late, protocol.AgentClientMsg{T: "history", BeforeSeq: first.Seq, Limit: 1})
+	h.do(late, protocol.AgentClientMsg{T: "history", BeforeSeq: 2})
+	var pages []protocol.AgentHistoryMsg
+	eventually(t, "history", func() bool {
+		late.mu.Lock()
+		defer late.mu.Unlock()
+		pages = nil
+		for _, f := range late.frames {
+			if m, ok := f.(protocol.AgentHistoryMsg); ok {
+				pages = append(pages, m)
+			}
+		}
+		return len(pages) == 2
+	})
+	if e := pages[0].Events; len(e) != 1 || e[0].Seq != first.Seq-1 || !pages[0].More {
+		t.Fatalf("page before %d: %+v", first.Seq, pages[0])
+	}
+	if e := pages[1].Events; len(e) != 1 || e[0].Seq != 1 || pages[1].More {
+		t.Fatalf("page before 2: %+v", pages[1])
 	}
 }
 
