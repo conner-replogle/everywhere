@@ -3,7 +3,7 @@ import { ArrowUpCircleIcon, LoaderIcon, RotateCwIcon } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { useDevice } from "@/components/device-context";
-import { cn } from "@/lib/utils";
+import { cn, errorMessage } from "@/lib/utils";
 
 const UPDATE_TIMEOUT_MS = 3 * 60_000; // download + verify on a slow link
 const RECHECK_MS = 15 * 60_000;
@@ -12,6 +12,8 @@ export interface UpdateCheck {
   /** The daemon can update itself (and so can be asked about updates). */
   supported: boolean;
   data: UpdateInfo | undefined;
+  /** Why the last check failed, if it did. */
+  error: string | null;
   checking: boolean;
   /** force skips the daemon's cached lookup of the latest release. */
   check: (force?: boolean) => void;
@@ -26,6 +28,7 @@ export function useUpdateCheck(): UpdateCheck {
   const supported = info.data?.features?.includes("update") ?? false;
   const enabled = supported && conn.state === "connected";
   const [data, setData] = useState<UpdateInfo>();
+  const [error, setError] = useState<string | null>(null);
   const [checking, setChecking] = useState(false);
 
   const check = useCallback(
@@ -33,8 +36,12 @@ export function useUpdateCheck(): UpdateCheck {
       setChecking(true);
       peer
         .call("device.checkUpdate", force ? { force: true } : {})
-        .then(setData)
-        .catch(() => {}) // offline or GitHub unreachable: keep what we had
+        .then((d) => {
+          setData(d);
+          setError(null);
+        })
+        // Keep what we had; the refresh button shows why.
+        .catch((e: unknown) => setError(errorMessage(e)))
         .finally(() => setChecking(false));
     },
     [peer],
@@ -54,7 +61,7 @@ export function useUpdateCheck(): UpdateCheck {
     };
   }, [enabled, conn.generation, check]);
 
-  return { supported, data, checking, check };
+  return { supported, data, error, checking, check };
 }
 
 /** The small button next to the version: re-read the device and look for a release now. */
@@ -69,14 +76,21 @@ export function RefreshVersionButton({ update }: { update: UpdateCheck }) {
         if (update.supported) update.check(true);
       }}
       disabled={update.checking}
-      className="shrink-0 rounded-sm p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-60"
+      className={cn(
+        "shrink-0 rounded-sm p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-60",
+        update.error && "text-warn",
+      )}
       aria-label="Check for updates"
       title={
         update.checking
           ? "Checking for updates…"
-          : upToDate
-            ? `Up to date (latest is ${update.data?.latest}). Click to check again.`
-            : "Check for updates"
+          : update.error
+            ? `Couldn't check for updates: ${update.error}`
+            : update.data?.reason
+              ? `${update.data.reason} Updates are off.`
+              : upToDate
+                ? `Up to date (latest is ${update.data?.latest}). Click to check again.`
+                : "Check for updates"
       }
     >
       <RotateCwIcon className={cn("size-3", update.checking && "animate-spin")} />
