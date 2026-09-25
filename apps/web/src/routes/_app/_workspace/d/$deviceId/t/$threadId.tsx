@@ -5,6 +5,7 @@ import {
   FolderTreeIcon,
   GlobeIcon,
   type LucideIcon,
+  MonitorIcon,
   PlusIcon,
   SparklesIcon,
   SquareTerminalIcon,
@@ -32,12 +33,14 @@ import { cn, errorMessage } from "@/lib/utils";
 const AgentView = lazy(() => import("@/components/agent/agent-view").then((m) => ({ default: m.AgentView })));
 const BrowserView = lazy(() => import("@/components/browser/browser-view").then((m) => ({ default: m.BrowserView })));
 const FilesView = lazy(() => import("@/components/files/files-view").then((m) => ({ default: m.FilesView })));
+const DesktopView = lazy(() => import("@/components/desktop/desktop-view").then((m) => ({ default: m.DesktopView })));
 
 const KIND_ICON: Record<TabKind, LucideIcon> = {
   terminal: SquareTerminalIcon,
   claude: SparklesIcon,
   browser: GlobeIcon,
   files: FolderTreeIcon,
+  desktop: MonitorIcon,
 };
 
 const KIND_LABEL: Record<TabKind, string> = {
@@ -45,6 +48,7 @@ const KIND_LABEL: Record<TabKind, string> = {
   claude: "Claude",
   browser: "Browser",
   files: "Files",
+  desktop: "Desktop",
 };
 
 /** The thread itself, or one of its tabs. */
@@ -60,7 +64,7 @@ function ThreadPage() {
   const { deviceId, threadId } = Route.useParams();
   const { tab: tabParam } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
-  const { peer, conn, threads, projects, info } = useDevice();
+  const { device, peer, conn, threads, projects, info } = useDevice();
   const features = info.data?.features ?? [];
   const thread = threads.data?.find((t) => t.id === threadId);
   const project = thread && projects.data?.find((p) => p.id === thread.projectId);
@@ -234,6 +238,22 @@ function ThreadPage() {
             />
           </Suspense>
         );
+      case "desktop":
+        return (
+          <Suspense>
+            <DesktopView
+              peer={peer}
+              deviceId={deviceId}
+              deviceName={device.name || info.data?.hostname || "the device"}
+              active={p.id === active?.id}
+              tab={{
+                id: p.id,
+                state: p.tabState,
+                onStateChange: (state) => void peer.call("tabs.setState", { id: p.id, state }).catch(() => {}),
+              }}
+            />
+          </Suspense>
+        );
     }
   };
 
@@ -287,8 +307,8 @@ function ThreadPage() {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start">
-                {(["terminal", "claude", "browser", "files"] as const)
-                  .filter((k) => k !== "claude" || features.includes("claude"))
+                {(["terminal", "claude", "browser", "files", "desktop"] as const)
+                  .filter((k) => (k !== "claude" && k !== "desktop") || features.includes(k))
                   .map((k) => {
                     const Icon = KIND_ICON[k];
                     return (

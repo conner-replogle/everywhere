@@ -11,6 +11,7 @@ import {
   HomeIcon,
   MonitorDownIcon,
   LogOutIcon,
+  MonitorIcon,
   MoreHorizontalIcon,
   PencilIcon,
   PlusIcon,
@@ -586,7 +587,10 @@ function DeviceRow({
   const { device, conn, info, peer } = entry;
   const online = useDeviceOnline(device.id);
   const update = useUpdateCheck();
+  const navigate = useNavigate();
   const live = conn.state === "connected";
+  const hasDesktop = live && !!info.data?.features?.includes("desktop");
+  const openDesktop = () => void navigate({ to: "/d/$deviceId/desktop", params: { deviceId: device.id } });
   const status = live
     ? info.data
       ? `${info.data.os}/${info.data.arch} · ${info.data.version}`
@@ -608,6 +612,24 @@ function DeviceRow({
           </span>
         </div>
         {live && info.data && <RefreshVersionButton update={update} />}
+        {hasDesktop && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className="text-muted-foreground pointer-coarse:size-8"
+            aria-label={`Remote desktop of ${deviceName(entry)}`}
+            title="Remote desktop"
+            asChild
+          >
+            <Link
+              to="/d/$deviceId/desktop"
+              params={{ deviceId: device.id }}
+              activeProps={{ className: "bg-accent text-accent-foreground" }}
+            >
+              <MonitorIcon />
+            </Link>
+          </Button>
+        )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
@@ -627,6 +649,12 @@ function DeviceRow({
               <FolderPlusIcon />
               New project…
             </DropdownMenuItem>
+            {hasDesktop && (
+              <DropdownMenuItem onSelect={openDesktop}>
+                <MonitorIcon />
+                Remote desktop
+              </DropdownMenuItem>
+            )}
             {conn.state === "failed" && (
               <DropdownMenuItem onSelect={() => peer.retry()}>
                 <RotateCcwIcon />

@@ -14,6 +14,9 @@ import (
 type Config struct {
 	Server   string `json:"server"`
 	DeviceID string `json:"deviceId"`
+	// Desktop allows remote desktop sessions. Only `everywhere desktop enable`,
+	// run on the device, turns it on.
+	Desktop bool `json:"desktop,omitempty"`
 }
 
 // ErrNotEnrolled is returned by Load when the device has never been enrolled.
@@ -81,6 +84,23 @@ func Save(cfg Config, credential string) error {
 		return err
 	}
 	return os.WriteFile(credentialPath(), []byte(credential+"\n"), 0o600)
+}
+
+// DesktopEnabled reads the config on each call, so enabling remote desktop
+// takes effect without restarting the daemon.
+func DesktopEnabled() bool {
+	cfg, _, err := Load()
+	return err == nil && cfg.Desktop
+}
+
+// SetDesktop turns remote desktop on or off.
+func SetDesktop(on bool) error {
+	cfg, cred, err := Load()
+	if err != nil {
+		return err
+	}
+	cfg.Desktop = on
+	return Save(cfg, cred)
 }
 
 // Remove deletes config and data directories.

@@ -112,7 +112,50 @@ const (
 	FeatureHistory     = "history"     // agent attach limit and history paging
 	FeatureArchive     = "archive"     // threads.archive and Thread.archivedAt
 	FeatureTabs        = "tabs"        // tabs.*, fs.list, threads.workdir and file channels
+	FeatureDesktop     = "desktop"     // desktop.info, desktop.start and desktop.stop
 )
+
+// DesktopInfo is the result of desktop.info.
+type DesktopInfo struct {
+	// Enabled is whether the device owner turned remote desktop on
+	// (`everywhere desktop enable`, run on the device).
+	Enabled bool `json:"enabled"`
+	// Available is whether a session can start now: the worker is installed
+	// and a Hyprland session is running. Reason says why not.
+	Available bool   `json:"available"`
+	Reason    string `json:"reason,omitempty"`
+	// Viewer names who is connected, if anyone.
+	Viewer string `json:"viewer,omitempty"`
+}
+
+// DesktopCandidateEvent carries one of a desktop session's ICE candidates to
+// the browser on the control channel (trickle ICE; the browser sends its own
+// with desktop.candidate).
+type DesktopCandidateEvent struct {
+	Event     string       `json:"event"` // EventDesktopCandidate
+	ID        string       `json:"id"`
+	Candidate IceCandidate `json:"candidate"`
+}
+
+const EventDesktopCandidate = "desktop.candidate"
+
+// DesktopSource is what desktop.start captures: a monitor by name, or a
+// window by id (Hyprland's stableId). Class and title find a tab's window
+// again after its app restarted. Empty: the focused monitor.
+type DesktopSource struct {
+	Output string `json:"output,omitempty"`
+	Window string `json:"window,omitempty"`
+	Class  string `json:"class,omitempty"`
+	Title  string `json:"title,omitempty"`
+}
+
+// DesktopStarted is the result of desktop.start {sdp, mode, viewer}: the
+// session id (for desktop.stop) and the SDP answer for the desktop's own
+// PeerConnection.
+type DesktopStarted struct {
+	ID  string `json:"id"`
+	SDP string `json:"sdp"`
+}
 
 // UpdateInfo is the result of device.checkUpdate.
 type UpdateInfo struct {
@@ -143,6 +186,7 @@ const (
 	// Tabs only.
 	ThreadBrowser = "browser"
 	ThreadFiles   = "files"
+	ThreadDesktop = "desktop" // a remote desktop view of one monitor or window
 )
 
 // Thread is a thread, or a tab inside one (ParentID set).

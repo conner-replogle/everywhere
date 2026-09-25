@@ -39,6 +39,7 @@ Usage:
   everywhere status                              show enrollment and service status
   everywhere service install|uninstall           manage the systemd unit
   everywhere update                              install the latest release
+  everywhere desktop enable|disable|status       allow remote desktop of this machine's screen
   everywhere uninstall [--purge]                 remove the service and binary (--purge: config and data too)
   everywhere version
 `
@@ -65,6 +66,8 @@ func main() {
 		err = serviceCmd(args)
 	case "update":
 		err = selfUpdate()
+	case "desktop":
+		err = desktopCmd(args)
 	case "uninstall":
 		err = uninstall(args)
 	case "version", "--version", "-v":
@@ -147,11 +150,16 @@ func daemon(args []string) error {
 
 	hostname, _ := os.Hostname()
 	home, _ := os.UserHomeDir()
+	features := []string{protocol.FeatureClaude, protocol.FeatureUpdate, protocol.FeatureWorktrees, protocol.FeatureAttachments, protocol.FeatureHistory, protocol.FeatureArchive, protocol.FeatureTabs}
+	if runtime.GOOS == "linux" {
+		features = append(features, protocol.FeatureDesktop)
+	}
 	srv := peer.NewServer(st, protocol.DeviceInfo{
 		Hostname: hostname, Home: home, OS: runtime.GOOS, Arch: runtime.GOARCH, Version: version.Version,
-		Features: []string{protocol.FeatureClaude, protocol.FeatureUpdate, protocol.FeatureWorktrees, protocol.FeatureAttachments, protocol.FeatureHistory, protocol.FeatureArchive, protocol.FeatureTabs},
+		Features: features,
 	}, config.DataDir())
 	defer srv.Shutdown()
+	srv.DesktopEnabled = config.DesktopEnabled
 	srv.ICEServers = (&ice.Provider{Server: cfg.Server, Credential: credential}).Servers
 	go srv.ICEServers() // warm the cache so the first connection doesn't wait
 
@@ -293,6 +301,10 @@ func uninstall(args []string) error {
 		return err
 	}
 	if err := os.Remove(exe); err != nil {
+		return err
+	}
+	// The remote desktop worker lives next to the daemon.
+	if err := os.Remove(filepath.Join(filepath.Dir(exe), update.WorkerName)); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	fmt.Println("Uninstalled. Remove the device in the web UI to revoke its access.")

@@ -318,7 +318,7 @@ func (s *Store) CreateThread(projectID, name, kind string) (protocol.Thread, err
 // worktree shares that worktree.
 func (s *Store) CreateTab(threadID, kind, name string) (protocol.Thread, error) {
 	switch kind {
-	case protocol.ThreadTerminal, protocol.ThreadClaude, protocol.ThreadBrowser, protocol.ThreadFiles:
+	case protocol.ThreadTerminal, protocol.ThreadClaude, protocol.ThreadBrowser, protocol.ThreadFiles, protocol.ThreadDesktop:
 	default:
 		return protocol.Thread{}, fmt.Errorf("unknown tab kind %q", kind)
 	}

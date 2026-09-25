@@ -35,6 +35,23 @@ everywhere update
 everywhere uninstall [--purge]
 ```
 
+## Remote desktop (Omarchy / Hyprland)
+
+See and control a machine's logged-in desktop from the web app, with low
+latency over WebRTC. Turn it on at the machine itself:
+
+```sh
+everywhere desktop enable
+```
+
+Then use the monitor button on the device's row in the sidebar for the whole
+desktop (workspaces, monitors), or add a **Desktop** tab to a thread to keep
+one monitor or one window next to it. Fullscreen also sends Super, Alt+Tab and
+Esc to the desktop (Chromium), and the clipboard is shared (text). It needs
+Hyprland ≥ 0.56, a VA-API GPU, GStreamer's `va` plugins (`gst-plugins-bad`,
+`gst-plugin-va`) and `wl-clipboard`; the `everywhere-desktop` worker comes in
+the Linux release next to `everywhere`. macOS is planned (see TODO.md).
+
 ## Connecting ChatGPT (or another agent)
 
 The Worker serves an MCP server at `https://ai.replogle.dev/mcp`. An agent that
@@ -93,6 +110,7 @@ Run a local daemon against it without touching your real config or systemd:
 
 ```sh
 cd daemon && CGO_ENABLED=0 go build -o bin/everywhere ./cmd/everywhere
+go build -o bin/everywhere-desktop ./cmd/everywhere-desktop   # remote desktop worker (cgo)
 # In the web UI (http://localhost:5173) sign up, click "Add device", copy the command, then:
 EVERYWHERE_HOME=/tmp/ew EVERYWHERE_BIN_DIR=/tmp/ew/bin EVERYWHERE_NO_SERVICE=1 \
   EVERYWHERE_BINARY=$PWD/bin/everywhere sh -c '<paste command>'
@@ -103,6 +121,13 @@ API security test (auth, 2FA, CSRF, sessions, rate limits) against a fresh local
 
 ```sh
 cd apps/worker && EW_TEST_SERVER=http://localhost:8787 bun test/security.e2e.ts
+```
+
+Remote desktop capture against the running Hyprland session (worker built as above):
+
+```sh
+cd daemon && EW_DESKTOP_LIVE=1 EVERYWHERE_DESKTOP_HELPER=$PWD/bin/everywhere-desktop \
+  go test ./internal/desktop -run Live -v
 ```
 
 End-to-end test (hub signaling → WebRTC → RPC → PTY), against that stack:

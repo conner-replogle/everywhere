@@ -2,12 +2,24 @@ version: 2
 project_name: everywhere
 
 builds:
-  - id: everywhere
+  # The daemon is CGO-free, so one runner cross-builds every target. Linux and
+  # macOS are separate builds only so their archives can differ.
+  - id: linux
     dir: daemon
     main: ./cmd/everywhere
     binary: everywhere
     env: [CGO_ENABLED=0]
-    goos: [linux, darwin]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X github.com/conner-replogle/everywhere/daemon/internal/version.Version={{ .Version }}
+  - id: darwin
+    dir: daemon
+    main: ./cmd/everywhere
+    binary: everywhere
+    env: [CGO_ENABLED=0]
+    goos: [darwin]
     goarch: [amd64, arm64]
     flags: [-trimpath]
     ldflags:
@@ -15,7 +27,20 @@ builds:
 
 archives:
   # The installer and `everywhere update` rely on these exact names.
-  - formats: [tar.gz]
+  - id: linux
+    ids: [linux]
+    formats: [tar.gz]
+    name_template: "everywhere_{{ .Os }}_{{ .Arch }}"
+    files:
+      # The remote desktop worker (cgo), built natively per architecture by
+      # the release workflow before goreleaser runs.
+      - src: "desktop-bin/{{ .Os }}_{{ .Arch }}/everywhere-desktop"
+        strip_parent: true
+        info:
+          mode: 0755
+  - id: darwin
+    ids: [darwin]
+    formats: [tar.gz]
     name_template: "everywhere_{{ .Os }}_{{ .Arch }}"
 
 checksum:

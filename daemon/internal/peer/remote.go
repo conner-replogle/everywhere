@@ -29,7 +29,8 @@ const (
 // channels do for a browser).
 func (s *Server) Remote(method string, raw json.RawMessage) (any, error) {
 	switch method {
-	case "debug.peer", "device.update":
+	case "debug.peer", "device.update", "desktop.info", "desktop.start", "desktop.candidate", "desktop.stop":
+		// Remote desktop is only for signed-in browsers, never MCP agents.
 		return nil, fmt.Errorf("%s isn't available remotely", method)
 	case "agent.read":
 		return s.remoteAgentRead(raw)

@@ -340,6 +340,79 @@ interrupt the user asked for).
   pushes; `GET /api/push/key` hands browsers its public half. iOS delivers
   push only to the app installed on the Home Screen.
 
+## Remote desktop
+
+See and control the device's logged-in Hyprland session (Omarchy) from the
+web app. It is omarchote's host, embedded in the daemon. macOS and the other
+TODO.md items come later.
+
+- **Remote desktop page** (`/d/$deviceId/desktop`, from the device's row in
+  the sidebar): the whole desktop, following the focused monitor, with the
+  workspace bar and a "Go to window" list that focuses a window.
+- **Desktop tab** (tab kind `desktop`, any number per thread): one monitor or
+  one **window**, saved in the tab's state (`{source: {output} | {window,
+  class, title}}`) and found again by app and title if the window was
+  reopened. A tab in the background (or a hidden page) closes its session and
+  reconnects when shown. Closing the tab ends its session.
+- **Window streaming**: the worker captures a window through
+  `ext_foreign_toplevel_image_capture_source_manager_v1` by its
+  ext-foreign-toplevel identifier, which is Hyprland's `stableId`. The pointer
+  maps from the window onto its monitor (geometry from Hyprland IPC, refreshed
+  on events and every second); a click or key first focuses the window
+  (`focuswindow address:…`) and Super is dropped, so input only reaches that
+  window. A resize restarts the capture at the new size; if the window
+  closes, the session falls back to its monitor.
+- **Clipboard** (text, on by default, "Share clipboard" in the viewer): the
+  host's changes go to the viewer (`wl-paste --watch`), which writes them once
+  it has focus; the viewer's clipboard goes to the host (`wl-copy`) when the
+  viewer returns from another app or clicks into the picture. Up to 200 KiB.
+
+- **Opt-in on the device**: off until `everywhere desktop enable` is run there
+  (`desktop` in config.json), so neither a stolen web session nor the Worker
+  can turn it on. `desktop.info` reports enabled/available and why not.
+  Never reachable over MCP (`RemoteMethods` refuses `desktop.*`).
+- **Signaling**: each session has its **own PeerConnection** (own media
+  engine, GCC, playout-delay extension), signaled over the device
+  connection's `control` channel: `desktop.start {sdp, mode, viewer, source?, tabId?}` →
+  `{id, sdp}`, then trickle ICE both ways (`desktop.candidate` RPC from the
+  browser, `desktop.candidate` events from the daemon), `desktop.stop {id}`.
+  Same STUN/TURN servers as the device connection. One session per device;
+  a new one takes over and the old viewer is told who.
+- **Media**: `ext-image-copy-capture-v1` straight from Hyprland (no portal,
+  no picker on the host) into dmabufs → GStreamer `vapostproc` → VA-API
+  H.264/H.265, no B-frames, bitrate from send-side BWE. Sharp (native, 4–40
+  Mbps), Smooth (≤1080p60) and Low (≤720p30, ≤3 Mbps). The viewer sets
+  `jitterBufferTarget = 0`; frames carry playout-delay 0.
+- **Worker**: capture, encoding and input injection run in
+  `everywhere-desktop` (cgo: Wayland, libgbm, GStreamer, xkbcommon), next to
+  the daemon binary; the daemon stays CGO-free. Linux release archives carry
+  it (built natively per architecture), and the installer and `everywhere
+  update` install it with the daemon; a worker from another protocol
+  revision (`ipc.Version`) is refused. It is started per capture
+  with its config as JSON and speaks `internal/desktop/ipc` over
+  stdin/stdout. A GPU encoder crash only takes the worker down; the session
+  restarts it. The daemon finds the live session through
+  `$XDG_RUNTIME_DIR/hypr/*/hyprland.lock`, since a lingering service can
+  outlive or predate the desktop.
+- **Session channels** (binary, `internal/desktop/wire`,
+  `apps/web/src/lib/desktop/protocol.ts`): `input` (unordered, no
+  retransmits: pointer moves) and `control` (keys by physical code → evdev,
+  buttons, scroll, ping, monitor and mode changes, workspace switches and
+  follow, window select/focus, clipboard and clipboard sync; from the host:
+  hello (with the captured window), cursor image and position, monitors,
+  mode info, workspaces, windows, clipboard, relay path, session ended).
+- **Input**: `zwlr_virtual_pointer_v1` bound to the captured monitor and
+  `zwp_virtual_keyboard_v1` with the host's XKB keymap. Everything held is
+  released when the viewer blurs, leaves or loses the session.
+- **Monitors and workspaces**: the session starts on the focused monitor and
+  follows Hyprland's focus (toggle in the viewer). Picking a monitor focuses
+  it. The workspace bar comes from Hyprland's event socket; switching sends
+  `dispatch workspace N` (only structured requests; no raw dispatch).
+- **On the host**: a notification when a session starts and ends; sleep is
+  inhibited while connected (hypridle still locks, and the lock screen can be
+  typed into). The viewer warns when traffic is relayed (TURN or Tailscale
+  DERP).
+
 ## Web app
 
 ```
@@ -349,6 +422,7 @@ interrupt the user asked for).
 /d/$deviceId/t/$threadId        terminal: xterm.js (WebGL, fit addon), writer banner + Take over
                                 claude: timeline, permission/question/plan cards, composer
                                 tab strip: the thread, then its tabs; ?tab=<id> picks one
+/d/$deviceId/desktop            remote desktop: video, workspace bar, monitor picker, fullscreen + keyboard lock
 /settings/devices               add device (shows install command), rename, revoke
 /settings/notifications         push notifications on this browser, test
 /settings/security              password, 2FA, sessions, connected apps (MCP URL, revoke grants)

@@ -31,9 +31,12 @@ func (s *Server) serveControl(p *peer, dc *webrtc.DataChannel) {
 			resp := protocol.RPCResponse{ID: req.ID}
 			var result any
 			var err error
-			if req.Method == "debug.peer" {
+			switch req.Method {
+			case "debug.peer":
 				result = p.debug()
-			} else {
+			case "desktop.start", "desktop.candidate", "desktop.stop":
+				result, err = s.callDesktop(p, req.Method, req.Params)
+			default:
 				result, err = s.call(req.Method, req.Params)
 			}
 			if err != nil {
@@ -45,8 +48,8 @@ func (s *Server) serveControl(p *peer, dc *webrtc.DataChannel) {
 			_ = dc.SendText(string(out))
 		}
 		// Requests are answered in order, except slow ones (GitHub, starting
-		// claude), which would hold up everything behind them.
-		if req.Method == "device.checkUpdate" || req.Method == "device.update" || req.Method == "agent.info" {
+		// claude or a desktop capture), which would hold up everything behind them.
+		if req.Method == "device.checkUpdate" || req.Method == "device.update" || req.Method == "agent.info" || req.Method == "desktop.start" {
 			go handle()
 		} else {
 			handle()
@@ -78,6 +81,11 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 	switch method {
 	case "device.info":
 		return s.info, nil
+	case "desktop.info":
+		if s.desktop == nil {
+			return protocol.DesktopInfo{Reason: "remote desktop isn't available in this daemon"}, nil
+		}
+		return s.desktop.Info(), nil
 	case "agent.info":
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
@@ -322,6 +330,10 @@ func (s *Server) killThread(t protocol.Thread, a store.AgentThread, keepWorktree
 		s.agents.Remove(t.ID, a, keepWorktree)
 	case t.Kind == protocol.ThreadBrowser:
 		s.browsers.Close(t.ParentID, "The browser tab was closed", true)
+	case t.Kind == protocol.ThreadDesktop:
+		if s.desktop != nil {
+			s.desktop.CloseTab(t.ID)
+		}
 	default:
 		s.stopThread(t)
 	}

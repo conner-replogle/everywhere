@@ -15,6 +15,7 @@ import (
 
 	"github.com/conner-replogle/everywhere/daemon/internal/agent"
 	"github.com/conner-replogle/everywhere/daemon/internal/browser"
+	"github.com/conner-replogle/everywhere/daemon/internal/desktop"
 	"github.com/conner-replogle/everywhere/daemon/internal/mcp"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/store"
@@ -31,13 +32,16 @@ type Server struct {
 	// Restart, if set, restarts the daemon into a newly installed binary;
 	// device.update needs it.
 	Restart func()
+	// DesktopEnabled reports whether the device owner turned remote desktop on.
+	DesktopEnabled func() bool
 
 	store    *store.Store
 	terms    *term.Manager
 	agents   *agent.Manager
 	browsers *browser.Manager
-	mcp      *mcp.Server // the daemon's own tools for claude threads
-	mcpDir   string      // their per-process MCP configs
+	desktop  *desktop.Manager // nil if its media stack failed to build
+	mcp      *mcp.Server      // the daemon's own tools for claude threads
+	mcpDir   string           // their per-process MCP configs
 	info     protocol.DeviceInfo
 	api      *webrtc.API
 
@@ -115,6 +119,18 @@ func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string) *Serve
 	s.mcpDir = filepath.Join(dataDir, "mcp")
 	clearMCPConfigs(s.mcpDir)
 	s.agents.ThreadArgs = s.claudeArgs
+	if d, err := desktop.NewManager(se); err != nil {
+		slog.Error("remote desktop unavailable", "err", err)
+	} else {
+		d.ICEServers = func() []webrtc.ICEServer {
+			if s.ICEServers != nil {
+				return s.ICEServers()
+			}
+			return nil
+		}
+		d.Enabled = func() bool { return s.DesktopEnabled != nil && s.DesktopEnabled() }
+		s.desktop = d
+	}
 	return s
 }
 
@@ -154,6 +170,9 @@ func (s *Server) Shutdown() {
 	case <-closed:
 	case <-time.After(time.Second):
 		slog.Info("not waiting for peer connections to finish closing")
+	}
+	if s.desktop != nil {
+		s.desktop.Shutdown()
 	}
 	s.terms.Shutdown()
 	s.agents.Shutdown()
@@ -290,6 +309,9 @@ func (s *Server) CloseClient(connID string) {
 	for _, p := range closing {
 		slog.Info("closing peer of signed-out session", "sid", p.sid)
 		_ = p.pc.Close()
+	}
+	if s.desktop != nil {
+		s.desktop.CloseClient(connID)
 	}
 }
 

@@ -106,9 +106,33 @@ export interface DeviceInfo {
  * device.update. worktrees: claude threads in their own git worktree, and
  * git.info. attachments: upload channels and attachments on send. history:
  * the agent attach limit and history paging. archive: threads.archive.
- * tabs: tabs.*, threads.workdir, fs.list and file channels.
+ * tabs: tabs.*, threads.workdir, fs.list and file channels. desktop:
+ * desktop.info, desktop.start and desktop.stop (remote desktop).
  */
-export type DeviceFeature = "claude" | "update" | "worktrees" | "attachments" | "history" | "archive" | "tabs";
+export type DeviceFeature = "claude" | "update" | "worktrees" | "attachments" | "history" | "archive" | "tabs" | "desktop";
+
+/**
+ * What desktop.start captures: a monitor by name, or a window by id
+ * (Hyprland's stableId). class and title find a desktop tab's window again
+ * after its app restarted. Empty: the focused monitor.
+ */
+export interface DesktopSource {
+  output?: string;
+  window?: string;
+  class?: string;
+  title?: string;
+}
+
+/** desktop.info: whether remote desktop can be used on the device right now. */
+export interface DesktopInfo {
+  /** The device owner turned it on (`everywhere desktop enable`, run on the device). */
+  enabled: boolean;
+  /** The worker is installed and a Hyprland session is running; `reason` says why not. */
+  available: boolean;
+  reason?: string;
+  /** Who is connected, if anyone. */
+  viewer?: string;
+}
 
 export interface UpdateInfo {
   current: string;
@@ -157,7 +181,7 @@ export interface Thread {
 }
 
 /** What a tab shows: a thread kind, the project's browser, or its files. */
-export type TabKind = ThreadKind | "browser" | "files";
+export type TabKind = ThreadKind | "browser" | "files" | "desktop";
 
 /**
  * A tab opened inside a thread. Terminal and claude tabs are threads of
@@ -250,6 +274,26 @@ export interface RpcMethods {
   /** Claude Code's models and account, before any thread has started. */
   "agent.info": [Record<string, never>, AgentInfo];
   "debug.peer": [Record<string, never>, PeerDebug];
+  "desktop.info": [Record<string, never>, DesktopInfo];
+  /**
+   * Starts a remote desktop session on its own PeerConnection: sdp is its
+   * offer (one recvonly video transceiver, data channels "input" and
+   * "control"); the result carries the answer. A new session takes over from
+   * the current one. mode: sharp | smooth | low; viewer names this browser;
+   * source picks what to capture; tabId is the desktop tab showing it, so
+   * closing the tab ends it.
+   */
+  "desktop.start": [
+    { sdp: string; mode: string; viewer: string; source?: DesktopSource; tabId?: string },
+    { id: string; sdp: string },
+  ];
+  /**
+   * Trickle ICE: the browser's candidates go to the daemon with this; the
+   * daemon's arrive as desktop.candidate events, possibly before
+   * desktop.start answers.
+   */
+  "desktop.candidate": [{ id: string; candidate: IceCandidate }, Record<string, never>];
+  "desktop.stop": [{ id: string }, Record<string, never>];
 }
 export type RpcMethod = keyof RpcMethods;
 
@@ -258,7 +302,8 @@ export type RpcMethod = keyof RpcMethods;
  * (except debug.peer and device.update), plus reading and driving threads
  * for callers without a WebRTC connection.
  */
-export interface RemoteMethods extends Omit<RpcMethods, "debug.peer" | "device.update"> {
+export interface RemoteMethods
+  extends Omit<RpcMethods, "debug.peer" | "device.update" | `desktop.${string}`> {
   "threads.get": [{ threadId: string }, Thread];
   /** Threads whose name or claude prompts and replies contain query, newest match first. */
   "threads.search": [{ query: string; limit?: number }, SearchHit[]];
@@ -314,7 +359,11 @@ export type RpcResponse =
   | { id: number; result: unknown }
   | { id: number; error: { message: string } };
 
-export type RpcEvent = { event: "projects.changed" } | { event: "threads.changed" };
+export type RpcEvent =
+  | { event: "projects.changed" }
+  | { event: "threads.changed" }
+  /** One of a desktop session's ICE candidates (trickle ICE); see desktop.start. */
+  | { event: "desktop.candidate"; id: string; candidate: IceCandidate };
 
 /**
  * File channel `file:<id>`, one per read. The client sends `read`; the daemon

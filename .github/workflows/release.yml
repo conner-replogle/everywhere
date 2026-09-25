@@ -8,7 +8,40 @@ permissions:
   contents: write
 
 jobs:
+  # The remote desktop worker links Wayland, libgbm and GStreamer (cgo), so it
+  # is built on a native runner per architecture and shipped in the Linux
+  # archives next to the daemon.
+  desktop-worker:
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: daemon/go.mod
+          cache-dependency-path: daemon/go.sum
+      - run: >-
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends
+          libwayland-dev libgbm-dev libdrm-dev libxkbcommon-dev
+          libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+      - working-directory: daemon
+        run: >-
+          go build -trimpath
+          -ldflags "-s -w -X github.com/conner-replogle/everywhere/daemon/internal/version.Version=${GITHUB_REF_NAME#v}"
+          -o ../desktop-bin/linux_${{ matrix.arch }}/everywhere-desktop ./cmd/everywhere-desktop
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-worker-${{ matrix.arch }}
+          path: desktop-bin
+
   goreleaser:
+    needs: desktop-worker
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -18,6 +51,12 @@ jobs:
         with:
           go-version-file: daemon/go.mod
           cache-dependency-path: daemon/go.sum
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-worker-*
+          path: desktop-bin
+          merge-multiple: true
+      - run: chmod +x desktop-bin/*/everywhere-desktop && ls -lR desktop-bin
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"

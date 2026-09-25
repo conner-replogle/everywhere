@@ -226,7 +226,7 @@ func TestTabs(t *testing.T) {
 	if err := s.SetAgentWorktree(th.ID, "/wt/x", "everywhere/x"); err != nil {
 		t.Fatal(err)
 	}
-	for _, kind := range []string{protocol.ThreadTerminal, protocol.ThreadClaude, protocol.ThreadBrowser, protocol.ThreadFiles} {
+	for _, kind := range []string{protocol.ThreadTerminal, protocol.ThreadClaude, protocol.ThreadBrowser, protocol.ThreadFiles, protocol.ThreadDesktop} {
 		if _, err := s.CreateTab(th.ID, kind, ""); err != nil {
 			t.Fatalf("CreateTab(%s): %v", kind, err)
 		}
@@ -235,7 +235,7 @@ func TestTabs(t *testing.T) {
 		t.Error("unknown kind accepted")
 	}
 	tabs, err := s.ListTabs(th.ID)
-	if err != nil || len(tabs) != 4 {
+	if err != nil || len(tabs) != 5 {
 		t.Fatalf("ListTabs = %d %v", len(tabs), err)
 	}
 	if _, err := s.CreateTab(tabs[0].ID, protocol.ThreadTerminal, ""); err == nil {

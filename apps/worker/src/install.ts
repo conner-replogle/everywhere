@@ -29,6 +29,9 @@ trap 'rm -rf "$TMP"' EXIT
 
 if [ -n "\${EVERYWHERE_BINARY:-}" ]; then
   cp "$EVERYWHERE_BINARY" "$TMP/everywhere"
+  # The remote desktop worker, if it was built next to it.
+  WORKER="$(dirname "$EVERYWHERE_BINARY")/everywhere-desktop"
+  if [ -f "$WORKER" ]; then cp "$WORKER" "$TMP/everywhere-desktop"; fi
 else
   ASSET="everywhere_linux_$ARCH.tar.gz"
   BASE="https://github.com/$REPO/releases/latest/download"
@@ -36,10 +39,14 @@ else
   curl -fsSL "$BASE/$ASSET" -o "$TMP/$ASSET"
   curl -fsSL "$BASE/checksums.txt" -o "$TMP/checksums.txt"
   (cd "$TMP" && grep " $ASSET\\$" checksums.txt | sha256sum -c - >/dev/null) || die "checksum mismatch"
-  tar -xzf "$TMP/$ASSET" -C "$TMP" everywhere
+  tar -xzf "$TMP/$ASSET" -C "$TMP"
 fi
 
 install -m 0755 "$TMP/everywhere" "$BIN_DIR/everywhere"
+# Linux releases carry the remote desktop worker; it must sit next to the daemon.
+if [ -f "$TMP/everywhere-desktop" ]; then
+  install -m 0755 "$TMP/everywhere-desktop" "$BIN_DIR/everywhere-desktop"
+fi
 "$BIN_DIR/everywhere" enroll --server "$SERVER" --token "$TOKEN"
 if [ -n "\${EVERYWHERE_NO_SERVICE:-}" ]; then
   echo "Skipping service install. Start the daemon with: $BIN_DIR/everywhere daemon"

@@ -18,9 +18,28 @@ jobs:
           go-version-file: daemon/go.mod
           cache-dependency-path: daemon/go.sum
       - run: test -z "$(gofmt -l .)"
-      - run: go vet ./...
-      - run: go test ./...
+      # The daemon is CGO-free; the cgo remote desktop worker has its own job.
+      - run: CGO_ENABLED=0 go vet ./...
+      - run: CGO_ENABLED=0 go test ./...
       - run: CGO_ENABLED=0 go build ./cmd/everywhere
+
+  desktop-worker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: daemon
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: daemon/go.mod
+          cache-dependency-path: daemon/go.sum
+      - run: >-
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends
+          libwayland-dev libgbm-dev libdrm-dev libxkbcommon-dev
+          libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
+      - run: go vet ./cmd/everywhere-desktop ./internal/desktop/...
+      - run: go build -o /dev/null ./cmd/everywhere-desktop
 
   web:
     runs-on: ubuntu-latest

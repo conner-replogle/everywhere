@@ -52,15 +52,36 @@ func Latest(exe string) error {
 	if hex.EncodeToString(sum[:]) != want {
 		return fmt.Errorf("checksum mismatch for %s", asset)
 	}
+	return install(exe, archive)
+}
+
+// install puts the release archive's binaries in place of exe.
+func install(exe string, archive []byte) error {
 	bin, err := extract(archive, "everywhere")
 	if err != nil {
 		return err
 	}
-	tmp := filepath.Join(filepath.Dir(exe), ".everywhere.new")
-	if err := os.WriteFile(tmp, bin, 0o755); err != nil {
+	// Linux releases also carry the remote desktop worker, which must match
+	// the daemon; it goes next to it.
+	worker, err := extract(archive, WorkerName)
+	if err == nil {
+		if err := replace(filepath.Join(filepath.Dir(exe), WorkerName), worker); err != nil {
+			return fmt.Errorf("installing %s: %w", WorkerName, err)
+		}
+	}
+	return replace(exe, bin)
+}
+
+// WorkerName is the remote desktop worker in Linux release archives.
+const WorkerName = "everywhere-desktop"
+
+// replace atomically writes an executable at path.
+func replace(path string, data []byte) error {
+	tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".new")
+	if err := os.WriteFile(tmp, data, 0o755); err != nil {
 		return err
 	}
-	return os.Rename(tmp, exe)
+	return os.Rename(tmp, path)
 }
 
 // LatestVersion returns the newest release's version, e.g. "0.1.2", without

@@ -95,7 +95,7 @@ export const NO_ANSWER_MESSAGE = "Device didn't respond.";
 // traversal); the TURN relay is only picked when none of them work.
 let iceCache: { servers: RTCIceServer[]; turn: boolean; expiresAt: number } | null = null;
 
-async function iceServers(): Promise<{ servers: RTCIceServer[]; turn: boolean }> {
+export async function iceServers(): Promise<{ servers: RTCIceServer[]; turn: boolean }> {
   if (iceCache && iceCache.expiresAt - Date.now() > 60 * 60 * 1000) return iceCache;
   try {
     const r = await api.iceServers();
