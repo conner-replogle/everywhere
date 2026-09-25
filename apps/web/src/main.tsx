@@ -1,8 +1,11 @@
 import { createRouter, RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { registerServiceWorker } from "@/lib/pwa";
 import { routeTree } from "./routeTree.gen";
 import "./styles.css";
+
+registerServiceWorker();
 
 const router = createRouter({
   routeTree,

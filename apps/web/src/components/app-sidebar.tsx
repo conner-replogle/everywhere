@@ -9,6 +9,7 @@ import {
   FolderIcon,
   FolderPlusIcon,
   HomeIcon,
+  MonitorDownIcon,
   LogOutIcon,
   MoreHorizontalIcon,
   PencilIcon,
@@ -42,6 +43,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { auth, useAuth } from "@/lib/auth";
 import { useDeviceOnline } from "@/lib/hub";
+import { useInstallApp } from "@/lib/pwa";
 import { cn, errorMessage } from "@/lib/utils";
 
 type Entry = DeviceContextValue;
@@ -743,6 +745,7 @@ function ThreadStatusDot({ thread: t }: { thread: Thread }) {
 function SidebarFooter() {
   const navigate = useNavigate();
   const user = useAuth()?.user;
+  const installApp = useInstallApp();
   return (
     <div className="flex shrink-0 items-center gap-1 border-t px-1.5 py-1.5">
       <DropdownMenu>
@@ -756,6 +759,12 @@ function SidebarFooter() {
         <DropdownMenuContent align="start" side="top" className="w-56">
           <DropdownMenuLabel>Signed in as {user?.username}</DropdownMenuLabel>
           <DropdownMenuSeparator />
+          {installApp && (
+            <DropdownMenuItem onSelect={installApp}>
+              <MonitorDownIcon />
+              Install app
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem
             onSelect={async () => {
               await auth.logout();
