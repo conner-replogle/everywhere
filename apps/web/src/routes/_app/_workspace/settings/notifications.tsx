@@ -1,8 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { BellIcon, BellOffIcon, CheckIcon, SendIcon } from "lucide-react";
+import { BellIcon, BellOffIcon, CheckIcon, MessageSquareIcon, MessageSquareOffIcon, SendIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Section } from "@/components/settings-section";
 import { Button } from "@/components/ui/button";
+import { setAlertsEnabled, useAlertsEnabled } from "@/lib/alerts";
 import { api } from "@/lib/api";
 import { currentPushSubscription, disablePush, enablePush, pushSupport } from "@/lib/pwa";
 import { errorMessage } from "@/lib/utils";
@@ -20,8 +21,38 @@ function NotificationSettings() {
           Hear about claude threads when you're not looking at them.
         </p>
       </div>
+      <InAppSection />
       <PushSection />
     </div>
+  );
+}
+
+function InAppSection() {
+  const on = useAlertsEnabled();
+  return (
+    <Section
+      title="In the app"
+      description="A popup when a claude thread on any device needs you or finishes, with a button to switch to it."
+      aside={
+        on ? (
+          <Button variant="outline" size="sm" onClick={() => setAlertsEnabled(false)}>
+            <MessageSquareOffIcon />
+            Turn off
+          </Button>
+        ) : (
+          <Button size="sm" onClick={() => setAlertsEnabled(true)}>
+            <MessageSquareIcon />
+            Turn on
+          </Button>
+        )
+      }
+    >
+      <p className="text-muted-foreground">
+        {on
+          ? "On in this browser. While you're using everywhere here, push notifications are held back on all your devices; they resume after a couple of minutes idle."
+          : "Off in this browser. Push notifications still arrive as usual."}
+      </p>
+    </Section>
   );
 }
 
@@ -91,7 +122,7 @@ function PushSection() {
             {sub === undefined
               ? "Checking…"
               : on
-                ? "On for this device. Nothing is sent about the thread you have open."
+                ? "On for this device. Nothing is sent about the thread you have open, or while you're using the app with in-app alerts on."
                 : "Off for this device. Turn them on on each device you want them on."}
           </p>
           {on && (

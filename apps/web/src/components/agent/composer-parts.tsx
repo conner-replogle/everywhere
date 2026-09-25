@@ -63,7 +63,7 @@ export function WorkspacePicker({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild disabled={disabled}>
-        <Button variant="ghost" size="sm" className="h-6 max-w-56 px-2 font-normal">
+        <Button variant="ghost" size="sm" className="h-6 max-w-56 min-w-0 shrink px-2 font-normal">
           <GitBranchIcon className="size-3" />
           <span className="truncate">{label}</span>
           <ChevronDownIcon className="size-3" />

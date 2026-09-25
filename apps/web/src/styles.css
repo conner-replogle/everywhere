@@ -77,6 +77,8 @@
   * {
     @apply border-border outline-ring/50;
   }
+  /* The whole screen, except while the keyboard is up: then main.tsx sizes
+     it to what's still visible, so the composer sits just above the keyboard. */
   html,
   body,
   #root {

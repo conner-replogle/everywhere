@@ -259,11 +259,14 @@ function ThreadPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-9 shrink-0 items-center gap-3 border-b bg-sidebar pr-3 pl-10 md:pl-3">
+      <div className="flex h-11 shrink-0 items-center gap-3 border-b bg-sidebar pr-3 pl-12 md:h-9 md:pl-3">
         <span className="truncate font-medium">{thread?.name ?? "…"}</span>
         {project && (
-          <span className="truncate font-mono text-xs text-muted-foreground">
-            {workdir.data?.worktree ? workdir.data.path : project.path}
+          <span
+            className="truncate text-xs text-muted-foreground"
+            title={workdir.data?.worktree ? workdir.data.path : project.path}
+          >
+            {project.name}
           </span>
         )}
         {archived ? (
