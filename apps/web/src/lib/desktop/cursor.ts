@@ -8,6 +8,15 @@ import type { CursorImage, CursorPosition } from "./protocol";
 export class CursorRenderer {
   private image: CursorImage | null = null;
   private lastLocalMove = 0;
+  /** Trackpad mode: the overlay is the pointer, where the viewer steered it. */
+  private pinned: { x: number; y: number } | null = null;
+  private lastPinMove = 0;
+  /** CSS px per host pixel for the overlay (at least readable when pinned). */
+  private overlayScale = 1;
+  /** Where the host last put the pointer on this picture, 0..1. */
+  hostPosition: { x: number; y: number } | null = null;
+  /** Pinned: the host moved the pointer itself (someone at the machine). */
+  onHostMove?: (pos: { x: number; y: number }) => void;
   private overlay: HTMLCanvasElement;
   private cssCursor = "default";
   private resizeObserver: ResizeObserver;
@@ -23,7 +32,8 @@ export class CursorRenderer {
     this.resizeObserver.observe(video);
   }
 
-  private onLocalMove = () => {
+  private onLocalMove = (e: PointerEvent) => {
+    if (this.pinned && e.pointerType === "touch") return;
     this.lastLocalMove = performance.now();
     this.overlay.hidden = true;
   };
@@ -36,27 +46,66 @@ export class CursorRenderer {
     this.video.style.cursor = "";
   }
 
+  /** Shows the overlay as the pointer at pos (0..1), or goes back to the native cursor. */
+  pin(pos: { x: number; y: number } | null) {
+    const was = this.pinned;
+    this.pinned = pos;
+    this.lastPinMove = performance.now();
+    if (!pos) {
+      this.overlay.hidden = true;
+      this.setPressed(false);
+      if (was) this.render();
+      return;
+    }
+    if (!was) this.render();
+    this.place(pos);
+  }
+
+  /** Marks a held button (a trackpad drag). */
+  setPressed(on: boolean) {
+    this.overlay.style.filter = on ? "drop-shadow(0 0 3px var(--color-primary)) drop-shadow(0 0 1px var(--color-primary))" : "";
+  }
+
+  /** Redraws after the picture moved or scaled without resizing (zoom). */
+  refresh() {
+    this.render();
+  }
+
   setImage(img: CursorImage) {
     this.image = img.width && img.height ? img : null;
     this.render();
   }
 
   setPosition(pos: CursorPosition) {
+    if (pos.inside) this.hostPosition = { x: pos.x, y: pos.y };
+    if (this.pinned) {
+      if (pos.inside && performance.now() - this.lastPinMove > 300) {
+        this.pinned = { x: pos.x, y: pos.y };
+        this.place(this.pinned);
+        this.onHostMove?.(this.pinned);
+      }
+      return;
+    }
     // Local motion drives the visible cursor; only show host-originated movement.
     if (!pos.inside || performance.now() - this.lastLocalMove < 300) {
       this.overlay.hidden = true;
       return;
     }
+    this.place(pos);
+  }
+
+  private place(pos: { x: number; y: number }) {
     const r = this.contentRect();
     if (!r) return;
     const img = this.image;
-    const scale = r.width / this.video.videoWidth;
+    const scale = this.overlayScale;
     this.overlay.style.left = `${r.left + pos.x * r.width - (img ? img.hotX * scale : 0)}px`;
     this.overlay.style.top = `${r.top + pos.y * r.height - (img ? img.hotY * scale : 0)}px`;
     this.overlay.hidden = false;
   }
 
-  private contentRect() {
+  /** The video's picture on screen, inside any letterboxing. */
+  contentRect() {
     const vw = this.video.videoWidth, vh = this.video.videoHeight;
     if (!vw || !vh) return null;
     const box = this.video.getBoundingClientRect();
@@ -70,26 +119,25 @@ export class CursorRenderer {
     const r = this.contentRect();
     if (!img || !r) {
       this.setCss("default");
+      this.overlayScale = 1;
       this.drawOverlay(null);
+      if (this.pinned) this.place(this.pinned);
       return;
     }
     // Host cursor pixels are video pixels; show them at the size they appear in the video.
     const cssScale = r.width / this.video.videoWidth;
-    const dpr = window.devicePixelRatio || 1;
-    const cssW = Math.max(1, Math.round(img.width * cssScale));
-    const cssH = Math.max(1, Math.round(img.height * cssScale));
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(cssW * dpr));
-    canvas.height = Math.max(1, Math.round(cssH * dpr));
     const src = new OffscreenCanvas(img.width, img.height);
     src.getContext("2d")!.putImageData(new ImageData(new Uint8ClampedArray(img.rgba), img.width, img.height), 0, 0);
-    const ctx = canvas.getContext("2d")!;
-    ctx.imageSmoothingQuality = "high";
-    ctx.drawImage(src, 0, 0, canvas.width, canvas.height);
+    const canvas = scaledCursor(src, cssScale);
     const url = canvas.toDataURL("image/png");
+    const dpr = window.devicePixelRatio || 1;
     const hx = Math.round(img.hotX * cssScale), hy = Math.round(img.hotY * cssScale);
     this.setCss(`image-set(url("${url}") ${dpr}x) ${hx} ${hy}, url("${url}") ${hx} ${hy}, default`);
-    this.drawOverlay(canvas);
+    // A whole desktop on a phone shrinks the pointer to a speck; one steered
+    // by trackpad stays big enough to aim.
+    this.overlayScale = this.pinned ? Math.max(cssScale, MIN_PINNED_HEIGHT / img.height) : cssScale;
+    this.drawOverlay(this.overlayScale === cssScale ? canvas : scaledCursor(src, this.overlayScale));
+    if (this.pinned) this.place(this.pinned);
   };
 
   private setCss(value: string) {
@@ -128,4 +176,19 @@ export class CursorRenderer {
     o.style.width = `${o.width / dpr}px`;
     o.style.height = `${o.height / dpr}px`;
   }
+}
+
+/** The pinned pointer is drawn at least this tall (CSS px). */
+const MIN_PINNED_HEIGHT = 22;
+
+/** The host's cursor bitmap drawn at `scale` CSS px per pixel, sharp on this screen. */
+function scaledCursor(src: OffscreenCanvas, scale: number): HTMLCanvasElement {
+  const dpr = window.devicePixelRatio || 1;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(Math.max(1, Math.round(src.width * scale)) * dpr));
+  canvas.height = Math.max(1, Math.round(Math.max(1, Math.round(src.height * scale)) * dpr));
+  const ctx = canvas.getContext("2d")!;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(src, 0, 0, canvas.width, canvas.height);
+  return canvas;
 }

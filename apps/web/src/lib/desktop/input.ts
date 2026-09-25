@@ -17,6 +17,8 @@ export interface InputOptions {
  */
 export class InputForwarder {
   private seq = 0;
+  /** Touches go to the Trackpad instead of pointing directly. */
+  touchTrackpad = false;
   private pressedKeys = new Set<number>();
   private detach: (() => void)[] = [];
 
@@ -71,12 +73,29 @@ export class InputForwarder {
     return [Math.max(0, Math.min(1, x)), Math.max(0, Math.min(1, y))];
   }
 
+  /** Puts the host pointer at x, y (0..1 across the picture). */
+  moveTo(x: number, y: number) {
+    this.send(this.conn.input, proto.move(this.seq++, x, y));
+  }
+
+  /** Presses or releases a DOM-numbered button at x, y. */
+  press(btn: number, pressed: boolean, x: number, y: number) {
+    this.send(this.conn.control, proto.button(btn, pressed, x, y));
+  }
+
+  /** Scrolls by pixels, like a touchpad. */
+  scrollBy(dx: number, dy: number) {
+    this.send(this.conn.control, proto.scroll(true, dx, dy));
+  }
+
   private onMove(e: PointerEvent) {
+    if (this.touchTrackpad && e.pointerType === "touch") return;
     const p = this.normalize(e);
-    if (p) this.send(this.conn.input, proto.move(this.seq++, p[0], p[1]));
+    if (p) this.moveTo(p[0], p[1]);
   }
 
   private onButton(e: PointerEvent, pressed: boolean) {
+    if (this.touchTrackpad && e.pointerType === "touch") return;
     const p = this.normalize(e);
     if (!p) return;
     e.preventDefault();

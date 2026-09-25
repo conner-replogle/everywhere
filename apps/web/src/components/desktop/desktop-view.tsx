@@ -7,7 +7,9 @@ import {
   MinimizeIcon,
   MonitorIcon,
   MonitorOffIcon,
+  MousePointer2Icon,
   PauseIcon,
+  PointerIcon,
   RotateCwIcon,
   SlidersHorizontalIcon,
 } from "lucide-react";
@@ -25,6 +27,7 @@ import {
 import { type DesktopConnection, connectDesktop } from "@/lib/desktop/connection";
 import { CursorRenderer } from "@/lib/desktop/cursor";
 import { InputForwarder } from "@/lib/desktop/input";
+import { Trackpad } from "@/lib/desktop/trackpad";
 import {
   CODEC_NAMES,
   clipboard,
@@ -62,7 +65,16 @@ interface Prefs {
   superSub: boolean;
   /** Exchange clipboard text with the desktop. */
   clipboard: boolean;
+  /** What a finger does: steer the pointer like a laptop trackpad, or point where it touches. Unset: by device. */
+  touch?: TouchMode;
 }
+
+type TouchMode = "trackpad" | "direct";
+
+const hasTouch = typeof navigator !== "undefined" && navigator.maxTouchPoints > 0;
+/** Phones and tablets get the trackpad; a touchscreen laptop points directly. */
+const defaultTouch = (): TouchMode =>
+  typeof matchMedia !== "undefined" && matchMedia("(pointer: coarse)").matches ? "trackpad" : "direct";
 
 const DEFAULT_PREFS: Prefs = { mode: "sharp", follow: true, stats: false, superSub: true, clipboard: true };
 
@@ -188,6 +200,10 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
       return next;
     });
   const follow = !tab && prefs.follow;
+  const touchMode = hasTouch ? (prefs.touch ?? defaultTouch()) : "direct";
+  const touchModeRef = useRef(touchMode);
+  touchModeRef.current = touchMode;
+  const trackpadRef = useRef<Trackpad | null>(null);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -233,6 +249,7 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
     const timers: ReturnType<typeof setInterval>[] = [];
     let forwarder: InputForwarder | null = null;
     let cursor: CursorRenderer | null = null;
+    let trackpad: Trackpad | null = null;
     setStatus({ kind: "connecting" });
 
     // Deferred a tick: React's development double-mount would otherwise start
@@ -267,6 +284,8 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
       video.srcObject = conn.stream;
       forwarder = new InputForwarder(video, conn, { superSubstitute: superSub ? "AltRight" : null, keyTarget: stage });
       const cur = (cursor = new CursorRenderer(video));
+      trackpad = trackpadRef.current = new Trackpad(video, stage, forwarder, cur);
+      trackpad.setEnabled(touchModeRef.current === "trackpad");
       stage.focus({ preventScroll: true });
       const onOpen = () => {
         conn.control.send(setFollow(connectRef.current.follow));
@@ -318,6 +337,8 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
             break;
           case Type.SessionEnded:
             endedByHost = true;
+            trackpad?.dispose();
+            trackpad = trackpadRef.current = null;
             forwarder?.dispose();
             forwarder = null;
             setStatus({
@@ -360,6 +381,8 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
       clearTimeout(start);
       clearTimeout(retry);
       for (const t of timers) clearInterval(t);
+      trackpad?.dispose();
+      trackpadRef.current = null;
       forwarder?.dispose();
       cursor?.dispose();
       connRef.current?.close();
@@ -367,6 +390,8 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
       video.srcObject = null;
     };
   }, [peer, attempt, superSub, reconnect, visible]);
+
+  useEffect(() => trackpadRef.current?.setEnabled(touchMode === "trackpad"), [touchMode]);
 
   const sendControl = useCallback((msg: ArrayBuffer) => {
     const c = connRef.current?.control;
@@ -509,6 +534,23 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
             </span>
           )}
           <div className="flex-1" />
+          {hasTouch && (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className={cn(iconBtn, touchMode === "trackpad" && "text-primary")}
+              aria-label="Trackpad"
+              aria-pressed={touchMode === "trackpad"}
+              title={
+                touchMode === "trackpad"
+                  ? "Trackpad: drag to move the pointer, tap to click. Tap to point where you touch instead."
+                  : "Touch points where you tap. Tap to use the screen as a trackpad."
+              }
+              onClick={() => updatePrefs({ touch: touchMode === "trackpad" ? "direct" : "trackpad" })}
+            >
+              {touchMode === "trackpad" ? <MousePointer2Icon /> : <PointerIcon />}
+            </Button>
+          )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button variant="ghost" size="icon-sm" className={iconBtn} aria-label="Quality, keys and clipboard">
@@ -542,6 +584,30 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
               >
                 Share clipboard
               </DropdownMenuCheckboxItem>
+              {hasTouch && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuLabel>Touch</DropdownMenuLabel>
+                  <DropdownMenuCheckboxItem
+                    checked={touchMode === "trackpad"}
+                    onCheckedChange={() => updatePrefs({ touch: "trackpad" })}
+                  >
+                    Trackpad
+                  </DropdownMenuCheckboxItem>
+                  <DropdownMenuCheckboxItem
+                    checked={touchMode === "direct"}
+                    onCheckedChange={() => updatePrefs({ touch: "direct" })}
+                  >
+                    Point where you touch
+                  </DropdownMenuCheckboxItem>
+                  {touchMode === "trackpad" && (
+                    <p className="max-w-60 px-2 pt-1 pb-1.5 text-xs text-muted-foreground">
+                      Drag to move, tap to click, hold then drag to drag. Two fingers scroll, pinch to zoom; two- or
+                      three-finger tap for right or middle click.
+                    </p>
+                  )}
+                </>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
           <Button
