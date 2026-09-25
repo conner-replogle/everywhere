@@ -113,6 +113,7 @@ export const Timeline = memo(function Timeline({
   cwd,
   working,
   compacting,
+  recapping,
   onRewind,
   onCompact,
 }: {
@@ -121,6 +122,8 @@ export const Timeline = memo(function Timeline({
   cwd?: string;
   working: boolean;
   compacting?: boolean;
+  /** The turn is only a /recap: shown quietly, its text only once it's a card. */
+  recapping?: boolean;
   /** Sends /compact; offered when a turn fails because the context is full. */
   onCompact?: () => void;
   /** Offers rolling back to before a prompt; absent when the device can't. */
@@ -131,16 +134,23 @@ export const Timeline = memo(function Timeline({
       {items.map((item) => (
         <ItemView key={item.key} item={item} cwd={cwd} onRewind={working ? undefined : onRewind} onCompact={onCompact} />
       ))}
-      {streaming.map((s) =>
-        s.kind === "thinking" ? (
-          <Thinking key={s.key} text={s.text} live />
-        ) : (
-          <div key={s.key} className="leading-relaxed">
-            <Markdown text={s.text} />
-          </div>
-        ),
+      {recapping && (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <HistoryIcon className="size-3.5 animate-pulse" />
+          Recapping…
+        </div>
       )}
-      {working && streaming.length === 0 && (
+      {!recapping &&
+        streaming.map((s) =>
+          s.kind === "thinking" ? (
+            <Thinking key={s.key} text={s.text} live />
+          ) : (
+            <div key={s.key} className="leading-relaxed">
+              <Markdown text={s.text} />
+            </div>
+          ),
+        )}
+      {working && !recapping && streaming.length === 0 && (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <LoaderCircleIcon className="size-3.5 animate-spin" />
           {compacting ? "Compacting the conversation…" : "Working…"}

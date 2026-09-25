@@ -216,6 +216,7 @@ export function AgentView({
             cwd={workdir}
             working={state?.status === "working"}
             compacting={state?.compacting}
+            recapping={state?.recapping}
             onCompact={canCompact ? compact : undefined}
             onRewind={features.includes("rewind") && !archived && !busy ? onRewind : undefined}
           />
@@ -417,6 +418,9 @@ function Composer({
   const files = useAttachments(peer, threadId);
   const { state } = agent;
   const ready = agent.attached && agent.synced;
+  // A recap runs as a turn, but it's background work: no Stop, no "current turn".
+  const recapping = !!state?.recapping;
+  const active = busy && !recapping;
   const suggestion = !busy && text === "" ? state?.suggestion : undefined;
   const model = models.find((m) => m.value === (state?.model || "default"));
 
@@ -457,7 +461,8 @@ function Composer({
     el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
   }, [text]);
 
-  const canSend = ready && !files.uploading && (text.trim() !== "" || files.ready.length > 0);
+  // A prompt sent mid-recap would join the recap's turn; it's only a few seconds.
+  const canSend = ready && !recapping && !files.uploading && (text.trim() !== "" || files.ready.length > 0);
   const submit = () => {
     if (!canSend) return;
     const attachments = files.ready.map((a) => a.id);
@@ -531,7 +536,7 @@ function Composer({
           if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault();
             submit();
-          } else if (e.key === "Escape" && busy) {
+          } else if (e.key === "Escape" && active) {
             e.preventDefault();
             agent.send({ t: "interrupt" });
           }
@@ -539,7 +544,7 @@ function Composer({
         placeholder={
           !ready
             ? "Connecting…"
-            : busy
+            : active
               ? "Add to the current turn… (Esc to stop)"
               : suggestion
                 ? suggestion
@@ -625,7 +630,7 @@ function Composer({
           <ContextMeter context={state?.context} onCompact={onCompact} />
         </span>
         </div>
-        {busy ? (
+        {active ? (
           <Button
             size="icon-sm"
             variant="secondary"
@@ -654,6 +659,7 @@ function Composer({
 }
 
 function StatusText({ state }: { state: AgentState | null }) {
+  if (state?.recapping) return null;
   const label = state?.compacting
     ? "Compacting…"
     : state?.status === "starting"

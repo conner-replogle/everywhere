@@ -621,6 +621,8 @@ export interface AgentState {
   limits?: AgentLimit[];
   /** Claude is summarizing the conversation to free context. */
   compacting?: boolean;
+  /** The turn in progress is only a /recap (the thread shows idle elsewhere). */
+  recapping?: boolean;
 }
 
 export interface AgentCommand {

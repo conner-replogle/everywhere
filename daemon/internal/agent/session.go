@@ -68,10 +68,13 @@ type published struct {
 type session struct {
 	m        *Manager
 	threadID string
-	cmds     chan func()
-	quit     chan struct{}
-	exited   chan struct{}
-	pub      atomic.Pointer[published]
+	// recapping: the turn in progress is only a /recap, shown as a quiet
+	// background task (the thread stays idle to everyone else).
+	recapping bool
+	cmds      chan func()
+	quit      chan struct{}
+	exited    chan struct{}
+	pub       atomic.Pointer[published]
 
 	proc        process
 	procMsgs    <-chan claude.Message
@@ -283,7 +286,12 @@ func (s *session) send(text string, attachmentIDs []string) error {
 	if err != nil {
 		return err
 	}
+	// Decided before claude starts, so starting it is quiet too; a real
+	// prompt joining the turn makes it a real turn.
+	s.recapping = !s.turnActive && text == recapPrompt && len(files) == 0
+	s.state.Recapping = s.recapping
 	if err := s.ensureProc(); err != nil {
+		s.recapping, s.state.Recapping = false, false
 		return err
 	}
 	content, err := promptContent(text, files)
@@ -299,6 +307,7 @@ func (s *session) send(text string, attachmentIDs []string) error {
 		ev.Attachments = append(ev.Attachments, f.AgentAttachment)
 	}
 	s.emit(ev)
+	s.changed()
 	err = s.proc.Send(claude.UserMessage{UUID: id, Content: content})
 	if err == nil {
 		s.maybeTitle(text, files)
@@ -1128,8 +1137,11 @@ func (s *session) onResult(msg claude.Message) {
 		}
 	}
 	s.state.Compacting = false
+	recap := s.recapping
 	s.endTurn(ev)
-	s.maybeRefineTitle(ev.Status == "completed")
+	if !recap {
+		s.maybeRefineTitle(ev.Status == "completed")
+	}
 	s.refreshContext()
 }
 
@@ -1199,6 +1211,11 @@ func (s *session) endTurn(ev protocol.AgentEvent) {
 	s.turnActive, s.interrupted = false, false
 	s.state.Streaming = []protocol.AgentStreaming{}
 	s.emit(ev)
+	recap := s.recapping
+	s.recapping, s.state.Recapping = false, false
+	if recap {
+		return // nothing the user asked for finished
+	}
 	switch ev.Status {
 	case "completed":
 		s.notify("done", "")
@@ -1322,6 +1339,9 @@ func (s *session) changed() {
 	}
 	s.broadcast(s.stateMsg())
 	next := &published{running: s.proc != nil, status: s.state.Status}
+	if s.recapping && (next.status == statusWorking || next.status == statusStarting) {
+		next.status = statusIdle
+	}
 	if prev := s.pub.Swap(next); *prev != *next {
 		s.m.onChange()
 	}
@@ -1445,6 +1465,9 @@ func newUUID() string {
 	b[8] = b[8]&0x3f | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
 }
+
+// recapPrompt asks claude for a short summary of where the thread stands.
+const recapPrompt = "/recap"
 
 // compactNotice describes a compaction: how it started and what it freed.
 func compactNotice(trigger string, pre, post int) string {

@@ -462,6 +462,9 @@ type AgentState struct {
 	Limits []AgentLimit `json:"limits,omitempty"`
 	// Compacting: claude is summarizing the conversation to free context.
 	Compacting bool `json:"compacting,omitempty"`
+	// Recapping: the turn in progress is only a /recap. The thread's
+	// status everywhere else stays idle, and its end notifies no one.
+	Recapping bool `json:"recapping,omitempty"`
 }
 
 type AgentCommand struct {
