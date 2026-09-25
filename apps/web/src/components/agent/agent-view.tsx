@@ -415,6 +415,17 @@ function Composer({
     [threadId, addFiles],
   );
 
+  const acceptSuggestion = () => {
+    if (!suggestion) return;
+    setText(suggestion);
+    // After the text renders, so the cursor lands at its end.
+    requestAnimationFrame(() => {
+      const el = ref.current;
+      el?.focus();
+      el?.setSelectionRange(suggestion.length, suggestion.length);
+    });
+  };
+
   const pickCommand = (c: AgentCommand) => {
     setText(`/${c.name} `);
     setSlashDismissed(false);
@@ -459,6 +470,7 @@ function Composer({
     >
       <AttachmentChips items={files.items} onRemove={files.remove} />
       <SlashMenu matches={slashMatches} active={slashIndex} onPick={pickCommand} onHover={setSlashIndex} />
+      <div className="relative">
       <textarea
         ref={ref}
         value={text}
@@ -496,7 +508,7 @@ function Composer({
           }
           if (suggestion && (e.key === "Tab" || e.key === "ArrowRight")) {
             e.preventDefault();
-            setText(suggestion);
+            acceptSuggestion();
             return;
           }
           if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -513,11 +525,28 @@ function Composer({
             : busy
               ? "Add to the current turn… (Esc to stop)"
               : suggestion
-                ? `${suggestion}  (Tab to use)`
+                ? suggestion
                 : "Ask Claude to do something… (/ for commands)"
         }
-        className="block max-h-60 w-full resize-none bg-transparent px-3 pt-2.5 pb-1 outline-none placeholder:text-muted-foreground disabled:opacity-50"
+        className={cn(
+          "block max-h-60 w-full resize-none bg-transparent px-3 pt-2.5 pb-1 outline-none placeholder:text-muted-foreground disabled:opacity-50",
+          suggestion && "pr-24",
+        )}
       />
+      {suggestion && ready && (
+        // The suggestion is the placeholder; this puts it in the box.
+        <Button
+          variant="secondary"
+          size="sm"
+          className="absolute top-1.5 right-1.5 h-6 gap-1.5 px-2 text-xs"
+          onClick={acceptSuggestion}
+          title="Use this suggestion (Tab)"
+        >
+          Use
+          <kbd className="rounded-sm border px-1 font-sans text-[10px] text-muted-foreground pointer-coarse:hidden">Tab</kbd>
+        </Button>
+      )}
+      </div>
       <div className="flex items-end gap-1 px-1.5 pb-1.5">
         {/* The controls wrap; send/stop stays pinned bottom-right so it never lands on a row of its own. */}
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
@@ -563,17 +592,21 @@ function Composer({
             onThinking={(thinking) => agent.send({ t: "setThinking", thinking })}
           />
         )}
-        {state && (
-          <WorkspacePicker
-            workspace={state.workspace}
-            git={git}
-            disabled={!ready}
-            onPick={(workspace, baseBranch) => agent.send({ t: "setWorkspace", workspace, baseBranch })}
-          />
-        )}
-        <StatusText state={state} />
-        <UsageMeter limits={limits} />
-        <ContextMeter context={state?.context} />
+        {/* One line that wraps as a piece, the branch name giving way first,
+            so a meter never ends up alone on a row. */}
+        <span className="flex max-w-full min-w-0 items-center gap-1">
+          {state && (
+            <WorkspacePicker
+              workspace={state.workspace}
+              git={git}
+              disabled={!ready}
+              onPick={(workspace, baseBranch) => agent.send({ t: "setWorkspace", workspace, baseBranch })}
+            />
+          )}
+          <StatusText state={state} />
+          <UsageMeter limits={limits} />
+          <ContextMeter context={state?.context} />
+        </span>
         </div>
         {busy ? (
           <Button
@@ -614,7 +647,7 @@ function StatusText({ state }: { state: AgentState | null }) {
           : null;
   if (!label) return null;
   return (
-    <span className={cn("ml-1 truncate text-xs", state?.status === "waiting" ? "text-warn" : "text-muted-foreground")}>
+    <span className={cn("ml-1 shrink-0 text-xs", state?.status === "waiting" ? "text-warn" : "text-muted-foreground")}>
       {label}
     </span>
   );

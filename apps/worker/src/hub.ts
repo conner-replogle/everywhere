@@ -11,15 +11,18 @@ import type {
   RemoteMethods,
   SignalData,
 } from "@everywhere/protocol";
-import { HUB_PING, HUB_PONG } from "@everywhere/protocol";
+import { HUB_PING, HUB_PONG, notifyNeedsYou, notifyText } from "@everywhere/protocol";
 import { randomId, sha256 } from "./crypto";
 import { versionAtLeast } from "./version";
 import { deliver, type PushOptions } from "./webpush";
 
 type Attachment =
   | { kind: "device"; id: string; since?: number; features?: HubFeature[] }
-  /** viewing: "<deviceId>/<threadId>" while the tab shows that thread, visible and focused. */
-  | { kind: "client"; id: string; session: string; viewing?: string };
+  /**
+   * viewing: "<deviceId>/<threadId>" while the tab shows that thread, visible and focused.
+   * active: someone is using the tab and it shows alerts itself.
+   */
+  | { kind: "client"; id: string; session: string; viewing?: string; active?: boolean };
 
 /** How a relayed rpc request ended. */
 export type DeviceRpcResult<T = unknown> =
@@ -107,7 +110,7 @@ export class AccountHub extends DurableObject<Env> {
           typeof m.deviceId === "string" && typeof m.threadId === "string" && m.deviceId.length + m.threadId.length < 256
             ? `${m.deviceId}/${m.threadId}`
             : undefined;
-        ws.serializeAttachment({ ...me, viewing } satisfies Attachment);
+        ws.serializeAttachment({ ...me, viewing, active: m.active === true } satisfies Attachment);
         return;
       }
       if (!isSignal(m)) return this.fail(ws, "bad_message", "unknown message");
@@ -258,7 +261,8 @@ export class AccountHub extends DurableObject<Env> {
 
   /**
    * Pushes a notification about a claude thread to every browser that turned
-   * them on, unless someone is looking at that thread right now.
+   * them on, unless someone is looking at that thread right now or is using
+   * the app (which shows it as an in-app alert instead).
    */
   private async notify(deviceId: string, n: HubNotify): Promise<void> {
     const thread = n.parentId || n.threadId;
@@ -273,6 +277,23 @@ export class AccountHub extends DurableObject<Env> {
     this.lastNotified.set(key, now);
     for (const [k, at] of this.lastNotified) if (now - at > NOTIFY_THROTTLE_MS) this.lastNotified.delete(k);
 
+    // Open tabs show it in the app too, with a way to switch to the thread.
+    this.broadcast({
+      t: "alert",
+      deviceId,
+      threadId: n.threadId,
+      ...(n.parentId ? { parentId: n.parentId } : {}),
+      name: n.name,
+      kind: n.kind,
+      ...(n.tool ? { tool: n.tool } : {}),
+    });
+
+    // Someone is using the app, which just showed it; a push would repeat it.
+    for (const ws of this.ctx.getWebSockets()) {
+      const a = ws.deserializeAttachment() as Attachment | null;
+      if (a?.kind === "client" && a.active && this.live(ws)) return;
+    }
+
     const { results } = await this.env.DB.prepare(
       `SELECT p.endpoint, p.p256dh, p.auth, d.name AS device
        FROM devices d
@@ -284,7 +305,7 @@ export class AccountHub extends DurableObject<Env> {
       .all<{ endpoint: string; p256dh: string; auth: string; device: string }>();
     if (results.length === 0) return;
 
-    const needsYou = n.kind !== "done" && n.kind !== "error";
+    const needsYou = notifyNeedsYou(n.kind);
     const url = `/d/${encodeURIComponent(deviceId)}/t/${encodeURIComponent(thread)}${
       n.parentId ? `?tab=${encodeURIComponent(n.threadId)}` : ""
     }`;
@@ -409,21 +430,6 @@ function isNotify(m: unknown): m is HubNotify {
     typeof x.kind === "string" &&
     NOTIFY_KINDS.has(x.kind)
   );
-}
-
-function notifyText(n: HubNotify): string {
-  switch (n.kind) {
-    case "permission":
-      return n.tool ? `Wants to use ${n.tool}` : "Needs your permission";
-    case "question":
-      return "Has a question for you";
-    case "plan":
-      return "Has a plan for you to review";
-    case "done":
-      return "Finished";
-    case "error":
-      return "Stopped with an error";
-  }
 }
 
 function send(ws: WebSocket, msg: HubToClient | HubToDaemon): void {

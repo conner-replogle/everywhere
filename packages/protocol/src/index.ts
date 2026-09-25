@@ -21,18 +21,22 @@ export type SignalData =
  * Sent by a browser to the hub. `to` is a device id. `viewing` says which
  * thread the tab shows while it's visible and focused (null otherwise), so the
  * hub doesn't push notifications about a thread someone is looking at.
+ * `active` says someone is using the tab and it shows alerts itself, so the
+ * hub holds back push notifications altogether.
  */
 export type ClientToHub =
   | { t: "signal"; to: string; sid: string; data: SignalData }
-  | { t: "viewing"; deviceId: string; threadId: string }
-  | { t: "viewing"; deviceId: null; threadId: null };
+  | { t: "viewing"; deviceId: string; threadId: string; active?: boolean }
+  | { t: "viewing"; deviceId: null; threadId: null; active?: boolean };
 
 /** Sent by the hub to a browser. `from` is a device id. */
 export type HubToClient =
   | { t: "presence"; online: string[] }
   | { t: "presence.update"; deviceId: string; online: boolean }
   | { t: "signal"; from: string; sid: string; data: SignalData }
-  | { t: "error"; code: HubErrorCode; message: string; sid?: string };
+  | { t: "error"; code: HubErrorCode; message: string; sid?: string }
+  /** A daemon's notify, relayed so open tabs can show it in the app. */
+  | HubAlert;
 
 /** Sent by a daemon to the hub. `to` is a browser connection id. */
 export type DaemonToHub =
@@ -60,6 +64,33 @@ export interface HubNotify {
 }
 
 export type NotifyKind = "permission" | "question" | "plan" | "done" | "error";
+
+/** A HubNotify as the hub passes it on to browsers, with the device it came from. */
+export interface HubAlert extends Omit<HubNotify, "t"> {
+  t: "alert";
+  deviceId: string;
+}
+
+/** Whether the notify asks the user for something, rather than reporting the turn ended. */
+export function notifyNeedsYou(kind: NotifyKind): boolean {
+  return kind !== "done" && kind !== "error";
+}
+
+/** One line saying what happened, e.g. "Has a question for you". */
+export function notifyText(n: Pick<HubNotify, "kind" | "tool">): string {
+  switch (n.kind) {
+    case "permission":
+      return n.tool ? `Wants to use ${n.tool}` : "Needs your permission";
+    case "question":
+      return "Has a question for you";
+    case "plan":
+      return "Has a plan for you to review";
+    case "done":
+      return "Finished";
+    case "error":
+      return "Stopped with an error";
+  }
+}
 
 /** rpc: the daemon answers rpc requests (see RemoteMethods). */
 export type HubFeature = "rpc";

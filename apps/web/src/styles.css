@@ -78,13 +78,19 @@
     @apply border-border outline-ring/50;
   }
   html,
-  body,
-  #root {
-    height: var(--app-height, 100dvh);
+  body {
+    height: 100%;
+    overflow: hidden;
   }
-  /* Clear of the notch, the status bar (it overlays the page in the installed
+  /* Pinned to the whole screen: 100dvh and the visual viewport both come up
+     short in places (iOS's installed app, after the keyboard closes). While
+     the keyboard is up, main.tsx sizes it to what's still visible.
+     Clear of the notch, the status bar (it overlays the page in the installed
      app) and the home indicator, which the keyboard covers when it's up. */
   #root {
+    position: fixed;
+    inset: 0 0 auto;
+    height: var(--app-height, 100%);
     padding: env(safe-area-inset-top) env(safe-area-inset-right)
       var(--safe-bottom, env(safe-area-inset-bottom)) env(safe-area-inset-left);
   }

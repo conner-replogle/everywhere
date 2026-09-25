@@ -49,12 +49,12 @@ function WorkspaceLayout() {
       <section className={cn("relative flex min-w-0 flex-1 flex-col", sidebarAsPage && "max-md:hidden")}>
         <Button
           variant="ghost"
-          size="icon-sm"
+          size="icon"
           className="absolute top-1.5 left-1.5 z-10 md:hidden"
           onClick={() => setSidebarOpen(true)}
           aria-label="Open sidebar"
         >
-          <PanelLeftIcon />
+          <PanelLeftIcon className="size-5" />
         </Button>
         <Outlet />
       </section>

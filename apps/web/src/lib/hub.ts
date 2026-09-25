@@ -9,6 +9,7 @@ import {
   type SignalData,
 } from "@everywhere/protocol";
 import { useSyncExternalStore } from "react";
+import { alertsEnabled, alertThread, dismissThreadAlerts, pushAlert, subscribe as onAlertsChange } from "./alerts";
 import { api } from "./api";
 
 export type HubStatus = "idle" | "connecting" | "open" | "closed";
@@ -35,6 +36,8 @@ const BACKOFF_MIN_MS = 500;
 const BACKOFF_MAX_MS = 15_000;
 /** The hub closes a browser socket with this when its session is signed out or expires. */
 const CLOSE_SESSION_REVOKED = 4003;
+/** How long after the last input the user counts as away, though the tab keeps focus. */
+const IDLE_MS = 2 * 60_000;
 
 class Hub {
   private ws: WebSocket | null = null;
@@ -50,6 +53,9 @@ class Hub {
   /** The thread the page shows, and what the hub last heard about it ("" = nothing). */
   private thread: { deviceId: string; threadId: string } | null = null;
   private sentViewing = "";
+  /** When the user last touched the page, and the timer that notices them going idle. */
+  private lastInput = Date.now();
+  private idleTimer: ReturnType<typeof setTimeout> | undefined;
 
   /** Called when the socket can't be opened because the session is gone. */
   onUnauthorized: (() => void) | null = null;
@@ -59,23 +65,49 @@ class Hub {
     document.addEventListener("visibilitychange", sync);
     window.addEventListener("focus", sync);
     window.addEventListener("blur", sync);
+    onAlertsChange(sync);
+    const input = () => {
+      const was = this.lastInput;
+      this.lastInput = Date.now();
+      // Most input comes in bursts: only act on the first after a pause.
+      if (this.lastInput - was < 5_000) return;
+      this.watchIdle();
+    };
+    for (const ev of ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"]) {
+      window.addEventListener(ev, input, { capture: true, passive: true });
+    }
+    this.watchIdle();
+  }
+
+  /** Reports activity now, and again once the user goes idle. */
+  private watchIdle(): void {
+    clearTimeout(this.idleTimer);
+    this.syncViewing();
+    const left = this.lastInput + IDLE_MS - Date.now();
+    if (left > 0) this.idleTimer = setTimeout(() => this.watchIdle(), left + 1_000);
   }
 
   /**
    * Which thread the page shows (null for none). While it's visible and
-   * focused the hub skips push notifications about it.
+   * focused the hub skips push notifications about it; while someone is also
+   * using it and it shows alerts, the hub skips them all.
    */
   setThread(thread: { deviceId: string; threadId: string } | null): void {
     this.thread = thread;
+    if (thread) dismissThreadAlerts(thread.deviceId, thread.threadId);
     this.syncViewing();
   }
 
   private syncViewing(): void {
-    const t = this.thread && document.visibilityState === "visible" && document.hasFocus() ? this.thread : null;
-    const key = t ? `${t.deviceId}/${t.threadId}` : "";
+    const seen = document.visibilityState === "visible" && document.hasFocus();
+    const t = seen ? this.thread : null;
+    const active = seen && alertsEnabled() && Date.now() - this.lastInput < IDLE_MS;
+    const key = `${t ? `${t.deviceId}/${t.threadId}` : ""}${active ? "+" : ""}`;
     if (key === this.sentViewing) return;
     const sent = this.send(
-      t ? { t: "viewing", deviceId: t.deviceId, threadId: t.threadId } : { t: "viewing", deviceId: null, threadId: null },
+      t
+        ? { t: "viewing", deviceId: t.deviceId, threadId: t.threadId, active }
+        : { t: "viewing", deviceId: null, threadId: null, active },
     );
     if (sent) this.sentViewing = key;
   }
@@ -268,6 +300,11 @@ class Hub {
       case "error":
         if (msg.sid) this.sinks.get(msg.sid)?.onHubError(msg.code, msg.message);
         else console.warn(`hub error ${msg.code}: ${msg.message}`);
+        return;
+      case "alert":
+        // Nothing to switch to if this tab already shows the thread.
+        if (this.thread?.deviceId === msg.deviceId && this.thread.threadId === alertThread(msg)) return;
+        pushAlert(msg);
         return;
     }
   }

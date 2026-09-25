@@ -34,14 +34,21 @@ if (vv) {
   const sync = () => {
     if (Math.abs(vv.scale - 1) > 0.01) return; // pinch-zoomed: leave the layout alone
     const root = document.documentElement.style;
-    root.setProperty("--app-height", `${vv.height}px`);
-    // The keyboard covers the home indicator, so no bottom inset while it's up.
-    if (window.innerHeight - vv.height > 120) root.setProperty("--safe-bottom", "0px");
-    else root.removeProperty("--safe-bottom");
+    // Otherwise the app fills the screen (styles.css): the visual viewport can
+    // stay short after the keyboard goes away.
+    if (window.innerHeight - vv.height > 120) {
+      root.setProperty("--app-height", `${vv.height}px`);
+      // The keyboard covers the home indicator, so no bottom inset while it's up.
+      root.setProperty("--safe-bottom", "0px");
+    } else {
+      root.removeProperty("--app-height");
+      root.removeProperty("--safe-bottom");
+    }
     if (window.scrollY !== 0) window.scrollTo(0, 0);
   };
   vv.addEventListener("resize", sync);
   vv.addEventListener("scroll", sync);
+  window.addEventListener("resize", sync);
   sync();
 }
 
