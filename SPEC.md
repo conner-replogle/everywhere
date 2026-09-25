@@ -218,6 +218,22 @@ closing the tab never removes it). `threads.list` leaves tabs out.
   when claude starts using the browser, unless the user closed it in the last
   two minutes. Closing the browser tab or deleting the thread closes the page;
   archiving closes it but remembers its URL.
+- **Browser video**: a viewer attaches with `video` and sends a receive-only
+  WebRTC offer over the channel (`offer` → `answer`, `ice` trickled both
+  ways). The daemon loads a small extension into its Chromium over the pipe
+  (`Extensions.loadUnpacked`; its fixed key's id is allowlisted for tab
+  capture), whose page captures each tab with `chrome.tabCapture` at the
+  viewport's device pixels and holds one peer connection per viewer, so
+  Chrome encodes (H.264 preferred by the viewer), paces and retransmits. The
+  viewport's size or DPR changing restarts the capture. Quality caps the
+  bitrate (2.5 / 8 / 20 Mbps). Browsers without extensions (e.g.
+  chrome-headless-shell), a failed capture, and viewers from before video
+  get the JPEG screencast instead (`novideo`).
+- **Mouse mode** (touch screens, toolbar toggle): the screen works as a
+  trackpad driving a pointer drawn over the page, so the page gets real
+  mouse moves and hover. One finger moves it, a tap clicks, hold-then-drag
+  drags, two fingers scroll, a two-finger tap right-clicks. The tab stops
+  emulating a touch device while it's on.
 
 ### Install (`curl -fsSL https://ai.replogle.dev/i/<token> | sh`)
 

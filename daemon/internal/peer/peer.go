@@ -115,6 +115,12 @@ func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string) *Serve
 	s.terms = term.NewManager(shells{s}, threadsChanged)
 	s.agents = agent.NewManager(st, dataDir, threadsChanged)
 	s.browsers = browser.NewManager(filepath.Join(dataDir, "browser"))
+	s.browsers.ICEServers = func() []webrtc.ICEServer {
+		if s.ICEServers != nil {
+			return s.ICEServers()
+		}
+		return nil
+	}
 	s.mcp = mcp.NewServer("everywhere", version.Version, browser.Tools(s.browsers))
 	s.mcpDir = filepath.Join(dataDir, "mcp")
 	clearMCPConfigs(s.mcpDir)

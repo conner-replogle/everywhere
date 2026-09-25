@@ -1,19 +1,28 @@
 package protocol
 
+import "encoding/json"
+
 // ---------------------------------------------------------------------------
-// Browser channel browser:<threadId>: a thread's Chromium tab on the device, shown as
-// a JPEG screencast. JSON text frames both ways; each daemon "frame" header
-// is followed by the JPEG as binary chunks totalling Size bytes.
+// Browser channel browser:<threadId>: a thread's Chromium tab on the device.
+// JSON text frames both ways. A viewer that attaches with video gets the tab
+// as WebRTC video on a peer connection of its own, from the device's
+// Chromium, signaled over this channel (offer, answer, ice). Otherwise, or
+// after novideo, it gets a JPEG screencast: each daemon "frame" header is
+// followed by the JPEG as binary chunks totalling Size bytes.
 // ---------------------------------------------------------------------------
 
 const BrowserChannelPrefix = "browser:"
 
 // BrowserClientMsg is a frame from the browser, discriminated by T:
-//   - attach {width, height, dpr, quality, mobile}: must come first; the
-//     client's view size in CSS pixels, dpr 1-2, quality 20-95, and whether
-//     it's a touch device. The last client to attach or resize sets the
-//     tab's size while its viewport mode is "fill".
+//   - attach {width, height, dpr, quality, mobile, video}: must come first;
+//     the client's view size in CSS pixels, dpr 1-2, quality 20-95, whether
+//     it's a touch device, and whether it wants video. The last client to
+//     attach or resize sets the tab's size while its viewport mode is "fill".
 //   - resize {width, height, dpr, quality, mobile}
+//   - offer {sdp}: a video viewer's offer (receive-only video); answered
+//     with answer {sdp}, or novideo if the tab falls back to JPEG. Sending
+//     another replaces the viewer's peer connection.
+//   - ice {candidate}: a trickled candidate (RTCIceCandidateInit) for it
 //   - viewport {mode, preset, orientation, width, height}: fill the viewers'
 //     view (mode "fill"), emulate a device (mode "preset", preset id and
 //     orientation portrait|landscape), or a fixed size (mode "freeform")
@@ -55,6 +64,10 @@ type BrowserClientMsg struct {
 	Text       string  `json:"text,omitempty"`
 	Location   int     `json:"location,omitempty"`
 	Repeat     bool    `json:"repeat,omitempty"`
+	Video      bool    `json:"video,omitempty"`
+	SDP        string  `json:"sdp,omitempty"`
+	// Candidate is an RTCIceCandidateInit, passed through as is.
+	Candidate json.RawMessage `json:"candidate,omitempty"`
 
 	Mobile      bool                `json:"mobile,omitempty"`
 	Mode        string              `json:"mode,omitempty"`
@@ -162,6 +175,25 @@ type (
 	// show, like a dialog that was answered automatically.
 	BrowserNotice struct {
 		T       string `json:"t"` // "notice"
+		Message string `json:"message"`
+	}
+
+	// BrowserAnswer answers a video viewer's offer.
+	BrowserAnswer struct {
+		T   string `json:"t"` // "answer"
+		SDP string `json:"sdp"`
+	}
+
+	// BrowserICE is one of the device's trickled candidates for a viewer's
+	// video; it can arrive before the answer.
+	BrowserICE struct {
+		T         string          `json:"t"` // "ice"
+		Candidate json.RawMessage `json:"candidate"`
+	}
+
+	// BrowserNoVideo moves a viewer to JPEG frames.
+	BrowserNoVideo struct {
+		T       string `json:"t"` // "novideo"
 		Message string `json:"message"`
 	}
 

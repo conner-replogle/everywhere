@@ -1,11 +1,16 @@
 // Mirrors daemon/internal/protocol/browser.go.
 
+import type { IceCandidate } from "./index";
+
 /**
- * Browser channel `browser:<threadId>`: a Chromium tab on the device, shown
- * as a JPEG screencast. JSON text frames both ways; each daemon `frame` header
- * is followed by the JPEG as binary chunks totalling `size` bytes. The client
- * sends `attach` first. While the tab's viewport mode is `fill`, the last
- * client to attach or resize sets its size.
+ * Browser channel `browser:<threadId>`: a Chromium tab on the device. JSON
+ * text frames both ways; the client sends `attach` first. A client that
+ * attaches with `video` then sends an `offer` and gets the tab as WebRTC
+ * video on a peer connection of its own, signaled here (`answer`, `ice` both
+ * ways). Otherwise, or after `novideo`, it gets a JPEG screencast: each
+ * daemon `frame` header is followed by the JPEG as binary chunks totalling
+ * `size` bytes. While the tab's viewport mode is `fill`, the last client to
+ * attach or resize sets its size.
  */
 export const BROWSER_CHANNEL_PREFIX = "browser:";
 
@@ -18,10 +23,12 @@ export interface BrowserViewport {
   height: number;
   /** Device pixel ratio the frames are rendered at (1-2). */
   dpr: number;
-  /** JPEG quality, 20-95. */
+  /** Quality, 20-95: JPEG quality, or the video's bitrate cap. */
   quality: number;
   /** A touch device: emulate one while the tab fills the view. */
   mobile?: boolean;
+  /** Wants WebRTC video instead of JPEG frames. */
+  video?: boolean;
 }
 
 export type BrowserViewportMode = "fill" | "preset" | "freeform";
@@ -117,7 +124,10 @@ export type BrowserClientMsg =
   /** `points`: the touches still down (for `end`, the ones that stay down). */
   | { t: "touch"; kind: "start" | "move" | "end" | "cancel"; points?: BrowserTouchPoint[]; modifiers?: number }
   /** Answered with `picked`: the element at x/y. */
-  | { t: "pick"; id: number; x: number; y: number };
+  | { t: "pick"; id: number; x: number; y: number }
+  /** A receive-only video offer; answered with `answer` or `novideo`. Another replaces it. */
+  | { t: "offer"; sdp: string }
+  | { t: "ice"; candidate: IceCandidate };
 
 export interface BrowserState {
   url: string;
@@ -143,5 +153,10 @@ export type BrowserDaemonMsg =
   | { t: "notice"; message: string }
   | { t: "error"; message: string }
   | { t: "picked"; id: number; element: BrowserElement | null }
+  | { t: "answer"; sdp: string }
+  /** The device's candidate for the video; can come before the answer. */
+  | { t: "ice"; candidate: IceCandidate }
+  /** Video isn't available (any more): JPEG frames follow. */
+  | { t: "novideo"; message: string }
   /** What an agent is doing in the tab, at x/y when it has a position. */
   | { t: "agent"; action: string; x?: number; y?: number; label?: string };

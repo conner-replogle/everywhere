@@ -99,6 +99,9 @@ type chrome struct {
 	// userAgent is the browser's own UA with "HeadlessChrome" made "Chrome",
 	// since some sites (Cloudflare's bot check among them) reject headless.
 	userAgent string
+	// video streams tabs as WebRTC video; nil if this browser can't, and
+	// tabs fall back to JPEG screencasts.
+	video *videoHost
 }
 
 // launchChrome starts a headless browser with its profile in profileDir.
@@ -129,7 +132,9 @@ func launchChrome(ctx context.Context, profileDir string, onEvent func(string, s
 		"--disable-background-timer-throttling",
 		"--disable-backgrounding-occluded-windows",
 		"--disable-renderer-backgrounding",
-		"--disable-extensions",
+		// Only the capture extension, loaded over the pipe.
+		"--enable-unsafe-extension-debugging",
+		"--allowlisted-extension-id=" + captureExtID,
 		"--disable-component-extensions-with-background-pages",
 		"--disable-features=Translate,MediaRouter,OptimizationHints",
 		"about:blank",
@@ -183,6 +188,9 @@ func launchChrome(ctx context.Context, profileDir string, onEvent func(string, s
 	if err := c.conn.call(ctx, "", "Target.setDiscoverTargets", map[string]any{"discover": true}, nil); err != nil {
 		c.kill()
 		return nil, err
+	}
+	if c.video, err = startVideoHost(ctx, c.conn, filepath.Join(filepath.Dir(profileDir), "capture-extension")); err != nil {
+		slog.Warn("browser video unavailable; streaming JPEG", "err", err)
 	}
 	return c, nil
 }

@@ -14,7 +14,9 @@ import {
   LoaderIcon,
   MessageSquarePlusIcon,
   MousePointer2Icon,
+  PointerIcon,
   RotateCwIcon,
+  TextCursorIcon,
   XIcon,
 } from "lucide-react";
 import {
@@ -45,6 +47,7 @@ import {
   syntheticKey,
   wheelPixels,
 } from "@/lib/browser-input";
+import { BrowserVideo } from "@/lib/browser-video";
 import type { DevicePeer } from "@/lib/peer";
 import { cn, errorMessage } from "@/lib/utils";
 import {
@@ -57,11 +60,14 @@ import {
   composeAnnotations,
 } from "./annotation-layer";
 import { DeviceBar } from "./device-bar";
+import { useTrackpad } from "./trackpad";
 
 interface Settings {
   quality: number;
   /** Render at the screen's pixel ratio (up to 2x) instead of 1x. */
   sharp: boolean;
+  /** On touch screens: drive a pointer like a trackpad, so pages see hover. */
+  mouse: boolean;
 }
 
 const SETTINGS_KEY = "ew.browser.settings";
@@ -70,7 +76,7 @@ const QUALITIES = [
   { label: "Medium", value: 65 },
   { label: "High", value: 85 },
 ];
-const DEFAULT_SETTINGS: Settings = { quality: 65, sharp: true };
+const DEFAULT_SETTINGS: Settings = { quality: 65, sharp: true, mouse: false };
 
 function loadSettings(): Settings {
   try {
@@ -88,11 +94,13 @@ const STAGE_PAD = 12;
 /** Below this width the toolbar tucks back/forward into its menu. */
 const NARROW_PX = 480;
 const coarsePointer = window.matchMedia("(pointer: coarse)").matches;
+const canVideo = typeof RTCPeerConnection !== "undefined";
+/** A failed video connection is retried this many times before JPEG takes over. */
+const VIDEO_RETRIES = 3;
 
 interface Stats {
-  fps: number;
-  bytesPerSec: number;
-  avgFrame: number;
+  label: string;
+  title: string;
 }
 
 interface AgentMark {
@@ -109,9 +117,10 @@ export interface AnnotationDraft {
 }
 
 /**
- * A Chromium tab running on the device, streamed as JPEG frames onto a
- * canvas. Pointer, touch, wheel and keyboard input go back over the channel;
- * the page's cursor comes back as a message and is applied to the canvas.
+ * A Chromium tab running on the device, streamed as WebRTC video (or, from
+ * browsers that can't, JPEG frames onto a canvas). Pointer, touch, wheel and
+ * keyboard input go back over the channel; the page's cursor comes back as a
+ * message and is applied to the picture.
  */
 export function BrowserView({
   peer,
@@ -133,6 +142,9 @@ export function BrowserView({
 }) {
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const videoElRef = useRef<HTMLVideoElement>(null);
+  const videoRef = useRef<BrowserVideo | null>(null);
   const sinkRef = useRef<HTMLTextAreaElement>(null);
   const urlRef = useRef<HTMLInputElement>(null);
   const chanRef = useRef<BrowserChannel | null>(null);
@@ -154,6 +166,13 @@ export function BrowserView({
   const [focused, setFocused] = useState(false);
   const [attachKey, setAttachKey] = useState(0);
   const [agentMark, setAgentMark] = useState<AgentMark | null>(null);
+  /** Showing video rather than JPEG frames; false once the device says it can't. */
+  const [video, setVideo] = useState(canVideo);
+  const videoOn = useRef(video);
+  videoOn.current = video;
+  /** While annotating video, the canvas holds a still of it. */
+  const [still, setStill] = useState(false);
+  const pageRef = useRef<BrowserState>(BLANK);
   const remoteMac = remoteOs === "darwin";
   const narrow = stage.width > 0 && stage.width < NARROW_PX;
 
@@ -177,8 +196,8 @@ export function BrowserView({
   const viewport = useCallback((): BrowserViewport | null => {
     const s = sizeRef.current;
     if (!s || s.width < 1 || s.height < 1) return null;
-    const { quality, sharp } = settingsRef.current;
-    return { ...s, dpr: sharp ? Math.min(window.devicePixelRatio || 1, 2) : 1, quality, mobile: coarsePointer };
+    const { quality, sharp, mouse } = settingsRef.current;
+    return { ...s, dpr: sharp ? Math.min(window.devicePixelRatio || 1, 2) : 1, quality, mobile: coarsePointer && !mouse };
   }, []);
 
   // --- picking --------------------------------------------------------------------
@@ -253,11 +272,33 @@ export function BrowserView({
 
   useEffect(() => {
     const id = setInterval(() => {
+      const v = videoRef.current;
+      if (videoOn.current && v) {
+        void v.stats().then((st) => {
+          if (!st) return;
+          setStats({
+            label: `${st.fps} fps · ${formatBits(st.bitsPerSec)}`,
+            title: `${st.codec} video, ${st.width}×${st.height}`,
+          });
+        });
+        return;
+      }
       const { frames, bytes } = counters.current;
       counters.current = { frames: 0, bytes: 0 };
-      setStats({ fps: frames, bytesPerSec: bytes, avgFrame: frames ? bytes / frames : 0 });
+      setStats({
+        label: `${frames} fps · ${formatBytes(bytes)}/s · ${formatBytes(frames ? bytes / frames : 0)}/frame`,
+        title: `JPEG frames, quality ${settingsRef.current.quality}`,
+      });
     }, 1000);
     return () => clearInterval(id);
+  }, []);
+
+  /** The page's CSS size: the video carries none, so it comes from the tab's state. */
+  const setPageSize = useCallback((width: number, height: number) => {
+    const fs = frameSizeRef.current;
+    if (!width || !height || (fs.width === width && fs.height === height)) return;
+    frameSizeRef.current = { width, height };
+    setFrameSize(frameSizeRef.current);
   }, []);
 
   // --- channel ----------------------------------------------------------------
@@ -266,12 +307,46 @@ export function BrowserView({
     setStatus("connecting");
     setError(null);
     let chan: BrowserChannel;
+    let retries = 0;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const toJpeg = () => {
+      videoRef.current?.close();
+      videoRef.current = null;
+      setVideo(false);
+    };
+    // Our side gave up on the video: attach again, asking for frames.
+    const giveUp = () => {
+      toJpeg();
+      setAttachKey((k) => k + 1);
+    };
     try {
       chan = peer.openBrowser(threadId, {
         onOpen: () => {
-          chan.send({ t: "attach", ...(viewport() ?? { width: 800, height: 600, dpr: 1, quality: 65 }) });
+          const wantVideo = canVideo && videoOn.current;
+          chan.send({
+            t: "attach",
+            ...(viewport() ?? { width: 800, height: 600, dpr: 1, quality: 65 }),
+            video: wantVideo,
+          });
+          if (!wantVideo) return;
+          const v = new BrowserVideo(
+            (m) => chan.send(m),
+            () => {
+              if (++retries > VIDEO_RETRIES) {
+                showNotice("Couldn't connect the video; showing still frames instead.");
+                return giveUp();
+              }
+              retryTimer = setTimeout(() => void v.offer().catch(giveUp), 1000);
+            },
+          );
+          videoRef.current = v;
+          const el = videoElRef.current;
+          if (el) el.srcObject = v.stream;
+          v.offer().catch(giveUp);
         },
         onFrame: (hdr, jpeg) => {
+          // A daemon from before video sends frames regardless.
+          if (videoOn.current) toJpeg();
           counters.current.frames++;
           counters.current.bytes += hdr.size;
           setStatus("live");
@@ -281,9 +356,20 @@ export function BrowserView({
           switch (msg.t) {
             case "state": {
               const { t: _, ...state } = msg;
+              pageRef.current = state;
               setPage(state);
+              if (videoOn.current && state.viewport) setPageSize(state.viewport.width, state.viewport.height);
               break;
             }
+            case "answer":
+              void videoRef.current?.onAnswer(msg.sdp).catch(giveUp);
+              break;
+            case "ice":
+              videoRef.current?.onCandidate(msg.candidate);
+              break;
+            case "novideo":
+              toJpeg();
+              break;
             case "cursor":
               setCursor(safeCursor(msg.cursor));
               break;
@@ -319,11 +405,22 @@ export function BrowserView({
     chanRef.current = chan;
     return () => {
       chanRef.current = null;
+      clearTimeout(retryTimer);
+      videoRef.current?.close();
+      videoRef.current = null;
       chan.close();
       for (const done of picks.current.values()) done(null);
       picks.current.clear();
     };
-  }, [peer, threadId, generation, attachKey, viewport, draw, showNotice]);
+  }, [peer, threadId, generation, attachKey, viewport, draw, showNotice, setPageSize]);
+
+  // The video is live once it shows a frame, at the size the tab says it is.
+  const onVideoFrame = () => {
+    if (!videoOn.current) return;
+    setStatus("live");
+    const vp = pageRef.current.viewport;
+    if (vp) setPageSize(vp.width, vp.height);
+  };
 
   // The tab follows this view's size while it fills the panel.
   useEffect(() => {
@@ -380,7 +477,7 @@ export function BrowserView({
 
   /** Client coordinates to the page's CSS pixels. */
   const toPage = useCallback((clientX: number, clientY: number) => {
-    const c = canvasRef.current;
+    const c = surfaceRef.current;
     if (!c) return { x: 0, y: 0 };
     const r = c.getBoundingClientRect();
     const fs = frameSizeRef.current;
@@ -442,7 +539,20 @@ export function BrowserView({
     [send],
   );
 
-  const onPointerDown = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+  const mouseMode = coarsePointer && settings.mouse;
+  const trackpad = useTrackpad({
+    enabled: mouseMode,
+    send,
+    pageSize: useCallback(() => frameSizeRef.current, []),
+    screenPerPage: useCallback(() => {
+      const r = surfaceRef.current?.getBoundingClientRect();
+      const fs = frameSizeRef.current;
+      return r && fs.width ? r.width / fs.width : 1;
+    }, []),
+  });
+
+  const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (mouseMode && e.pointerType === "touch") return trackpad.onPointerDown(e);
     e.preventDefault();
     e.currentTarget.setPointerCapture(e.pointerId);
     const { x, y } = toPage(e.clientX, e.clientY);
@@ -465,7 +575,8 @@ export function BrowserView({
     send({ t: "mouse", kind: "down", x, y, button: e.button, buttons: e.buttons, clickCount: clicks.current.count, modifiers: mods });
   };
 
-  const onPointerMove = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+  const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (mouseMode && e.pointerType === "touch") return trackpad.onPointerMove(e);
     const { x, y } = toPage(e.clientX, e.clientY);
     if (e.pointerType === "touch") {
       if (touchMode) {
@@ -489,7 +600,7 @@ export function BrowserView({
     if (!moveRaf.current) moveRaf.current = requestAnimationFrame(flushMove);
   };
 
-  const endTouch = (e: ReactPointerEvent<HTMLCanvasElement>, cancel: boolean) => {
+  const endTouch = (e: ReactPointerEvent<HTMLDivElement>, cancel: boolean) => {
     if (!touches.current.delete(e.pointerId)) return;
     flushTouchMove();
     // Lifting one finger of several is a move without it.
@@ -497,7 +608,8 @@ export function BrowserView({
     else send({ t: "touch", kind: cancel ? "cancel" : "end" });
   };
 
-  const onPointerUp = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+  const onPointerUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (mouseMode && e.pointerType === "touch") return trackpad.onPointerUp(e);
     const { x, y } = toPage(e.clientX, e.clientY);
     if (e.pointerType === "touch") {
       if (touches.current.has(e.pointerId)) return endTouch(e, false);
@@ -520,7 +632,8 @@ export function BrowserView({
     });
   };
 
-  const onPointerCancel = (e: ReactPointerEvent<HTMLCanvasElement>) => {
+  const onPointerCancel = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (mouseMode && e.pointerType === "touch") return trackpad.onPointerCancel(e);
     if (touches.current.has(e.pointerId)) endTouch(e, true);
     if (touch.current?.id === e.pointerId) touch.current = null;
   };
@@ -528,7 +641,7 @@ export function BrowserView({
   // React's wheel listener is passive; this one has to be able to stop the
   // panel itself from scrolling.
   useEffect(() => {
-    const c = canvasRef.current;
+    const c = surfaceRef.current;
     if (!c) return;
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
@@ -679,12 +792,22 @@ export function BrowserView({
     setAnnotating(false);
     setAnnotations([]);
     setEditingNote(null);
+    setStill(false);
     frozen.current = false;
     pump();
   }, [pump]);
 
   const startAnnotating = () => {
     frozen.current = true;
+    // Hold the video still: its current frame goes onto the canvas.
+    const v = videoElRef.current;
+    const c = canvasRef.current;
+    if (videoOn.current && v && c && v.videoWidth) {
+      c.width = v.videoWidth;
+      c.height = v.videoHeight;
+      c.getContext("2d")?.drawImage(v, 0, 0);
+      setStill(true);
+    }
     sinkRef.current?.blur();
     setAnnotating(true);
     setTool(coarsePointer ? "region" : "element");
@@ -809,12 +932,25 @@ export function BrowserView({
             className="shrink-0 px-1 font-mono text-[11px] text-muted-foreground tabular-nums"
             title={
               frameSize
-                ? `${frameSize.width}×${frameSize.height} CSS px at ${viewport()?.dpr ?? 1}x, JPEG quality ${settings.quality}`
-                : undefined
+                ? `${frameSize.width}×${frameSize.height} CSS px at ${viewport()?.dpr ?? 1}x; ${stats.title}`
+                : stats.title
             }
           >
-            {stats.fps} fps · {formatBytes(stats.bytesPerSec)}/s · {formatBytes(stats.avgFrame)}/frame
+            {stats.label}
           </span>
+        )}
+        {coarsePointer && (
+          <Button
+            variant={mouseMode ? "secondary" : "ghost"}
+            size="icon-sm"
+            className={iconBtn}
+            aria-label="Mouse mode"
+            aria-pressed={mouseMode}
+            title="Drive a mouse pointer like a trackpad, so the page sees hover"
+            onClick={() => setSettings((s) => ({ ...s, mouse: !s.mouse }))}
+          >
+            <MousePointer2Icon />
+          </Button>
         )}
         {coarsePointer && (
           <Button variant="ghost" size="icon-sm" className={iconBtn} aria-label="Keyboard" onClick={toggleKeyboard}>
@@ -902,7 +1038,7 @@ export function BrowserView({
               </DropdownMenuCheckboxItem>
             ))}
             <DropdownMenuSeparator />
-            <DropdownMenuLabel>Image quality</DropdownMenuLabel>
+            <DropdownMenuLabel>{video ? "Video quality" : "Image quality"}</DropdownMenuLabel>
             {QUALITIES.map((q) => (
               <DropdownMenuCheckboxItem
                 key={q.value}
@@ -940,16 +1076,34 @@ export function BrowserView({
           className={cn("absolute", fixed && "bg-[#0e1014] shadow-2xl ring-1 ring-border")}
           style={frameSize ? box : { left: 0, top: 0, width: 0, height: 0 }}
         >
-          <canvas
-            ref={canvasRef}
-            className="absolute inset-0 size-full touch-none select-none"
-            style={{ cursor }}
+          <div
+            ref={surfaceRef}
+            className="absolute inset-0 touch-none select-none"
+            style={{ cursor: mouseMode ? "none" : cursor }}
             onPointerDown={onPointerDown}
             onPointerMove={onPointerMove}
             onPointerUp={onPointerUp}
             onPointerCancel={onPointerCancel}
             onContextMenu={(e) => e.preventDefault()}
-          />
+          >
+            {video && (
+              <video
+                ref={videoElRef}
+                className="pointer-events-none absolute inset-0 size-full object-fill"
+                autoPlay
+                muted
+                playsInline
+                disablePictureInPicture
+                onLoadedData={onVideoFrame}
+                onResize={onVideoFrame}
+              />
+            )}
+            <canvas
+              ref={canvasRef}
+              className={cn("pointer-events-none absolute inset-0 size-full", video && !still && "invisible")}
+            />
+            {mouseMode && frameSize && <RemotePointer cursor={cursor} dragging={trackpad.dragging} x={trackpad.pos.x * scale} y={trackpad.pos.y * scale} />}
+          </div>
           {annotating && frameSize && (
             <AnnotationCanvas
               width={frameSize.width}
@@ -1080,6 +1234,26 @@ export function BrowserView({
   );
 }
 
+/** The trackpad's pointer, drawn where the page's mouse is, shaped like its cursor. */
+function RemotePointer({ cursor, dragging, x, y }: { cursor: string; dragging: boolean; x: number; y: number }) {
+  const shape = cursor === "pointer" ? "hand" : cursor === "text" || cursor === "vertical-text" ? "text" : "arrow";
+  const Icon = shape === "hand" ? PointerIcon : shape === "text" ? TextCursorIcon : MousePointer2Icon;
+  // Each icon's hot spot: the arrow's tip, the finger's tip, the beam's middle.
+  const offset = shape === "hand" ? "-translate-x-[35%]" : shape === "text" ? "-translate-x-1/2 -translate-y-1/2" : "";
+  return (
+    <div className="pointer-events-none absolute z-10" style={{ left: x, top: y }}>
+      <Icon
+        className={cn(
+          "size-5 text-black drop-shadow-[0_0_1.5px_white] transition-transform",
+          shape === "arrow" && "fill-white",
+          offset,
+          dragging && "scale-90",
+        )}
+      />
+    </div>
+  );
+}
+
 function ResizeHandle({
   dir,
   onDown,
@@ -1127,6 +1301,11 @@ function Overlay({ className, children }: { className?: string; children: React.
 
 function clampSize(v: number, most: number): number {
   return Math.round(Math.min(Math.max(v, 200), most));
+}
+
+function formatBits(n: number): string {
+  if (n < 1e6) return `${Math.round(n / 1e3)} kbps`;
+  return `${(n / 1e6).toFixed(1)} Mbps`;
 }
 
 function formatBytes(n: number): string {

@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "everywhere capture",
+  "description": "Streams the daemon's tabs to their viewers as video.",
+  "version": "1",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApD6XltV7FE1pBKotYab0psssMOxfi53l2dpnCX4sfhMQNw/YW2S3p4P4l/j+NK/SCb+phSe0NeyjH5h5qr0RbicBvnxumNMLyJHdhBQBlzHtSd+aK95HpCDMBS2YGW0AQHmq0866mQAMt++fg2xpWSkp/o4yu6s0Brl4jU9/mXLNZJULJ3jXklhoG96Pu8uZJDpy+TQWc5QeBmPeiGUUK9l7Ulv5x52+L2LiYBx+xJDsu8NqY8/trPWX8OoddIEoBM5tNg7GXSvqkExQaByWqRqSSFQC0DvjD+KJGzApujRF/v25oE5M5bGqvRN6iWSyw0Xmyja6R7wwwz2tL2VLIQIDAQAB",
+  "permissions": [
+    "tabCapture",
+    "debugger"
+  ]
+}

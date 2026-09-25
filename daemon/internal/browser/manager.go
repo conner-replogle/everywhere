@@ -1,5 +1,6 @@
 // Package browser runs a headless Chromium on the device and streams its tabs
-// to clients as JPEG screencasts, feeding their mouse and keyboard back in
+// to clients as WebRTC video (JPEG screencasts where the browser can't),
+// feeding their mouse and keyboard back in
 // over the DevTools protocol. The page runs next to the dev servers it shows,
 // so localhost, hot reload and cookies behave as they would locally.
 package browser
@@ -12,6 +13,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/pion/webrtc/v4"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 )
@@ -34,6 +37,8 @@ type Client interface {
 // Manager owns the browser process and one tab per key (a thread id).
 type Manager struct {
 	dir string
+	// ICEServers are the STUN/TURN servers for tabs' video; set before use.
+	ICEServers func() []webrtc.ICEServer
 
 	mu       sync.Mutex
 	chrome   *chrome
@@ -46,6 +51,7 @@ type Manager struct {
 	routeMu   sync.Mutex
 	bySession map[string]*Tab
 	byTarget  map[string]*Tab
+	byKey     map[string]*Tab
 }
 
 // NewManager keeps the browser profile (cookies, storage) under dir.
@@ -56,6 +62,7 @@ func NewManager(dir string) *Manager {
 		lastURL:   map[string]string{},
 		bySession: map[string]*Tab{},
 		byTarget:  map[string]*Tab{},
+		byKey:     map[string]*Tab{},
 	}
 }
 
@@ -239,6 +246,7 @@ func (m *Manager) takeLocked() (*chrome, []*Tab) {
 	m.routeMu.Lock()
 	m.bySession = map[string]*Tab{}
 	m.byTarget = map[string]*Tab{}
+	m.byKey = map[string]*Tab{}
 	m.routeMu.Unlock()
 	return br, tabs
 }
@@ -264,6 +272,7 @@ func (m *Manager) openTab(ctx context.Context, key string) (*Tab, error) {
 	m.routeMu.Lock()
 	m.bySession[t.sessionID] = t
 	m.byTarget[t.targetID] = t
+	m.byKey[key] = t
 	m.routeMu.Unlock()
 	if err := t.setup(ctx); err != nil {
 		m.unroute(t)
@@ -291,6 +300,9 @@ func (m *Manager) unroute(t *Tab) {
 		if rt == t {
 			delete(m.byTarget, id)
 		}
+	}
+	if m.byKey[t.key] == t {
+		delete(m.byKey, t.key)
 	}
 }
 
@@ -326,6 +338,8 @@ func (m *Manager) route(sessionID, method string, params json.RawMessage) {
 		m.routeMu.Unlock()
 		if t != nil {
 			t.events.push(event{method, params})
+		} else if method == "Runtime.bindingCalled" {
+			m.routeVideo(params)
 		}
 		return
 	}
@@ -351,6 +365,29 @@ func (m *Manager) route(sessionID, method string, params json.RawMessage) {
 	m.routeMu.Unlock()
 	if t != nil {
 		t.events.push(event{method, params})
+	}
+}
+
+// routeVideo hands a message from the capture host to its tab.
+func (m *Manager) routeVideo(params json.RawMessage) {
+	var p struct {
+		Name    string `json:"name"`
+		Payload string `json:"payload"`
+	}
+	if json.Unmarshal(params, &p) != nil || p.Name != videoBinding {
+		return
+	}
+	var v struct {
+		Key string `json:"key"`
+	}
+	if json.Unmarshal([]byte(p.Payload), &v) != nil {
+		return
+	}
+	m.routeMu.Lock()
+	t := m.byKey[v.Key]
+	m.routeMu.Unlock()
+	if t != nil {
+		t.events.push(event{"video", json.RawMessage(p.Payload)})
 	}
 }
 

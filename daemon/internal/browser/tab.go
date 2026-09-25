@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -73,12 +74,13 @@ const selectionScript = `(() => {
 })()`
 
 // Viewport is a viewer's view size in CSS pixels, its device pixel ratio,
-// and the JPEG quality it wants.
+// and the quality it wants.
 type Viewport struct {
 	Width, Height int
 	DPR           float64
 	Quality       int
 	Mobile        bool // a touch device: emulate one while the tab fills its view
+	Video         bool // the viewer takes WebRTC video instead of JPEG frames
 }
 
 func (v Viewport) clamp() Viewport {
@@ -97,7 +99,7 @@ func (v Viewport) clamp() Viewport {
 
 // ViewportOf reads the viewport fields of an attach or resize message.
 func ViewportOf(m protocol.BrowserClientMsg) Viewport {
-	return Viewport{Width: m.Width, Height: m.Height, DPR: m.DPR, Quality: m.Quality, Mobile: m.Mobile}
+	return Viewport{Width: m.Width, Height: m.Height, DPR: m.DPR, Quality: m.Quality, Mobile: m.Mobile, Video: m.Video}
 }
 
 type event struct {
@@ -158,6 +160,12 @@ type sentFrame struct {
 }
 
 type viewerState struct {
+	// video viewers get the tab as WebRTC video from the capture host (as
+	// vid, once they've sent an offer) instead of JPEG frames.
+	video   bool
+	vid     string
+	quality int
+
 	seq int64 // last frame sent
 	// lagging viewers didn't drain within drainWait. Frames stop waiting for
 	// them until they catch up, so one slow or dead link doesn't hold back
@@ -192,6 +200,9 @@ type Tab struct {
 	metricsSet bool
 	casting    bool
 	cast       castParams
+	capturing  bool
+	capSize    [2]int
+	videoSeq   int
 	// Owned by the event goroutine: popups this tab opened, not yet adopted.
 	popups map[string]bool
 	// Console messages and failed requests, for agents.
@@ -262,6 +273,13 @@ func (t *Tab) shut(reason string) {
 	viewers := t.viewers
 	t.viewers = map[Client]*viewerState{}
 	t.mu.Unlock()
+	if h := t.br.video; h != nil {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), callWait)
+			defer cancel()
+			_ = h.invoke(ctx, nil, "release", t.key)
+		}()
+	}
 	for c := range viewers {
 		c.Closed(reason)
 	}
@@ -280,25 +298,55 @@ func (t *Tab) watched() bool {
 }
 
 func (t *Tab) attach(c Client, vp Viewport) {
+	video := vp.Video && t.br.video != nil
 	t.mu.Lock()
-	t.viewers[c] = &viewerState{}
+	t.viewers[c] = &viewerState{video: video, quality: vp.Quality}
 	state, cursor := t.state, t.cursor
 	t.mu.Unlock()
 	c.Send(state)
 	if cursor != "" {
 		c.Send(protocol.BrowserCursor{T: "cursor", Cursor: cursor})
 	}
-	t.enqueue(c, protocol.BrowserClientMsg{T: "resize", Width: vp.Width, Height: vp.Height, DPR: vp.DPR, Quality: vp.Quality})
+	if vp.Video && !video {
+		c.Send(protocol.BrowserNoVideo{T: "novideo", Message: "This browser can't stream video"})
+	}
+	t.enqueue(c, protocol.BrowserClientMsg{T: "resize", Width: vp.Width, Height: vp.Height, DPR: vp.DPR, Quality: vp.Quality, Mobile: vp.Mobile, Video: vp.Video})
 }
 
 func (t *Tab) detach(c Client) {
 	t.mu.Lock()
+	st := t.viewers[c]
 	delete(t.viewers, c)
 	empty := len(t.viewers) == 0
 	t.mu.Unlock()
+	if st != nil && st.vid != "" {
+		t.hangup(st.vid)
+	}
 	if empty {
 		t.enqueue(nil, protocol.BrowserClientMsg{T: "idle"})
+	} else {
+		t.enqueue(nil, protocol.BrowserClientMsg{T: "apply"}) // it may have been the last of its kind
 	}
+}
+
+// viewerKinds reports whether any viewer takes JPEG frames, and any video.
+func (t *Tab) viewerKinds() (jpeg, video bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, st := range t.viewers {
+		if st.video {
+			video = true
+		} else {
+			jpeg = true
+		}
+	}
+	return jpeg, video
+}
+
+func (t *Tab) viewerOf(c Client) *viewerState {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.viewers[c]
 }
 
 func (t *Tab) enqueue(c Client, msg protocol.BrowserClientMsg) {
@@ -387,7 +435,20 @@ func (t *Tab) handleInput(it inputItem) error {
 	switch m.T {
 	case "resize":
 		t.vp = ViewportOf(m).clamp()
+		if st := t.viewerOf(it.c); st != nil && st.video && st.vid != "" && st.quality != t.vp.Quality {
+			st.quality = t.vp.Quality
+			_ = t.videoCall(nil, "tune", st.vid, kbpsFor(st.quality))
+		}
 		return t.applyViewport()
+	case "recapture": // the capture ended on its own
+		t.capturing = false
+		return t.applyViewport()
+	case "offer":
+		return t.answer(it.c, m.SDP)
+	case "ice":
+		if st := t.viewerOf(it.c); st != nil && st.vid != "" && len(m.Candidate) > 0 {
+			return t.videoCall(nil, "ice", st.vid, m.Candidate)
+		}
 	case "apply": // the tab's own, when it opens
 		return t.applyViewport()
 	case "viewport":
@@ -412,7 +473,14 @@ func (t *Tab) handleInput(it inputItem) error {
 		}
 		t.updateState(func(s *protocol.BrowserState) { s.ColorScheme = cs })
 	case "idle":
-		if t.casting && !t.watched() {
+		if t.watched() {
+			return nil
+		}
+		if t.capturing {
+			t.capturing = false
+			_ = t.videoCall(nil, "release", t.key)
+		}
+		if t.casting {
 			t.casting = false
 			return t.call("Page.stopScreencast", nil, nil)
 		}
@@ -586,6 +654,24 @@ func (t *Tab) applyViewport() error {
 		maxHeight: int(math.Ceil(float64(m.height) * m.dpr)),
 		quality:   t.vp.Quality,
 	}
+	jpeg, video := t.viewerKinds()
+	if video {
+		if err := t.capture(cast.maxWidth, cast.maxHeight); err != nil {
+			slog.Warn("browser video capture failed; streaming JPEG", "err", err)
+			t.dropVideo("Couldn't capture the page as video: " + err.Error())
+			jpeg = true
+		}
+	} else if t.capturing {
+		t.capturing = false
+		_ = t.videoCall(nil, "release", t.key)
+	}
+	if !jpeg {
+		if t.casting {
+			t.casting = false
+			return t.call("Page.stopScreencast", nil, nil)
+		}
+		return nil
+	}
 	if t.casting && cast == t.cast {
 		return nil
 	}
@@ -600,6 +686,116 @@ func (t *Tab) applyViewport() error {
 		"maxHeight":     cast.maxHeight,
 		"everyNthFrame": 1,
 	}, nil)
+}
+
+// --- video ------------------------------------------------------------------
+
+// videoCall calls the capture host; nil if there is none.
+func (t *Tab) videoCall(out any, fn string, args ...any) error {
+	h := t.br.video
+	if h == nil {
+		return errors.New("no video")
+	}
+	ctx, cancel := context.WithTimeout(t.ctx, callWait)
+	defer cancel()
+	return h.invoke(ctx, out, fn, args...)
+}
+
+// capture (re)starts the tab's capture at width x height device pixels.
+func (t *Tab) capture(width, height int) error {
+	size := [2]int{width, height}
+	if t.capturing && t.capSize == size {
+		return nil
+	}
+	if err := t.videoCall(nil, "capture", t.key, t.targetID, width, height); err != nil {
+		t.capturing = false
+		return err
+	}
+	t.capturing, t.capSize = true, size
+	return nil
+}
+
+// dropVideo moves every video viewer to JPEG frames.
+func (t *Tab) dropVideo(reason string) {
+	t.mu.Lock()
+	var to []Client
+	var vids []string
+	for c, st := range t.viewers {
+		if st.video {
+			if st.vid != "" {
+				vids = append(vids, st.vid)
+			}
+			st.video, st.vid, st.seq = false, "", 0
+			to = append(to, c)
+		}
+	}
+	t.mu.Unlock()
+	for _, vid := range vids {
+		t.hangup(vid)
+	}
+	for _, c := range to {
+		c.Send(protocol.BrowserNoVideo{T: "novideo", Message: reason})
+	}
+}
+
+// answer answers a viewer's offer for the tab's video. Its candidates follow
+// as "ice" messages, possibly before the answer itself.
+func (t *Tab) answer(c Client, sdp string) error {
+	st := t.viewerOf(c)
+	if c == nil || st == nil {
+		return nil
+	}
+	if !st.video {
+		c.Send(protocol.BrowserNoVideo{T: "novideo", Message: "This browser can't stream video"})
+		return nil
+	}
+	if err := t.applyViewport(); err != nil {
+		return err
+	}
+	if !t.capturing {
+		return nil // applyViewport moved it to JPEG
+	}
+	t.videoSeq++
+	vid := fmt.Sprintf("%s#%d", t.key, t.videoSeq)
+	t.mu.Lock()
+	old := st.vid
+	st.vid = vid
+	t.mu.Unlock()
+	if old != "" {
+		t.hangup(old)
+	}
+	var servers any = []any{}
+	if t.m.ICEServers != nil {
+		servers = t.m.ICEServers()
+	}
+	var answer string
+	if err := t.videoCall(&answer, "answer", t.key, vid, sdp, servers, kbpsFor(st.quality)); err != nil {
+		c.Send(protocol.BrowserNotice{T: "notice", Message: "Couldn't start the video: " + err.Error()})
+		t.dropVideo("Couldn't start the video")
+		return t.applyViewport()
+	}
+	c.Send(protocol.BrowserAnswer{T: "answer", SDP: answer})
+	return nil
+}
+
+func (t *Tab) hangup(vid string) {
+	if h := t.br.video; h != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), callWait)
+		defer cancel()
+		_ = h.invoke(ctx, nil, "hangup", vid)
+	}
+}
+
+// videoViewer finds the viewer that vid belongs to.
+func (t *Tab) videoViewer(vid string) Client {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for c, st := range t.viewers {
+		if st.vid == vid {
+			return c
+		}
+	}
+	return nil
 }
 
 // emulateMobile turns touch input and a phone's user agent on or off. Pages
@@ -666,7 +862,7 @@ func (t *Tab) flush() {
 	}
 	var to []Client
 	for c, st := range t.viewers {
-		if st.seq < last.hdr.Seq && c.Buffered() < lowWater {
+		if !st.video && st.seq < last.hdr.Seq && c.Buffered() < lowWater {
 			st.seq = last.hdr.Seq
 			st.lagging = false
 			to = append(to, c)
@@ -684,7 +880,7 @@ func (t *Tab) waitDrain() {
 		t.mu.Lock()
 		var busy []*viewerState
 		for c, st := range t.viewers {
-			if !st.lagging && c.Buffered() >= lowWater {
+			if !st.video && !st.lagging && c.Buffered() >= lowWater {
 				busy = append(busy, st)
 			}
 		}
@@ -812,6 +1008,19 @@ func (t *Tab) handleEvent(e event) {
 		_ = t.call("Page.handleJavaScriptDialog", map[string]any{"accept": true, "promptText": p.DefaultPrompt}, nil)
 		if p.Type != "beforeunload" {
 			t.broadcast(protocol.BrowserNotice{T: "notice", Message: fmt.Sprintf("The page showed a %s, answered OK: %s", p.Type, p.Message)})
+		}
+	case "video":
+		var v videoEvent
+		if json.Unmarshal(e.params, &v) != nil {
+			return
+		}
+		switch v.T {
+		case "ice":
+			if c := t.videoViewer(v.Viewer); c != nil {
+				c.Send(protocol.BrowserICE{T: "ice", Candidate: v.Candidate})
+			}
+		case "ended":
+			t.enqueue(nil, protocol.BrowserClientMsg{T: "recapture"})
 		}
 	case "Runtime.bindingCalled":
 		var p struct {
