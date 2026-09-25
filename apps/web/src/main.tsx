@@ -35,7 +35,7 @@ if (vv) {
     if (Math.abs(vv.scale - 1) > 0.01) return; // pinch-zoomed: leave the layout alone
     const root = document.documentElement.style;
     // Otherwise the app fills the screen (styles.css): the visual viewport can
-    // stay short after the keyboard goes away.
+    // come up short when there's no keyboard, e.g. after it goes away.
     if (window.innerHeight - vv.height > 120) {
       root.setProperty("--app-height", `${vv.height}px`);
       // The keyboard covers the home indicator, so no bottom inset while it's up.
