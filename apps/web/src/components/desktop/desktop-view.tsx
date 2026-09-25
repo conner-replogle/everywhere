@@ -2,6 +2,7 @@ import type { DesktopSource } from "@everywhere/protocol";
 import {
   ActivityIcon,
   AppWindowIcon,
+  CircleHelpIcon,
   LoaderIcon,
   MaximizeIcon,
   MinimizeIcon,
@@ -600,12 +601,6 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
                   >
                     Point where you touch
                   </DropdownMenuCheckboxItem>
-                  {touchMode === "trackpad" && (
-                    <p className="max-w-60 px-2 pt-1 pb-1.5 text-xs text-muted-foreground">
-                      Drag to move, tap to click, hold then drag to drag. Two fingers scroll, pinch to zoom; two- or
-                      three-finger tap for right or middle click.
-                    </p>
-                  )}
                 </>
               )}
             </DropdownMenuContent>
@@ -675,6 +670,7 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
             </div>
           </div>
         )}
+        {touchMode === "trackpad" && status.kind === "live" && <TrackpadHelp />}
         {prefs.stats && stats && (
           <pre className="pointer-events-none absolute top-2 left-2 rounded bg-black/70 px-2 py-1.5 font-mono text-[11px] leading-snug text-white/90">
             {formatStats(stats, inputRtt)}
@@ -780,6 +776,71 @@ function WindowLabel({ w }: { w: WindowInfo }) {
       <span className="truncate text-xs text-muted-foreground">{w.title}</span>
       <span className="ml-auto shrink-0 pl-2 text-xs text-muted-foreground tabular-nums">{w.workspace}</span>
     </span>
+  );
+}
+
+const GESTURES: [string, string][] = [
+  ["Drag", "move"],
+  ["Tap", "click"],
+  ["Hold, drag", "drag"],
+  ["2 fingers", "scroll"],
+  ["Pinch", "zoom"],
+  ["2-finger tap", "right click"],
+  ["3-finger tap", "middle click"],
+];
+const HELP_SEEN = "ew.desktop.trackpadHelp";
+
+/** A small button in the picture's corner with the trackpad's gestures, shown once on its own. */
+function TrackpadHelp() {
+  const [open, setOpen] = useState(() => {
+    try {
+      if (localStorage.getItem(HELP_SEEN)) return false;
+      localStorage.setItem(HELP_SEEN, "1");
+    } catch {
+      // storage blocked: show it every time, briefly
+    }
+    return true;
+  });
+  // The first showing fades on its own; one opened from the button stays until tapped.
+  const [auto, setAuto] = useState(open);
+  useEffect(() => {
+    if (!auto) return;
+    const t = setTimeout(() => {
+      setOpen(false);
+      setAuto(false);
+    }, 6000);
+    return () => clearTimeout(t);
+  }, [auto]);
+
+  return (
+    <div data-local-keys className="absolute right-2 bottom-2 flex flex-col items-end gap-1.5">
+      {open && (
+        <button
+          type="button"
+          className="grid grid-cols-[auto_auto] gap-x-3 gap-y-0.5 rounded-md bg-black/70 px-2.5 py-2 text-left text-[11px] leading-snug text-white/90"
+          onClick={() => setOpen(false)}
+        >
+          {GESTURES.map(([how, what]) => (
+            <span key={how} className="contents">
+              <span className="text-white/60">{how}</span>
+              <span>{what}</span>
+            </span>
+          ))}
+        </button>
+      )}
+      <button
+        type="button"
+        className="flex size-7 items-center justify-center rounded-full bg-black/50 text-white/70 hover:text-white"
+        aria-label="Trackpad gestures"
+        aria-expanded={open}
+        onClick={() => {
+          setAuto(false);
+          setOpen((o) => !o);
+        }}
+      >
+        <CircleHelpIcon className="size-4" />
+      </button>
+    </div>
   );
 }
 
