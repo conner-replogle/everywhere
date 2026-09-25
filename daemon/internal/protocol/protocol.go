@@ -114,6 +114,9 @@ const (
 	FeatureTabs        = "tabs"        // tabs.*, fs.list, threads.workdir and file channels
 	FeatureDesktop     = "desktop"     // desktop.info, desktop.start and desktop.stop
 	FeatureRewind      = "rewind"      // the agent channel's rewind request
+	FeatureIcons       = "icons"       // projects.icon
+	FeatureClone       = "clone"       // projects.clone, clones.list and clones.changed
+	FeatureGitStatus   = "gitStatus"   // git.status, git.fetch, git.pull, git.updateDefault and git.changed
 )
 
 // DesktopInfo is the result of desktop.info.
@@ -312,6 +315,8 @@ type RPCEvent struct {
 
 const (
 	EventProjectsChanged = "projects.changed"
+	EventClonesChanged   = "clones.changed"
+	EventGitChanged      = "git.changed" // a fetch or git action finished; statuses may differ
 	EventThreadsChanged  = "threads.changed"
 )
 
@@ -514,6 +519,20 @@ type (
 )
 
 // GitInfo is the result of git.info for a project.
+// CloneStatus is a clone into a new project (projects.clone).
+type CloneStatus struct {
+	ProjectID string `json:"projectId"`
+	URL       string `json:"url"` // without credentials
+	Path      string `json:"path"`
+	Phase     string `json:"phase"`   // running, done or failed
+	Stage     string `json:"stage"`   // connecting, counting, receiving, resolving or checkout
+	Percent   int    `json:"percent"` // of the stage; -1 if unknown
+	Detail    string `json:"detail,omitempty"`
+	Error     string `json:"error,omitempty"`
+	StartedAt int64  `json:"startedAt"`
+	EndedAt   int64  `json:"endedAt,omitempty"`
+}
+
 type GitInfo struct {
 	IsRepo   bool     `json:"isRepo"`
 	Current  string   `json:"current"` // checked-out branch, "" if detached

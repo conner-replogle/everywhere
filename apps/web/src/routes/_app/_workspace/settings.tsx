@@ -1,5 +1,6 @@
 import { createFileRoute, Link, Outlet } from "@tanstack/react-router";
-import { BellIcon, MonitorIcon, ShieldIcon } from "lucide-react";
+import { BellIcon, MonitorIcon, ShieldIcon, SparklesIcon } from "lucide-react";
+import { GithubMark } from "@/components/github-mark";
 
 export const Route = createFileRoute("/_app/_workspace/settings")({
   component: SettingsLayout,
@@ -7,7 +8,9 @@ export const Route = createFileRoute("/_app/_workspace/settings")({
 
 const SECTIONS = [
   { to: "/settings/devices", label: "Devices", icon: MonitorIcon },
+  { to: "/settings/claude", label: "Claude", icon: SparklesIcon },
   { to: "/settings/notifications", label: "Notifications", icon: BellIcon },
+  { to: "/settings/github", label: "GitHub", icon: GithubMark },
   { to: "/settings/security", label: "Security", icon: ShieldIcon },
 ] as const;
 

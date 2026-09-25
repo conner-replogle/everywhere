@@ -1,4 +1,4 @@
-import type { DeviceInfo, Project, Thread } from "@everywhere/protocol";
+import type { CloneStatus, DeviceInfo, Project, Thread } from "@everywhere/protocol";
 import { createContext, useContext } from "react";
 import type { Device } from "@/lib/api";
 import type { DevicePeer, PeerSnapshot, RpcQuery } from "@/lib/peer";
@@ -13,6 +13,8 @@ export interface DeviceContextValue {
   info: RpcQuery<DeviceInfo>;
   projects: RpcQuery<Project[]>;
   threads: RpcQuery<Thread[]>;
+  /** Clones into new projects; empty data when the daemon can't clone. */
+  clones: RpcQuery<CloneStatus[]>;
 }
 
 export const DeviceContext = createContext<DeviceContextValue | null>(null);

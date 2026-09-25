@@ -696,8 +696,11 @@ func (s *session) respond(msg protocol.AgentClientMsg) error {
 	return nil
 }
 
+// ValidPermissionMode reports whether claude knows mode.
+func ValidPermissionMode(mode string) bool { return slices.Contains(permissionModes, mode) }
+
 func (s *session) setMode(mode string) error {
-	if !slices.Contains(permissionModes, mode) {
+	if !ValidPermissionMode(mode) {
 		return fmt.Errorf("unknown permission mode %q", mode)
 	}
 	if s.proc != nil {

@@ -139,7 +139,9 @@ export interface DeviceInfo {
  * the agent attach limit and history paging. archive: threads.archive.
  * tabs: tabs.*, threads.workdir, fs.list and file channels. desktop:
  * desktop.info, desktop.start and desktop.stop (remote desktop). rewind: the
- * agent channel's rewind request.
+ * agent channel's rewind request. icons: projects.icon. clone: projects.clone,
+ * clones.list and clones.changed. gitStatus: git.status, git.fetch, git.pull,
+ * git.updateDefault and git.changed.
  */
 export type DeviceFeature =
   | "claude"
@@ -150,7 +152,10 @@ export type DeviceFeature =
   | "archive"
   | "tabs"
   | "desktop"
-  | "rewind";
+  | "rewind"
+  | "icons"
+  | "clone"
+  | "gitStatus";
 
 /**
  * What desktop.start captures: a monitor by name, or a window by id
@@ -189,6 +194,32 @@ export interface Project {
   path: string;
   isHome: boolean;
   createdAt: number;
+}
+
+/** A clone into a new project (projects.clone). */
+export interface CloneStatus {
+  projectId: string;
+  /** Without credentials. */
+  url: string;
+  path: string;
+  phase: "running" | "done" | "failed";
+  stage: "connecting" | "counting" | "receiving" | "resolving" | "checkout";
+  /** Of the stage; -1 if unknown. */
+  percent: number;
+  /** e.g. "12.30 MiB | 5.00 MiB/s" */
+  detail?: string;
+  error?: string;
+  startedAt: number;
+  endedAt?: number;
+}
+
+/** An image file from a project, for a data: URL. */
+export interface ProjectIcon {
+  mime: string;
+  /** The file, base64. */
+  data: string;
+  /** Changes when the file does. */
+  rev: string;
 }
 
 export type ThreadKind = "terminal" | "claude";
@@ -296,8 +327,19 @@ export interface RpcMethods {
   "projects.create": [{ path: string; name?: string }, Project];
   "projects.rename": [{ id: string; name: string }, Project];
   "projects.delete": [{ id: string }, Record<string, never>];
+  /**
+   * Creates a project at path (missing or an empty folder) and clones url
+   * into it in the background, with the device's own git credentials;
+   * clones.list follows it. The Worker relays GitHub clones with a token.
+   */
+  "projects.clone": [{ url: string; path: string; name?: string }, Project];
+  /** Clones running, just finished, or failed (until their project is deleted). */
+  "clones.list": [Record<string, never>, CloneStatus[]];
+  /** The project's favicon or logo, found in its files; null if it has none. */
+  "projects.icon": [{ id: string }, { icon: ProjectIcon | null }];
   "threads.list": [{ projectId?: string }, Thread[]];
-  "threads.create": [{ projectId: string; name?: string; kind?: ThreadKind }, Thread];
+  /** permissionMode: a claude thread's starting mode (older daemons ignore it). */
+  "threads.create": [{ projectId: string; name?: string; kind?: ThreadKind; permissionMode?: PermissionMode }, Thread];
   "threads.rename": [{ id: string; name: string }, Thread];
   /** archive: archiving stops the thread's shell or claude; history and worktree stay. */
   "threads.archive": [{ id: string; archived: boolean }, Thread];
@@ -305,13 +347,24 @@ export interface RpcMethods {
   "threads.delete": [{ id: string; keepWorktree?: boolean }, Record<string, never>];
   "threads.workdir": [{ id: string }, Workdir];
   "tabs.list": [{ threadId: string }, Tab[]];
-  "tabs.create": [{ threadId: string; kind: TabKind; name?: string }, Tab];
+  "tabs.create": [{ threadId: string; kind: TabKind; name?: string; permissionMode?: PermissionMode }, Tab];
   /** Deletes the tab, stopping its shell or claude. Rename one with threads.rename. */
   "tabs.close": [{ id: string }, Record<string, never>];
   "tabs.setState": [{ id: string; state: string }, Record<string, never>];
   "fs.listDirs": [{ path: string }, DirListing];
   "fs.list": [{ path: string }, FsListing];
   "git.info": [{ projectId: string }, GitInfo];
+  /**
+   * Where a thread's checkout (its worktree, if any) or a project's stands.
+   * Reading it keeps origin fetched in the background, about once a minute;
+   * git.changed says when to read it again.
+   */
+  "git.status": [{ threadId?: string; projectId?: string }, GitStatus];
+  "git.fetch": [{ threadId?: string; projectId?: string }, GitStatus];
+  /** Fast-forwards the current branch to its upstream. */
+  "git.pull": [{ threadId?: string; projectId?: string }, GitStatus];
+  /** Fast-forwards the local default branch (e.g. main) to origin's. */
+  "git.updateDefault": [{ threadId?: string; projectId?: string }, GitStatus];
   /** Claude Code's models and account, before any thread has started. */
   "agent.info": [Record<string, never>, AgentInfo];
   "debug.peer": [Record<string, never>, PeerDebug];
@@ -345,6 +398,8 @@ export type RpcMethod = keyof RpcMethods;
  */
 export interface RemoteMethods
   extends Omit<RpcMethods, "debug.peer" | "device.update" | `desktop.${string}`> {
+  /** projects.clone, with a token answering git's HTTPS credential prompt. */
+  "projects.clone": [{ url: string; path: string; name?: string; token?: string }, Project];
   "threads.get": [{ threadId: string }, Thread];
   /** Threads whose name or claude prompts and replies contain query, newest match first. */
   "threads.search": [{ query: string; limit?: number }, SearchHit[]];
@@ -402,6 +457,8 @@ export type RpcResponse =
 
 export type RpcEvent =
   | { event: "projects.changed" }
+  | { event: "clones.changed" }
+  | { event: "git.changed" }
   | { event: "threads.changed" }
   /** One of a desktop session's ICE candidates (trickle ICE); see desktop.start. */
   | { event: "desktop.candidate"; id: string; candidate: IceCandidate };
@@ -564,6 +621,38 @@ export interface AgentInfo {
   account?: { email?: string; subscriptionType?: string };
   commands?: AgentCommand[];
   limits?: AgentLimit[];
+}
+
+export interface GitStatus {
+  isRepo: boolean;
+  /** "" when detached; head says where. */
+  branch: string;
+  /** Short commit; "" before the first commit. */
+  head: string;
+  upstream?: string;
+  ahead: number;
+  behind: number;
+  staged: number;
+  unstaged: number;
+  untracked: number;
+  conflicted: number;
+  /** Lines added and removed against HEAD in tracked files. */
+  insertions: number;
+  deletions: number;
+  /** A linked worktree, not the repo's main checkout. */
+  worktree: boolean;
+  root: string;
+  /** origin's default branch, e.g. "main". */
+  defaultBranch?: string;
+  /** Commits origin's default branch has that the local one lacks; -1 without a local copy. */
+  defaultBehind: number;
+  /** HEAD against origin's default branch, when not on it. */
+  aheadOfDefault: number;
+  behindDefault: number;
+  /** When origin was last fetched (Unix ms). */
+  fetchedAt?: number;
+  fetchError?: string;
+  fetching?: boolean;
 }
 
 export interface GitInfo {

@@ -49,6 +49,9 @@ type Server struct {
 	peers  map[string]*peer // by sid
 	signal Signaler
 
+	clones  cloneSet
+	fetches gitFetches
+
 	updating atomic.Bool
 	updateMu sync.Mutex
 	latest   string // latest release version, cached

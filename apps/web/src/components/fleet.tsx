@@ -54,10 +54,11 @@ function DeviceSource({ device, onReport }: { device: Device; onReport: (e: Devi
   const info = useRpc(peer, "device.info", {});
   const projects = useRpc(peer, "projects.list", {}, ["projects.changed"]);
   const threads = useRpc(peer, "threads.list", {}, ["threads.changed"]);
+  const clones = useRpc(peer, "clones.list", {}, ["clones.changed"], !!info.data?.features?.includes("clone"));
 
   // Keyed on the data, not the query objects, which are new every render.
   useEffect(() => {
-    onReport({ deviceId: device.id, device, peer, conn, info, projects, threads });
+    onReport({ deviceId: device.id, device, peer, conn, info, projects, threads, clones });
   }, [
     onReport,
     device,
@@ -71,6 +72,7 @@ function DeviceSource({ device, onReport }: { device: Device; onReport: (e: Devi
     projects.error,
     threads.data,
     threads.error,
+    clones.data,
   ]);
   return null;
 }

@@ -1,4 +1,4 @@
-import type { Project, Thread, ThreadKind } from "@everywhere/protocol";
+import type { CloneStatus, Project, Thread, ThreadKind } from "@everywhere/protocol";
 import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import {
   ArchiveIcon,
@@ -10,6 +10,7 @@ import {
   FolderIcon,
   FolderPlusIcon,
   HomeIcon,
+  LoaderIcon,
   MonitorDownIcon,
   LogOutIcon,
   MonitorIcon,
@@ -48,6 +49,8 @@ import {
 import { auth, useAuth } from "@/lib/auth";
 import { useDeviceOnline } from "@/lib/hub";
 import { useInstallApp } from "@/lib/pwa";
+import { getPrefs } from "@/lib/prefs";
+import { useProjectIcon } from "@/lib/project-icons";
 import { cn, errorMessage } from "@/lib/utils";
 
 type Entry = DeviceContextValue;
@@ -256,7 +259,8 @@ export function AppSidebar({
 
   async function newThread(entry: Entry, projectId: string, kind: ThreadKind) {
     await run(async () => {
-      const t = await entry.peer.call("threads.create", { projectId, kind });
+      const mode = kind === "claude" ? (await getPrefs()).defaultPermissionMode : undefined;
+      const t = await entry.peer.call("threads.create", { projectId, kind, ...(mode ? { permissionMode: mode } : {}) });
       entry.threads.refetch();
       const key = projectKey(entry.deviceId, projectId);
       if (collapsed.has(key)) toggle(key);
@@ -321,12 +325,9 @@ export function AppSidebar({
                 !isCollapsed && "rotate-90",
               )}
             />
-            {p.isHome ? (
-              <HomeIcon className="size-3.5 shrink-0 text-muted-foreground" />
-            ) : (
-              <FolderIcon className="size-3.5 shrink-0 text-muted-foreground" />
-            )}
+            <ProjectGlyph entry={entry} project={p} enabled={live && hasFeature(entry, "icons")} />
             <span className="truncate">{p.name}</span>
+            <CloneBadge clone={entry.clones.data?.find((c) => c.projectId === p.id)} />
             {isCollapsed && threads.length > 0 && (
               <span className="text-xs text-muted-foreground tabular-nums">{threads.length}</span>
             )}
@@ -637,7 +638,9 @@ export function AppSidebar({
       {newProjectFor && (
         <NewProjectDialog
           peer={newProjectFor.peer}
+          deviceId={newProjectFor.deviceId}
           home={newProjectFor.info.data?.home}
+          canClone={hasFeature(newProjectFor, "clone")}
           open
           onOpenChange={(o) => !o && setNewProjectFor(null)}
           onCreated={(p) => {
@@ -919,8 +922,57 @@ function NewThreadItems({ claude, onPick }: { claude: boolean; onPick: (kind: Th
   );
 }
 
+const CLONE_STAGES: Record<CloneStatus["stage"], string> = {
+  connecting: "Connecting",
+  counting: "Counting",
+  receiving: "Downloading",
+  resolving: "Resolving",
+  checkout: "Checking out",
+};
+
+/** A clone into the project: its progress, or why it failed. */
+function CloneBadge({ clone }: { clone: CloneStatus | undefined }) {
+  if (!clone || clone.phase === "done") return null;
+  if (clone.phase === "failed") {
+    return (
+      <span className="shrink-0 text-[11px] text-destructive" title={clone.error}>
+        Clone failed
+      </span>
+    );
+  }
+  const pct = clone.percent >= 0 ? ` ${clone.percent}%` : "";
+  return (
+    <span
+      className="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground tabular-nums"
+      title={`Cloning ${clone.url}${clone.detail ? ` — ${clone.detail}` : ""}`}
+    >
+      <LoaderIcon className="size-3 animate-spin" />
+      {CLONE_STAGES[clone.stage]}
+      {pct}
+    </span>
+  );
+}
+
+/** The project's favicon, or a folder (the home project: a house). */
+function ProjectGlyph({ entry, project: p, enabled }: { entry: Entry; project: Project; enabled: boolean }) {
+  const icon = useProjectIcon(entry.peer, entry.deviceId, p.id, enabled && !p.isHome);
+  const [broken, setBroken] = useState<string | null>(null);
+  if (icon && broken !== icon) {
+    return (
+      <img
+        src={icon}
+        alt=""
+        className="size-3.5 shrink-0 rounded-[25%] object-contain"
+        onError={() => setBroken(icon)}
+      />
+    );
+  }
+  const Icon = p.isHome ? HomeIcon : FolderIcon;
+  return <Icon className="size-3.5 shrink-0 text-muted-foreground" />;
+}
+
 /** Mint means live (shell or idle claude); claude threads also show what they're doing. */
-function ThreadStatusDot({ thread: t }: { thread: Thread }) {
+export function ThreadStatusDot({ thread: t }: { thread: Thread }) {
   const s = t.kind === "claude" ? t.agentStatus : undefined;
   if (s === "working" || s === "starting") {
     return <span className="ml-auto size-1.5 shrink-0 animate-pulse rounded-full bg-primary" title="Claude is working" />;

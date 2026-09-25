@@ -16,7 +16,9 @@ import { CenteredMessage } from "@/components/centered-message";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { useDevice } from "@/components/device-context";
 import { RenameDialog } from "@/components/rename-dialog";
+import { GitChip } from "@/components/git-chip";
 import { TerminalView, type WriterState } from "@/components/terminal-view";
+import { ThreadTabs } from "@/components/thread-tabs";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -27,6 +29,8 @@ import {
 import { sendToComposer } from "@/lib/composer-inbox";
 import { hub } from "@/lib/hub";
 import { useRpc } from "@/lib/peer";
+import { getPrefs } from "@/lib/prefs";
+import { visitThread } from "@/lib/recent-threads";
 import { cn, errorMessage } from "@/lib/utils";
 
 // Loaded on demand so terminal-only use skips the markdown stack.
@@ -93,6 +97,12 @@ function ThreadPage() {
   const activeId = active?.id;
   // Before the effect below, so a new thread starts empty and then opens.
   useEffect(() => setOpened(new Set()), [threadId]);
+  // Opening a thread gives it a tab along the top.
+  const threadName = thread?.name;
+  const threadKind = thread?.kind;
+  useEffect(() => {
+    if (threadName && threadKind) visitThread(deviceId, threadId, { name: threadName, kind: threadKind });
+  }, [deviceId, threadId, threadName, threadKind]);
   // No push notifications about the thread on screen.
   useEffect(() => {
     hub.setThread({ deviceId, threadId });
@@ -127,7 +137,8 @@ function ThreadPage() {
     }
     setError(null);
     try {
-      const t = await peer.call("tabs.create", { threadId, kind });
+      const mode = kind === "claude" ? (await getPrefs()).defaultPermissionMode : undefined;
+      const t = await peer.call("tabs.create", { threadId, kind, ...(mode ? { permissionMode: mode } : {}) });
       tabs.refetch();
       if (focus) setActive(t.id);
     } catch (e) {
@@ -259,16 +270,13 @@ function ThreadPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-11 shrink-0 items-center gap-3 border-b bg-sidebar pr-3 pl-12 md:h-9 md:pl-3">
-        <span className="truncate font-medium">{thread?.name ?? "…"}</span>
-        {project && (
-          <span
-            className="truncate text-xs text-muted-foreground"
-            title={workdir.data?.worktree ? workdir.data.path : project.path}
-          >
-            {project.name}
-          </span>
-        )}
+      <div className="flex h-11 shrink-0 items-center gap-3 border-b bg-sidebar pr-3 pl-12 md:h-9 md:pl-1">
+        <ThreadTabs
+          deviceId={deviceId}
+          threadId={threadId}
+          title={thread && project ? `${thread.name} — ${workdir.data?.worktree ? workdir.data.path : project.path}` : undefined}
+        />
+        {features.includes("gitStatus") && !archived && <GitChip peer={peer} threadId={threadId} />}
         {archived ? (
           <span className="ml-auto shrink-0 rounded-sm bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
             Archived

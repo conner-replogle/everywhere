@@ -13,6 +13,8 @@ import (
 
 	"github.com/pion/webrtc/v4"
 
+	"github.com/conner-replogle/everywhere/daemon/internal/agent"
+	"github.com/conner-replogle/everywhere/daemon/internal/favicon"
 	"github.com/conner-replogle/everywhere/daemon/internal/gitx"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/store"
@@ -71,6 +73,9 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		KeepWorktree bool   `json:"keepWorktree"`
 		Archived     bool   `json:"archived"`
 		Force        bool   `json:"force"`
+		URL          string `json:"url"`
+		// A new claude thread or tab's starting permission mode.
+		PermissionMode string `json:"permissionMode"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &params); err != nil {
@@ -109,6 +114,24 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 			s.broadcast(protocol.EventProjectsChanged)
 		}
 		return p, err
+	case "projects.clone":
+		// Over WebRTC with the device's own git credentials; the hub's
+		// relay adds a GitHub token (see Remote).
+		return s.cloneProject(params.URL, params.Path, params.Name, "")
+	case "clones.list":
+		return s.clones.list(), nil
+	case "projects.icon":
+		p, err := s.store.GetProject(params.ID)
+		if err != nil {
+			return nil, err
+		}
+		icon, err := favicon.Find(p.Path)
+		if err != nil {
+			icon = nil // an unreadable project just has no icon
+		}
+		return struct {
+			Icon *favicon.Icon `json:"icon"`
+		}{icon}, nil
 	case "projects.delete":
 		threads, err := s.withTabs(s.store.ListThreads(params.ID))
 		if err != nil {
@@ -124,7 +147,9 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		for _, t := range threads {
 			s.killThread(t, agentThreads[t.ID], false)
 		}
+		s.clones.drop(params.ID)
 		s.broadcast(protocol.EventProjectsChanged)
+		s.broadcast(protocol.EventClonesChanged)
 		s.broadcast(protocol.EventThreadsChanged)
 		return empty{}, nil
 
@@ -136,6 +161,9 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		return threads, err
 	case "threads.create":
 		t, err := s.store.CreateThread(params.ProjectID, params.Name, params.Kind)
+		if err == nil {
+			err = s.initialMode(t, params.PermissionMode)
+		}
 		if err == nil {
 			s.broadcast(protocol.EventThreadsChanged)
 		}
@@ -193,6 +221,9 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 	case "tabs.create":
 		t, err := s.store.CreateTab(params.ThreadID, params.Kind, params.Name)
 		if err == nil {
+			err = s.initialMode(t, params.PermissionMode)
+		}
+		if err == nil {
 			s.broadcast(protocol.EventThreadsChanged)
 		}
 		return t, err
@@ -223,6 +254,14 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 	case "fs.list":
 		return listDir(params.Path)
 
+	case "git.status":
+		dir, err := s.gitDir(params.ThreadID, params.ProjectID)
+		if err != nil {
+			return nil, err
+		}
+		return s.gitStatus(dir)
+	case "git.fetch", "git.pull", "git.updateDefault":
+		return s.gitAction(method, params.ThreadID, params.ProjectID)
 	case "git.info":
 		p, err := s.store.GetProject(params.ProjectID)
 		if err != nil {
@@ -231,6 +270,17 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		return gitInfo(p.Path), nil
 	}
 	return nil, fmt.Errorf("unknown method %q", method)
+}
+
+// initialMode sets a new claude thread's permission mode, if one was asked for.
+func (s *Server) initialMode(t protocol.Thread, mode string) error {
+	if mode == "" || t.Kind != protocol.ThreadClaude {
+		return nil
+	}
+	if !agent.ValidPermissionMode(mode) {
+		return fmt.Errorf("unknown permission mode %q", mode)
+	}
+	return s.store.SetAgentPermissionMode(t.ID, mode)
 }
 
 // fillStatus sets a thread's live fields from its manager.

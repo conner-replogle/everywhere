@@ -1,4 +1,7 @@
-// REST wrappers for the Worker (auth, device registry, enrollment).
+// REST wrappers for the Worker (auth, device registry, enrollment, GitHub).
+
+import type { Project } from "@everywhere/protocol";
+import type { Prefs } from "@/lib/prefs";
 
 export interface User {
   id: string;
@@ -58,6 +61,17 @@ export interface Connection {
 export interface EnrollToken {
   command: string;
   expiresAt: number;
+}
+
+/** A GitHub repo the connected account can see. */
+export interface GithubRepo {
+  fullName: string;
+  description: string | null;
+  private: boolean;
+  fork: boolean;
+  defaultBranch: string;
+  pushedAt: string | null;
+  cloneUrl: string;
 }
 
 export class ApiError extends Error {
@@ -138,4 +152,18 @@ export const api = {
   subscribePush: (sub: PushSubscriptionJSON) => request<object>("POST", "/api/push/subscriptions", sub),
   unsubscribePush: (endpoint: string) => request<object>("POST", "/api/push/unsubscribe", { endpoint }),
   testPush: (endpoint: string) => request<object>("POST", "/api/push/test", { endpoint }),
+
+  prefs: async () => (await request<{ prefs: Partial<Prefs> }>("GET", "/api/prefs")).prefs,
+  setPrefs: async (p: Partial<Prefs>) => (await request<{ prefs: Partial<Prefs> }>("PATCH", "/api/prefs", p)).prefs,
+
+  githubStatus: () => request<{ configured: boolean; login: string | null }>("GET", "/api/github/status"),
+  /** A page navigation, not a fetch: it goes to GitHub and comes back to Settings. */
+  githubConnectUrl: "/api/github/connect",
+  disconnectGithub: () => request<object>("POST", "/api/github/disconnect"),
+  githubRepos: async () => (await request<{ repos: GithubRepo[] }>("GET", "/api/github/repos")).repos,
+  githubRepo: async (fullName: string) =>
+    (await request<{ repo: GithubRepo }>("GET", `/api/github/repos/${fullName.split("/").map(encodeURIComponent).join("/")}`))
+      .repo,
+  cloneGithubRepo: async (deviceId: string, repo: string, path: string, name?: string) =>
+    (await request<{ project: Project }>("POST", "/api/github/clone", { deviceId, repo, path, name })).project,
 };

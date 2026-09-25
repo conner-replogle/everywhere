@@ -32,6 +32,17 @@ func (s *Server) Remote(method string, raw json.RawMessage) (any, error) {
 	case "debug.peer", "device.update", "desktop.info", "desktop.start", "desktop.candidate", "desktop.stop":
 		// Remote desktop is only for signed-in browsers, never MCP agents.
 		return nil, fmt.Errorf("%s isn't available remotely", method)
+	case "projects.clone":
+		var p struct {
+			URL   string `json:"url"`
+			Path  string `json:"path"`
+			Name  string `json:"name"`
+			Token string `json:"token"`
+		}
+		if err := unmarshal(raw, &p); err != nil {
+			return nil, err
+		}
+		return s.cloneProject(p.URL, p.Path, p.Name, p.Token)
 	case "agent.read":
 		return s.remoteAgentRead(raw)
 	case "agent.request":
