@@ -23,6 +23,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { type DesktopConnection, connectDesktop } from "@/lib/desktop/connection";
+import { CursorRenderer } from "@/lib/desktop/cursor";
 import { InputForwarder } from "@/lib/desktop/input";
 import {
   CODEC_NAMES,
@@ -231,6 +232,7 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
     let retry: ReturnType<typeof setTimeout> | undefined;
     const timers: ReturnType<typeof setInterval>[] = [];
     let forwarder: InputForwarder | null = null;
+    let cursor: CursorRenderer | null = null;
     setStatus({ kind: "connecting" });
 
     // Deferred a tick: React's development double-mount would otherwise start
@@ -264,6 +266,7 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
       connRef.current = conn;
       video.srcObject = conn.stream;
       forwarder = new InputForwarder(video, conn, { superSubstitute: superSub ? "AltRight" : null, keyTarget: stage });
+      const cur = (cursor = new CursorRenderer(video));
       stage.focus({ preventScroll: true });
       const onOpen = () => {
         conn.control.send(setFollow(connectRef.current.follow));
@@ -287,6 +290,12 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
           }
           case Type.Pong:
             setInputRtt(performance.now() - msg.clientMs);
+            break;
+          case Type.CursorImage:
+            cur.setImage(msg);
+            break;
+          case Type.CursorPosition:
+            cur.setPosition(msg);
             break;
           case Type.Outputs:
             setOutputs(msg.outputs);
@@ -352,6 +361,7 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
       clearTimeout(retry);
       for (const t of timers) clearInterval(t);
       forwarder?.dispose();
+      cursor?.dispose();
       connRef.current?.close();
       connRef.current = null;
       video.srcObject = null;
@@ -576,7 +586,7 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
           muted
           playsInline
           disablePictureInPicture
-          className="size-full cursor-none touch-none object-contain select-none"
+          className="size-full touch-none object-contain select-none"
         />
         {status.kind === "paused" && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">

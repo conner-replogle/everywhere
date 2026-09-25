@@ -46,6 +46,15 @@ type frame struct {
 	Keyframe   bool
 }
 
+type cursor struct {
+	ImageGen, PosGen uint64
+	Inside           bool
+	X, Y             int // hotspot position, in logical output coordinates (Hyprland)
+	HotX, HotY       int
+	Width, Height    int
+	RGBA             []byte // non-nil only when the image changed
+}
+
 // worker is one capture of one output in an everywhere-desktop process. A GPU
 // encoder hang makes Mesa abort the process that owns the encoder; isolating it
 // keeps the daemon alive.
@@ -58,6 +67,9 @@ type worker struct {
 	frames  chan *frame
 
 	mu        sync.Mutex
+	cursor    *cursor
+	cursorImg []byte
+	cursorSig chan struct{} // closed and replaced when cursor changes
 	closed    bool
 	err       error
 	done      chan struct{} // closed when the reader exits
@@ -95,12 +107,13 @@ func startWorker(cfg ipc.Config, env []string) (*worker, error) {
 		return nil, err
 	}
 	w := &worker{
-		cmd:     cmd,
-		stdin:   stdin,
-		frames:  make(chan *frame, 16),
-		done:    make(chan struct{}),
-		closeCh: make(chan struct{}),
-		exited:  make(chan struct{}),
+		cmd:       cmd,
+		stdin:     stdin,
+		frames:    make(chan *frame, 16),
+		cursorSig: make(chan struct{}),
+		done:      make(chan struct{}),
+		closeCh:   make(chan struct{}),
+		exited:    make(chan struct{}),
 	}
 	go func() {
 		w.exitErr = cmd.Wait()
@@ -158,11 +171,34 @@ func (w *worker) read(r *bufio.Reader) {
 			case <-w.closeCh:
 				return
 			}
+		case ipc.MsgCursor:
+			w.setCursor(payload)
 		case ipc.MsgError:
 			w.fail(errors.New(string(payload)))
 			return
 		}
 	}
+}
+
+func (w *worker) setCursor(p []byte) {
+	if len(p) < ipc.CursorHeaderLen {
+		return
+	}
+	le := ipc.LE
+	c := &cursor{
+		ImageGen: le.Uint64(p[0:]), PosGen: le.Uint64(p[8:]), Inside: p[16] != 0,
+		X: int(int32(le.Uint32(p[17:]))), Y: int(int32(le.Uint32(p[21:]))),
+		HotX: int(int32(le.Uint32(p[25:]))), HotY: int(int32(le.Uint32(p[29:]))),
+		Width: int(int32(le.Uint32(p[33:]))), Height: int(int32(le.Uint32(p[37:]))),
+	}
+	w.mu.Lock()
+	if len(p) > ipc.CursorHeaderLen {
+		w.cursorImg = p[ipc.CursorHeaderLen:]
+	}
+	w.cursor = c
+	close(w.cursorSig)
+	w.cursorSig = make(chan struct{})
+	w.mu.Unlock()
 }
 
 func (w *worker) fail(err error) {
@@ -194,6 +230,32 @@ func (w *worker) Next(timeout time.Duration) (*frame, error) {
 		return nil, w.state()
 	case <-t.C:
 		return nil, nil
+	}
+}
+
+// WaitCursor blocks until the cursor differs from prev (generations), the
+// timeout passes (nil, nil), or the capture closes.
+func (w *worker) WaitCursor(prev *cursor, timeout time.Duration) (*cursor, error) {
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	for {
+		w.mu.Lock()
+		cur, sig, img := w.cursor, w.cursorSig, w.cursorImg
+		w.mu.Unlock()
+		if cur != nil && (prev == nil || cur.ImageGen != prev.ImageGen || cur.PosGen != prev.PosGen) {
+			out := *cur
+			if prev == nil || cur.ImageGen != prev.ImageGen {
+				out.RGBA = img
+			}
+			return &out, nil
+		}
+		select {
+		case <-sig:
+		case <-w.closeCh:
+			return nil, w.state()
+		case <-deadline.C:
+			return nil, nil
+		}
 	}
 }
 

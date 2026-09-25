@@ -1,28 +1,36 @@
 package desktop
 
-import "github.com/conner-replogle/everywhere/daemon/internal/desktop/wire"
+import (
+	"github.com/conner-replogle/everywhere/daemon/internal/desktop/ipc"
+	"github.com/conner-replogle/everywhere/daemon/internal/desktop/wire"
+)
 
 // profile is what a viewer-selectable mode means for capture and encoding.
 type profile struct {
-	maxHeight   int // 0 = native
-	maxFPS      int // 0 = follow content
+	codecs      []ipc.Codec // in preference order; the first one the viewer negotiated wins
+	maxHeight   int         // 0 = native
+	maxFPS      int         // 0 = follow content
 	targetUsage int
 	minKbps     int
 	startKbps   int
 	maxKbps     int
 }
 
-// Every mode is H.264: browsers decode it in hardware everywhere, with the
-// least decode latency.
-func profileFor(mode wire.Mode) profile {
+func profileFor(mode wire.Mode, av1 bool) profile {
 	switch mode {
 	case wire.ModeSmooth:
-		// Fewer pixels roughly halves VCN encode time.
-		return profile{maxHeight: 1080, maxFPS: 60, targetUsage: 7, minKbps: 3000, startKbps: 12000, maxKbps: 20000}
+		// Fewer pixels roughly halves VCN encode time; H.264 has the fastest decoders everywhere.
+		return profile{codecs: []ipc.Codec{ipc.H264}, maxHeight: 1080, maxFPS: 60, targetUsage: 7,
+			minKbps: 3000, startKbps: 12000, maxKbps: 20000}
 	case wire.ModeLowBandwidth:
-		return profile{maxHeight: 720, maxFPS: 30, targetUsage: 4, minKbps: 400, startKbps: 1500, maxKbps: 3000}
+		return profile{codecs: []ipc.Codec{ipc.H265, ipc.H264}, maxHeight: 720, maxFPS: 30, targetUsage: 4,
+			minKbps: 400, startKbps: 1500, maxKbps: 3000}
 	default:
-		return profile{targetUsage: 4, minKbps: 4000, startKbps: 20000, maxKbps: 40000}
+		codecs := []ipc.Codec{ipc.H265, ipc.H264}
+		if av1 {
+			codecs = append([]ipc.Codec{ipc.AV1}, codecs...)
+		}
+		return profile{codecs: codecs, targetUsage: 4, minKbps: 4000, startKbps: 20000, maxKbps: 40000}
 	}
 }
 
