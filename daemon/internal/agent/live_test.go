@@ -118,3 +118,88 @@ func TestLive(t *testing.T) {
 		t.Fatalf("session changed on resume: %q -> %q", s.SessionID, c.state().SessionID)
 	}
 }
+
+// TestLiveRewind rolls a real claude back past a turn that edited a file:
+// the file is restored and the resumed conversation doesn't know the turn.
+//
+//	EW_CLAUDE_LIVE=1 go test ./internal/agent -run LiveRewind -v
+func TestLiveRewind(t *testing.T) {
+	if os.Getenv("EW_CLAUDE_LIVE") == "" {
+		t.Skip("EW_CLAUDE_LIVE not set")
+	}
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	proj, err := st.CreateProject(dir, "live")
+	if err != nil {
+		t.Fatal(err)
+	}
+	th, _ := st.CreateThread(proj.ID, "", protocol.ThreadClaude)
+	_ = st.SetAgentModel(th.ID, "haiku")
+	_ = st.SetAgentPermissionMode(th.ID, "bypassPermissions")
+	m := NewManager(st, t.TempDir(), func() {})
+	defer m.Shutdown()
+
+	c := &fakeClient{}
+	if err := m.Attach(th.ID, c, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	turn := func(text string) string {
+		t.Helper()
+		before := strings.Count(eventTypes(c.events()), "turn:completed")
+		m.Handle(th.ID, c, protocol.AgentClientMsg{T: "send", Text: text})
+		for deadline := time.Now().Add(2 * time.Minute); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			evs := c.events()
+			if strings.Count(eventTypes(evs), "turn:completed") > before {
+				for i := len(evs) - 1; i >= 0; i-- {
+					if evs[i].Type == "user" {
+						return evs[i].ID
+					}
+				}
+			}
+		}
+		t.Fatalf("turn %q didn't finish: %s %v", text, eventTypes(c.events()), c.errors())
+		return ""
+	}
+	notes := filepath.Join(dir, "notes.txt")
+	turn("Use the Write tool to create notes.txt containing exactly: llama. Then reply with the single word done.")
+	second := turn("Read notes.txt, then use the Write tool to replace its contents with exactly: zebra. Then reply done.")
+	if b, _ := os.ReadFile(notes); !strings.Contains(string(b), "zebra") {
+		t.Fatalf("notes.txt after the second turn = %q", b)
+	}
+	session := c.state().SessionID
+
+	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "rewind", ID: second, Files: true})
+	for deadline := time.Now().Add(time.Minute); ; time.Sleep(50 * time.Millisecond) {
+		evs := c.events()
+		if len(c.errors()) > 0 || time.Now().After(deadline) {
+			t.Fatalf("rewind: %v; events %s", c.errors(), eventTypes(evs))
+		}
+		if e := evs[len(evs)-1]; e.Type == "rewind" {
+			t.Logf("rewind: %+v", e)
+			break
+		}
+	}
+	if b, _ := os.ReadFile(notes); strings.TrimSpace(string(b)) != "llama" {
+		t.Fatalf("notes.txt after the rewind = %q", b)
+	}
+
+	turn("Without using any tools: which words have I asked you to write to notes.txt in this conversation? Answer in one line.")
+	var answer string
+	evs := c.events()
+	for i := len(evs) - 1; i >= 0 && evs[i].Type != "user"; i-- {
+		if evs[i].Type == "assistant" {
+			answer = evs[i].Text + answer
+		}
+	}
+	t.Logf("answer: %q", answer)
+	if a := strings.ToLower(answer); !strings.Contains(a, "llama") || strings.Contains(a, "zebra") {
+		t.Fatalf("the forked conversation answered %q", answer)
+	}
+	if s := c.state().SessionID; s == "" || s == session {
+		t.Fatalf("session %q after the rewind, was %q", s, session)
+	}
+}

@@ -8,9 +8,17 @@ import {
   SquareIcon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useDevice } from "@/components/device-context";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -19,7 +27,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { type AgentThread, useAgentThread } from "@/lib/agent";
-import { listenComposer } from "@/lib/composer-inbox";
+import { listenComposer, sendToComposer } from "@/lib/composer-inbox";
 import { loadDraft, saveDraft } from "@/lib/drafts";
 import { type DevicePeer, useRpc } from "@/lib/peer";
 import { cn } from "@/lib/utils";
@@ -34,7 +42,7 @@ import {
   WorkspacePicker,
 } from "./composer-parts";
 import { PendingRequest } from "./pending";
-import { buildItems, Timeline } from "./timeline";
+import { buildItems, Timeline, type UserEvent } from "./timeline";
 
 export const MODES: { value: PermissionMode; label: string; hint: string }[] = [
   { value: "default", label: "Ask before edits", hint: "Prompts for file edits and commands" },
@@ -103,6 +111,19 @@ export function AgentView({
   const hidden = allItems.length - items.length;
   const canPage = features.includes("history");
   const busy = state?.status === "working" || state?.status === "waiting" || state?.status === "starting";
+
+  // Rolling back puts the prompt back in the composer once the device has done it.
+  const [rewindTo, setRewindTo] = useState<UserEvent | null>(null);
+  const rewound = useRef<UserEvent | null>(null);
+  const onRewind = useCallback((prompt: UserEvent) => setRewindTo(prompt), []);
+  useEffect(() => {
+    const prompt = rewound.current;
+    if (!prompt) return;
+    const done = agent.events.some((e) => e.event.type === "rewind" && e.event.id === prompt.id);
+    if (!done) return;
+    rewound.current = null;
+    if (prompt.text) sendToComposer(threadId, { text: prompt.text, files: [] });
+  }, [agent.events, threadId]);
 
   // Follow new output while the user is at the bottom.
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -183,9 +204,20 @@ export function AgentView({
             streaming={state?.streaming ?? []}
             cwd={workdir}
             working={state?.status === "working"}
+            onRewind={features.includes("rewind") && !archived && !busy ? onRewind : undefined}
           />
         </div>
       </div>
+      <RewindDialog
+        prompt={rewindTo}
+        onClose={() => setRewindTo(null)}
+        onRewind={(files) => {
+          if (!rewindTo) return;
+          rewound.current = rewindTo;
+          agent.send({ t: "rewind", id: rewindTo.id, files });
+          setRewindTo(null);
+        }}
+      />
 
       {/* The composer sits a little above the bottom edge, where it's easier to see. */}
       <div className="shrink-0 bg-background">
@@ -223,6 +255,51 @@ export function AgentView({
         )}
       </div>
     </div>
+  );
+}
+
+function RewindDialog({
+  prompt,
+  onClose,
+  onRewind,
+}: {
+  prompt: UserEvent | null;
+  onClose: () => void;
+  onRewind: (files: boolean) => void;
+}) {
+  return (
+    <Dialog open={!!prompt} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Roll back to before this message?</DialogTitle>
+          <DialogDescription asChild>
+            <div className="grid gap-2">
+              {prompt?.text && (
+                <p className="line-clamp-3 rounded-md bg-secondary px-3 py-2 whitespace-pre-wrap text-foreground">
+                  {prompt.text}
+                </p>
+              )}
+              <p>
+                Claude forgets this message and everything after it, and the message goes back in the composer to
+                edit. Restoring code also undoes Claude&apos;s file edits since then, though not changes made by
+                commands it ran.
+              </p>
+            </div>
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button variant="secondary" onClick={() => onRewind(false)}>
+            Conversation only
+          </Button>
+          <Button variant="destructive" onClick={() => onRewind(true)}>
+            Conversation and code
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

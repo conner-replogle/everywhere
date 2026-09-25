@@ -86,6 +86,11 @@ ALTER TABLE threads ADD COLUMN parent_id TEXT REFERENCES threads(id) ON DELETE C
 ALTER TABLE threads ADD COLUMN tab_state TEXT;
 CREATE INDEX threads_parent ON threads(parent_id);
 `,
+	// 7: a claude thread rolled back to an earlier message: the transcript
+	// entry its next start resumes at, in a fork of its session.
+	`
+ALTER TABLE threads ADD COLUMN agent_resume_at TEXT;
+`,
 }
 
 type Store struct {
@@ -440,9 +445,12 @@ func (s *Store) MarkSpawned(threadID string) error {
 
 // AgentThread is what the agent manager needs to run a claude thread.
 type AgentThread struct {
-	ProjectID      string
-	Dir            string // the project directory
-	SessionID      string // "" until the first turn
+	ProjectID string
+	Dir       string // the project directory
+	SessionID string // "" until the first turn
+	// ResumeAt, when set, is where the next start forks SessionID: the
+	// conversation was rolled back to it.
+	ResumeAt       string
 	Model          string // "" means the CLI's default
 	PermissionMode string
 	// Workspace is "local" (run in Dir) or "worktree" (run in a worktree of
@@ -464,15 +472,15 @@ type AgentThread struct {
 
 func (s *Store) AgentThread(threadID string) (AgentThread, error) {
 	var a AgentThread
-	var session, model, base, worktree, branch, ctxUsage, effort sql.NullString
+	var session, resumeAt, model, base, worktree, branch, ctxUsage, effort sql.NullString
 	var kind string
 	err := s.db.QueryRow(`
-SELECT t.project_id, p.path, t.kind, t.agent_session_id, t.agent_model, t.agent_permission_mode,
+SELECT t.project_id, p.path, t.kind, t.agent_session_id, t.agent_resume_at, t.agent_model, t.agent_permission_mode,
        t.agent_workspace, t.agent_base_branch, t.agent_worktree, t.agent_branch, t.agent_continue, t.agent_context,
        t.agent_effort, t.agent_thinking, COALESCE(t.agent_worktree = par.agent_worktree, 0)
 FROM threads t JOIN projects p ON p.id = t.project_id LEFT JOIN threads par ON par.id = t.parent_id
 WHERE t.id = ?`, threadID,
-	).Scan(&a.ProjectID, &a.Dir, &kind, &session, &model, &a.PermissionMode,
+	).Scan(&a.ProjectID, &a.Dir, &kind, &session, &resumeAt, &model, &a.PermissionMode,
 		&a.Workspace, &base, &worktree, &branch, &a.Continue, &ctxUsage, &effort, &a.Thinking, &a.SharedWorktree)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
@@ -480,7 +488,7 @@ WHERE t.id = ?`, threadID,
 	if err == nil && kind != protocol.ThreadClaude {
 		return a, fmt.Errorf("thread %s is a %s thread", threadID, kind)
 	}
-	a.SessionID, a.Model = session.String, model.String
+	a.SessionID, a.ResumeAt, a.Model = session.String, resumeAt.String, model.String
 	a.BaseBranch, a.Worktree, a.Branch = base.String, worktree.String, branch.String
 	a.Effort = effort.String
 	if ctxUsage.Valid {
@@ -535,8 +543,18 @@ func (s *Store) SetAgentContext(threadID string, usage json.RawMessage) error {
 	return s.execOne("UPDATE threads SET agent_context = ? WHERE id = ?", string(usage), threadID)
 }
 
+// SetAgentSessionID records the thread's claude session. A new session
+// supersedes a pending rollback: it's either the fork that carried it out
+// or a fresh start.
 func (s *Store) SetAgentSessionID(threadID, sessionID string) error {
-	return s.execOne("UPDATE threads SET agent_session_id = ?, last_opened_at = ? WHERE id = ?", sessionID, now(), threadID)
+	return s.execOne("UPDATE threads SET agent_session_id = NULLIF(?, ''), agent_resume_at = NULL, last_opened_at = ? WHERE id = ?",
+		sessionID, now(), threadID)
+}
+
+// SetAgentResumeAt rolls the thread's conversation back: its next start
+// resumes a fork of the session at this transcript entry.
+func (s *Store) SetAgentResumeAt(threadID, entry string) error {
+	return s.execOne("UPDATE threads SET agent_resume_at = NULLIF(?, '') WHERE id = ?", entry, threadID)
 }
 
 func (s *Store) SetAgentModel(threadID, model string) error {
@@ -593,6 +611,28 @@ ORDER BY seq DESC LIMIT ?`, threadID, afterSeq, beforeSeq, limit+1)
 	}
 	slices.Reverse(events)
 	return events, truncated, rows.Err()
+}
+
+// AgentPromptSeq returns the seq of the user prompt with the given id in a
+// thread's log.
+func (s *Store) AgentPromptSeq(threadID, id string) (int64, error) {
+	var seq int64
+	err := s.db.QueryRow(`
+SELECT seq FROM agent_events
+WHERE thread_id = ? AND json_extract(event, '$.type') = 'user' AND json_extract(event, '$.id') = ?`,
+		threadID, id).Scan(&seq)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrNotFound
+	}
+	return seq, err
+}
+
+// DeleteAgentEvents removes the events with fromSeq <= seq < toSeq from a
+// thread's log. Later appends still count up from the newest seq left, so
+// toSeq must be kept for seqs to never be reused.
+func (s *Store) DeleteAgentEvents(threadID string, fromSeq, toSeq int64) error {
+	_, err := s.db.Exec("DELETE FROM agent_events WHERE thread_id = ? AND seq >= ? AND seq < ?", threadID, fromSeq, toSeq)
+	return err
 }
 
 // SearchHit is a thread whose name or claude messages contain a query.

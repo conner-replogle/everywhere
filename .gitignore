@@ -9,3 +9,4 @@ dist/
 apps/web/src/routeTree.gen.ts
 .claude/
 /desktop-bin/
+.tanstack/

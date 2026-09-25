@@ -1,5 +1,13 @@
 import type { AgentEvent, AgentStreaming } from "@everywhere/protocol";
-import { BrainIcon, CheckIcon, ChevronRightIcon, CircleAlertIcon, LoaderCircleIcon, XIcon } from "lucide-react";
+import {
+  BrainIcon,
+  CheckIcon,
+  ChevronRightIcon,
+  CircleAlertIcon,
+  LoaderCircleIcon,
+  RotateCcwIcon,
+  XIcon,
+} from "lucide-react";
 import { memo, useState } from "react";
 import type { LoggedEvent } from "@/lib/agent";
 import { cn } from "@/lib/utils";
@@ -25,7 +33,7 @@ type Item =
       kind: "event";
       key: number;
       at: number;
-      event: Ev<"user" | "assistant" | "thinking" | "notice" | "request" | "turn" | "commandOutput">;
+      event: Ev<"user" | "assistant" | "thinking" | "notice" | "request" | "turn" | "commandOutput" | "rewind">;
     };
 
 /**
@@ -68,21 +76,26 @@ export function buildItems(events: LoggedEvent[]): Item[] {
   return root;
 }
 
+export type UserEvent = Ev<"user">;
+
 export const Timeline = memo(function Timeline({
   items,
   streaming,
   cwd,
   working,
+  onRewind,
 }: {
   items: Item[];
   streaming: AgentStreaming[];
   cwd?: string;
   working: boolean;
+  /** Offers rolling back to before a prompt; absent when the device can't. */
+  onRewind?: (prompt: UserEvent) => void;
 }) {
   return (
     <div className="flex flex-col gap-3">
       {items.map((item) => (
-        <ItemView key={item.key} item={item} cwd={cwd} />
+        <ItemView key={item.key} item={item} cwd={cwd} onRewind={working ? undefined : onRewind} />
       ))}
       {streaming.map((s) =>
         s.kind === "thinking" ? (
@@ -103,17 +116,46 @@ export const Timeline = memo(function Timeline({
   );
 });
 
-function ItemView({ item, cwd }: { item: Item; cwd?: string }) {
+function ItemView({
+  item,
+  cwd,
+  onRewind,
+}: {
+  item: Item;
+  cwd?: string;
+  onRewind?: (prompt: UserEvent) => void;
+}) {
   if (item.kind === "tool") return <ToolRow item={item} cwd={cwd} />;
   const e = item.event;
   switch (e.type) {
     case "user":
       return (
-        <div className="grid max-w-[85%] justify-items-end gap-1.5 self-end">
-          {e.text && (
-            <div className="rounded-lg bg-secondary px-3 py-2 whitespace-pre-wrap break-words">{e.text}</div>
+        <div className="group/prompt flex max-w-[85%] items-start gap-1 self-end">
+          {/* Subagent prompts aren't the user's to roll back. */}
+          {onRewind && !e.parentId && (
+            <button
+              type="button"
+              title="Roll back to before this message"
+              aria-label="Roll back to before this message"
+              onClick={() => onRewind(e)}
+              className="mt-1.5 shrink-0 rounded-md p-1 text-muted-foreground opacity-0 group-hover/prompt:opacity-100 hover:bg-secondary hover:text-foreground focus-visible:opacity-100 pointer-coarse:opacity-60"
+            >
+              <RotateCcwIcon className="size-3.5" />
+            </button>
           )}
-          {e.attachments && e.attachments.length > 0 && <SentAttachments attachments={e.attachments} />}
+          <div className="grid min-w-0 justify-items-end gap-1.5">
+            {e.text && (
+              <div className="rounded-lg bg-secondary px-3 py-2 whitespace-pre-wrap break-words">{e.text}</div>
+            )}
+            {e.attachments && e.attachments.length > 0 && <SentAttachments attachments={e.attachments} />}
+          </div>
+        </div>
+      );
+    case "rewind":
+      return (
+        <div className="text-center text-xs text-muted-foreground">
+          — Rolled back
+          {e.filesRestored ? `, restored ${e.filesRestored} file${e.filesRestored === 1 ? "" : "s"}` : ""} —
         </div>
       );
     case "assistant":

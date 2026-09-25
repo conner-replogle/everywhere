@@ -37,6 +37,7 @@ type Store interface {
 	ReplaceThreadName(id, from, to string) (bool, error)
 	AgentThread(threadID string) (store.AgentThread, error)
 	SetAgentSessionID(threadID, sessionID string) error
+	SetAgentResumeAt(threadID, entry string) error
 	SetAgentModel(threadID, model string) error
 	SetAgentPermissionMode(threadID, mode string) error
 	SetAgentWorkspace(threadID, workspace, baseBranch string) error
@@ -48,6 +49,8 @@ type Store interface {
 	SetAgentThinking(threadID string, on bool) error
 	AppendAgentEvent(threadID string, event json.RawMessage) (store.AgentEvent, error)
 	AgentEvents(threadID string, afterSeq, beforeSeq int64, limit int) ([]store.AgentEvent, bool, error)
+	AgentPromptSeq(threadID, id string) (int64, error)
+	DeleteAgentEvents(threadID string, fromSeq, toSeq int64) error
 }
 
 // process is a running claude CLI; *claude.Session implements it.
@@ -64,6 +67,7 @@ type process interface {
 	GenerateTitle(ctx context.Context, description string, persist bool) (string, error)
 	ApplyFlagSettings(context.Context, map[string]any) error
 	Usage(context.Context) (claude.Usage, error)
+	RewindFiles(ctx context.Context, userMessageID string, dryRun bool) (claude.RewindFilesResult, error)
 	Close()
 }
 
@@ -86,6 +90,9 @@ type Manager struct {
 	store    Store
 	onChange func() // called when a thread's running state or status changes
 	start    func(context.Context, claude.Options) (process, error)
+	// forkPoint finds the transcript entry before a prompt; see
+	// claude.ForkPoint.
+	forkPoint func(sessionID, promptID string) (string, error)
 
 	launchMu sync.Mutex
 	bin      string
@@ -117,6 +124,7 @@ func NewManager(st Store, dataDir string, onChange func()) *Manager {
 		sessions:    map[string]*session{},
 	}
 	m.start = m.startClaude
+	m.forkPoint = m.transcriptForkPoint
 	return m
 }
 
@@ -383,6 +391,15 @@ func (m *Manager) startClaude(ctx context.Context, o claude.Options) (process, e
 	o.Binary, o.Env = m.bin, m.env
 	m.launchMu.Unlock()
 	return claude.Start(ctx, o)
+}
+
+// transcriptForkPoint reads the fork point from the claude config directory
+// the thread's process was (or would be) started with.
+func (m *Manager) transcriptForkPoint(sessionID, promptID string) (string, error) {
+	m.launchMu.Lock()
+	env := m.env
+	m.launchMu.Unlock()
+	return claude.ForkPoint(claude.ConfigDir(env), sessionID, promptID)
 }
 
 // loginEnv returns the environment of the user's login shell, which is what

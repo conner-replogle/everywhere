@@ -168,3 +168,13 @@ type UsageRateLimit struct {
 	Utilization *float64 `json:"utilization"`
 	ResetsAt    *string  `json:"resets_at"` // RFC 3339
 }
+
+// RewindFilesResult is the answer to rewind_files.
+type RewindFilesResult struct {
+	CanRewind bool   `json:"canRewind"`
+	Error     string `json:"error,omitempty"`
+	// FilesChanged, Insertions and Deletions are only reported by a dry run.
+	FilesChanged []string `json:"filesChanged,omitempty"`
+	Insertions   int      `json:"insertions,omitempty"`
+	Deletions    int      `json:"deletions,omitempty"`
+}

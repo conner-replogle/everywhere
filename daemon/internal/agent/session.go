@@ -257,6 +257,8 @@ func (s *session) handle(c Client, msg protocol.AgentClientMsg) {
 		err = s.setWorkspace(msg.Workspace, msg.BaseBranch)
 	case "setEffort":
 		err = s.setEffort(msg.Effort)
+	case "rewind":
+		err = s.rewind(msg.ID, msg.Files)
 	case "setThinking":
 		if msg.Thinking == nil {
 			err = errors.New("setThinking needs thinking")
@@ -359,8 +361,12 @@ func (s *session) ensureProc() error {
 		Model:          a.Model,
 		PermissionMode: a.PermissionMode,
 		Resume:         a.SessionID,
-		AddDirs:        []string{attachDir}, // so claude can read attached files
-		Settings:       sessionSettings(a.Effort, a.Thinking),
+		ResumeAt:       a.ResumeAt,
+		// The fork's id arrives with the init message, which clears ResumeAt.
+		ForkSession:       a.ResumeAt != "",
+		FileCheckpointing: true,                // for rewinds that restore files
+		AddDirs:           []string{attachDir}, // so claude can read attached files
+		Settings:          sessionSettings(a.Effort, a.Thinking),
 		// Predicted next prompts, shown as a hint in the composer.
 		PromptSuggestions: true,
 		Args:              extra,
@@ -541,6 +547,115 @@ func (s *session) interrupt() {
 		slog.Warn("claude interrupt failed, stopping it", "thread", s.threadID, "err", err)
 		s.closeProc()
 	}
+}
+
+// rewind rolls the conversation back to before the prompt with event id
+// id, and with files, the files claude edited since. The conversation is cut
+// by forking claude's session just before the prompt on its next start;
+// the log loses the prompt and everything after it.
+func (s *session) rewind(id string, files bool) error {
+	if s.turnActive {
+		return errors.New("stop claude before rolling back")
+	}
+	promptSeq, err := s.m.store.AgentPromptSeq(s.threadID, id)
+	if err != nil {
+		return fmt.Errorf("that message can't be rolled back to: %w", err)
+	}
+	var at string
+	if s.state.SessionID != "" {
+		if at, err = s.m.forkPoint(s.state.SessionID, id); err != nil {
+			return fmt.Errorf("finding the message in claude's transcript: %w", err)
+		}
+	}
+	restored := 0
+	if files {
+		if restored, err = s.rewindFiles(id); err != nil {
+			return err
+		}
+	}
+	// The running process holds the whole conversation; the next prompt
+	// starts one on the fork.
+	if s.proc != nil {
+		s.stopProc()
+	}
+	if at == "" {
+		// The prompt started the conversation: start a new one.
+		err = s.m.store.SetAgentSessionID(s.threadID, "")
+		s.state.SessionID = ""
+	} else {
+		err = s.m.store.SetAgentResumeAt(s.threadID, at)
+	}
+	if err != nil {
+		return err
+	}
+
+	// The prompt's text, and the turn it started if it did.
+	var text string
+	fromSeq := promptSeq
+	events, _, _ := s.m.store.AgentEvents(s.threadID, promptSeq-2, promptSeq+1, 2)
+	for _, e := range events {
+		var ev protocol.AgentEvent
+		if json.Unmarshal(e.Event, &ev) != nil {
+			continue
+		}
+		if e.Seq == promptSeq {
+			text = ev.Text
+		} else if ev.Type == "turn" && ev.Status == "started" {
+			fromSeq = e.Seq
+		}
+	}
+	// Logged before the cut, so seqs keep counting up from it.
+	toSeq := s.emit(protocol.AgentEvent{Type: "rewind", ID: id, Text: text, FromSeq: fromSeq, FilesRestored: restored})
+	if toSeq > 0 {
+		if err := s.m.store.DeleteAgentEvents(s.threadID, fromSeq, toSeq); err != nil {
+			slog.Warn("removing rolled back events", "thread", s.threadID, "err", err)
+		}
+	}
+	s.state.Suggestion = ""
+	return nil
+}
+
+// rewindFiles restores the files claude edited since prompt id and returns
+// how many changed. It checks with a dry run first, so nothing is touched
+// when claude can't restore them all.
+func (s *session) rewindFiles(id string) (int, error) {
+	if err := s.ensureProc(); err != nil {
+		return 0, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
+	defer cancel()
+	r, err := s.proc.RewindFiles(ctx, id, true)
+	if err == nil && !r.CanRewind {
+		msg := r.Error
+		if msg == "" {
+			msg = "claude has no checkpoint for that message"
+		}
+		err = errors.New(msg)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("couldn't restore files: %w", err)
+	}
+	// Only a dry run reports what changes.
+	n := len(r.FilesChanged)
+	if n == 0 {
+		return 0, nil
+	}
+	if r, err = s.proc.RewindFiles(ctx, id, false); err == nil && !r.CanRewind {
+		err = errors.New(r.Error)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("couldn't restore files: %w", err)
+	}
+	return n, nil
+}
+
+// stopProc closes the process and handles what it still had to say.
+func (s *session) stopProc() {
+	s.closeProc()
+	for msg := range s.procMsgs {
+		s.handleMessage(msg)
+	}
+	s.onExit()
 }
 
 func (s *session) respond(msg protocol.AgentClientMsg) error {
@@ -1115,17 +1230,20 @@ func (s *session) closeProc() {
 	s.proc.Close()
 }
 
-func (s *session) emit(ev protocol.AgentEvent) {
+// emit logs ev and sends it to clients. It returns the event's seq, or 0 if
+// it couldn't be saved.
+func (s *session) emit(ev protocol.AgentEvent) int64 {
 	raw, err := json.Marshal(ev)
 	if err != nil {
-		return
+		return 0
 	}
 	e, err := s.m.store.AppendAgentEvent(s.threadID, raw)
 	if err != nil {
 		slog.Warn("saving agent event", "thread", s.threadID, "err", err)
-		return
+		return 0
 	}
 	s.broadcast(protocol.AgentEventMsg{T: "event", Seq: e.Seq, At: e.At, Event: e.Event})
+	return e.Seq
 }
 
 func (s *session) broadcast(frame any) {

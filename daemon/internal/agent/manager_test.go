@@ -34,6 +34,9 @@ type fakeProc struct {
 	exitErr    error
 	titles     func(desc string, persist bool) (string, error)
 	titleReqs  []titleReq
+	// rewind answers RewindFiles; nil means no checkpoint.
+	rewind  func(id string, dryRun bool) claude.RewindFilesResult
+	rewinds []string // "id" or "id dry"
 }
 
 type titleReq struct {
@@ -113,6 +116,19 @@ func (p *fakeProc) GenerateTitle(_ context.Context, desc string, persist bool) (
 		return "", nil
 	}
 	return titles(desc, persist)
+}
+func (p *fakeProc) RewindFiles(_ context.Context, id string, dryRun bool) (claude.RewindFilesResult, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	call := id
+	if dryRun {
+		call += " dry"
+	}
+	p.rewinds = append(p.rewinds, call)
+	if p.rewind == nil {
+		return claude.RewindFilesResult{Error: "No file checkpoint found for this message."}, nil
+	}
+	return p.rewind(id, dryRun), nil
 }
 func (p *fakeProc) Close() { p.exit(nil) }
 
@@ -1000,4 +1016,153 @@ func TestEffortAndThinking(t *testing.T) {
 		a, _ := h.st.AgentThread(h.thread)
 		return a.Effort == "" && a.Thinking
 	})
+}
+
+// twoTurns runs two completed turns on proc 0 and returns the client and
+// the prompts' event ids.
+func (h *harness) twoTurns() (*fakeClient, [2]string) {
+	h.t.Helper()
+	c := h.attach(0)
+	var ids [2]string
+	for i, text := range []string{"first", "second"} {
+		h.do(c, protocol.AgentClientMsg{T: "send", Text: text})
+		p := h.proc(0)
+		if i == 0 {
+			p.emit(`{"type":"system","subtype":"init","session_id":"sess-1"}`)
+		}
+		p.emit(`{"type":"assistant","uuid":"a` + text + `","message":{"id":"m","content":[{"type":"text","text":"ok"}]}}`)
+		p.emit(`{"type":"result","subtype":"success"}`)
+		eventually(h.t, "the turn to end", func() bool {
+			return strings.Count(eventTypes(c.events()), "turn:completed") == i+1 && c.state().Status == "idle"
+		})
+		for _, e := range c.events() {
+			if e.Type == "user" && e.Text == text {
+				ids[i] = e.ID
+			}
+		}
+	}
+	return c, ids
+}
+
+func TestRewindForksBeforeThePrompt(t *testing.T) {
+	h := newHarness(t)
+	var asked []string
+	h.m.forkPoint = func(sessionID, promptID string) (string, error) {
+		asked = append(asked, sessionID+" "+promptID)
+		return "entry-before", nil
+	}
+	c, ids := h.twoTurns()
+
+	h.do(c, protocol.AgentClientMsg{T: "rewind", ID: ids[1]})
+	eventually(t, "the rewind event", func() bool {
+		evs := c.events()
+		return evs[len(evs)-1].Type == "rewind"
+	})
+	if errs := c.errors(); len(errs) > 0 {
+		t.Fatalf("errors: %v", errs)
+	}
+	if len(asked) != 1 || asked[0] != "sess-1 "+ids[1] {
+		t.Fatalf("fork point asked for %v", asked)
+	}
+	h.waitStatus(c, "stopped")
+	if !h.proc(0).closed || len(h.proc(0).rewinds) != 0 {
+		t.Fatalf("the process should close without touching files: %+v", h.proc(0).rewinds)
+	}
+
+	// The log keeps the first turn, then the rewind; seqs keep counting up.
+	evs, _, _ := h.st.AgentEvents(h.thread, 0, 0, 100)
+	var types []string
+	var rw protocol.AgentEvent
+	for _, e := range evs {
+		var ev protocol.AgentEvent
+		_ = json.Unmarshal(e.Event, &ev)
+		types = append(types, ev.Type)
+		rw = ev
+	}
+	if got := strings.Join(types, " "); got != "turn user assistant turn rewind" {
+		t.Fatalf("log = %s", got)
+	}
+	if rw.ID != ids[1] || rw.Text != "second" || rw.FromSeq != 5 || evs[len(evs)-1].Seq != 9 {
+		t.Fatalf("rewind = %+v at seq %d", rw, evs[len(evs)-1].Seq)
+	}
+
+	// The next prompt resumes a fork at the entry before the prompt.
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "again"})
+	p := h.proc(1)
+	if p.opts.Resume != "sess-1" || p.opts.ResumeAt != "entry-before" || !p.opts.ForkSession || !p.opts.FileCheckpointing {
+		t.Fatalf("restarted with %+v", p.opts)
+	}
+	// The fork's session id replaces the old one and ends the rollback.
+	p.emit(`{"type":"system","subtype":"init","session_id":"sess-2"}`)
+	eventually(t, "the fork's session", func() bool { return c.state().SessionID == "sess-2" })
+	if a, _ := h.st.AgentThread(h.thread); a.SessionID != "sess-2" || a.ResumeAt != "" {
+		t.Fatalf("stored %q at %q", a.SessionID, a.ResumeAt)
+	}
+}
+
+func TestRewindFirstPromptStartsOver(t *testing.T) {
+	h := newHarness(t)
+	h.m.forkPoint = func(string, string) (string, error) { return "", nil }
+	c, ids := h.twoTurns()
+	h.do(c, protocol.AgentClientMsg{T: "rewind", ID: ids[0]})
+	h.waitStatus(c, "stopped")
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "again"})
+	if p := h.proc(1); p.opts.Resume != "" || p.opts.ForkSession {
+		t.Fatalf("restarted with %+v", p.opts)
+	}
+}
+
+func TestRewindFiles(t *testing.T) {
+	h := newHarness(t)
+	h.m.forkPoint = func(string, string) (string, error) { return "entry-before", nil }
+	c, ids := h.twoTurns()
+	p := h.proc(0)
+	p.mu.Lock()
+	p.rewind = func(id string, dryRun bool) claude.RewindFilesResult {
+		if dryRun {
+			return claude.RewindFilesResult{CanRewind: true, FilesChanged: []string{"a.go", "b.go"}}
+		}
+		return claude.RewindFilesResult{CanRewind: true}
+	}
+	p.mu.Unlock()
+
+	h.do(c, protocol.AgentClientMsg{T: "rewind", ID: ids[1], Files: true})
+	eventually(t, "the rewind event", func() bool {
+		evs := c.events()
+		return evs[len(evs)-1].Type == "rewind"
+	})
+	evs := c.events()
+	if rw := evs[len(evs)-1]; rw.FilesRestored != 2 {
+		t.Fatalf("rewind = %+v", rw)
+	}
+	if got := strings.Join(p.rewinds, ","); got != ids[1]+" dry,"+ids[1] {
+		t.Fatalf("RewindFiles calls = %s", got)
+	}
+}
+
+func TestRewindFilesWithoutCheckpointChangesNothing(t *testing.T) {
+	h := newHarness(t)
+	h.m.forkPoint = func(string, string) (string, error) { return "entry-before", nil }
+	c, ids := h.twoTurns()
+	h.do(c, protocol.AgentClientMsg{T: "rewind", ID: ids[1], Files: true})
+	eventually(t, "an error", func() bool { return len(c.errors()) == 1 })
+	if !strings.Contains(c.errors()[0], "No file checkpoint") {
+		t.Fatalf("error = %q", c.errors()[0])
+	}
+	if a, _ := h.st.AgentThread(h.thread); a.ResumeAt != "" || h.proc(0).closed {
+		t.Fatalf("a failed rewind changed the thread: resumeAt %q", a.ResumeAt)
+	}
+	if got := eventTypes(c.events()); strings.Contains(got, "rewind") {
+		t.Fatalf("events = %s", got)
+	}
+}
+
+func TestRewindDuringTurnIsRefused(t *testing.T) {
+	h := newHarness(t)
+	h.m.forkPoint = func(string, string) (string, error) { return "entry-before", nil }
+	c, ids := h.twoTurns()
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "third"})
+	h.waitStatus(c, "working")
+	h.do(c, protocol.AgentClientMsg{T: "rewind", ID: ids[0]})
+	eventually(t, "an error", func() bool { return len(c.errors()) == 1 })
 }

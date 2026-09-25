@@ -113,6 +113,7 @@ const (
 	FeatureArchive     = "archive"     // threads.archive and Thread.archivedAt
 	FeatureTabs        = "tabs"        // tabs.*, fs.list, threads.workdir and file channels
 	FeatureDesktop     = "desktop"     // desktop.info, desktop.start and desktop.stop
+	FeatureRewind      = "rewind"      // the agent channel's rewind request
 )
 
 // DesktopInfo is the result of desktop.info.
@@ -354,6 +355,8 @@ type TermError struct {
 //   - setEffort {effort}: low | medium | high | xhigh | max, or "" for the
 //     model's default
 //   - setThinking {thinking}
+//   - rewind {id, files}: rolls the conversation back to before the prompt
+//     with event id id and, with files, claude's file edits since
 type AgentClientMsg struct {
 	T         string            `json:"t"`
 	AfterSeq  int64             `json:"afterSeq,omitempty"`
@@ -372,6 +375,8 @@ type AgentClientMsg struct {
 	Attachments []string `json:"attachments,omitempty"`
 	Effort      string   `json:"effort,omitempty"`
 	Thinking    *bool    `json:"thinking,omitempty"`
+	ID          string   `json:"id,omitempty"`    // rewind: the prompt's event id
+	Files       bool     `json:"files,omitempty"` // rewind: restore files too
 }
 
 // Frames from the daemon, discriminated by T.
@@ -594,4 +599,9 @@ type AgentEvent struct {
 	DurationMS int64             `json:"durationMs,omitempty"`
 	// Attachments are the files sent with a user prompt.
 	Attachments []AgentAttachment `json:"attachments,omitempty"`
+	// FromSeq (rewind): the events from this seq up to the rewind's own were
+	// removed. ID is the prompt rolled back and Text its text.
+	FromSeq int64 `json:"fromSeq,omitempty"`
+	// FilesRestored (rewind): how many files were restored.
+	FilesRestored int `json:"filesRestored,omitempty"`
 }

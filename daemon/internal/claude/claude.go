@@ -43,9 +43,18 @@ type Options struct {
 	// PermissionMode is default | acceptEdits | plan | auto | dontAsk |
 	// bypassPermissions.
 	PermissionMode string
-	Resume         string   // session id to resume
-	SessionID      string   // id for a new session (a UUID); ignored with Resume
-	AddDirs        []string // extra directories tools may access
+	Resume         string // session id to resume
+	// ResumeAt, with Resume, resumes only up to and including this transcript
+	// entry: the conversation is rolled back to it.
+	ResumeAt string
+	// ForkSession, with Resume, continues in a new session (its id comes
+	// with the init message) and leaves the resumed one as it was.
+	ForkSession bool
+	SessionID   string // id for a new session (a UUID); ignored with Resume
+	// FileCheckpointing backs up files before claude's edits, so RewindFiles
+	// can restore them.
+	FileCheckpointing bool
+	AddDirs           []string // extra directories tools may access
 	// Settings go into the session's flag settings layer (--settings), the
 	// same layer ApplyFlagSettings changes mid-session.
 	Settings map[string]any
@@ -94,6 +103,9 @@ func Start(ctx context.Context, o Options) (*Session, error) {
 	}
 	if !hasEnv(cmd.Env, "CLAUDE_CODE_ENTRYPOINT") {
 		cmd.Env = append(cmd.Env, "CLAUDE_CODE_ENTRYPOINT=sdk-go")
+	}
+	if o.FileCheckpointing {
+		cmd.Env = append(cmd.Env, "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true")
 	}
 	// Own process group, so Close can take down tool subprocesses too.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -170,6 +182,12 @@ func buildArgs(o Options) []string {
 	}
 	if o.Resume != "" {
 		args = append(args, "--resume", o.Resume)
+		if o.ResumeAt != "" {
+			args = append(args, "--resume-session-at", o.ResumeAt)
+		}
+		if o.ForkSession {
+			args = append(args, "--fork-session")
+		}
 	} else if o.SessionID != "" {
 		args = append(args, "--session-id", o.SessionID)
 	}
@@ -298,6 +316,23 @@ func (s *Session) GenerateTitle(ctx context.Context, description string, persist
 		return "", err
 	}
 	return *r.Title, nil
+}
+
+// RewindFiles restores the files claude edited since the prompt with the
+// given UUID to how they were when it was sent. It needs FileCheckpointing
+// on for the whole session; dryRun only reports what would change.
+func (s *Session) RewindFiles(ctx context.Context, userMessageID string, dryRun bool) (RewindFilesResult, error) {
+	resp, err := s.control(ctx, map[string]any{
+		"subtype":         "rewind_files",
+		"user_message_id": userMessageID,
+		"dry_run":         dryRun,
+	})
+	if err != nil {
+		return RewindFilesResult{}, err
+	}
+	var r RewindFilesResult
+	err = json.Unmarshal(resp, &r)
+	return r, err
 }
 
 func (s *Session) SetModel(ctx context.Context, model string) error {

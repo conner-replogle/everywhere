@@ -131,6 +131,12 @@ class AgentThreadStore {
         this.lastSeq = msg.seq;
         const ev = msg.event;
         const logged = { seq: msg.seq, at: msg.at, event: ev };
+        if (ev.type === "rewind") {
+          // The daemon removed the rolled back events; drop our copies too.
+          const kept = (e: LoggedEvent) => e.seq < ev.fromSeq || e.seq >= msg.seq;
+          if (this.replay) this.replay = this.replay.filter(kept);
+          this.set({ events: this.snap.events.filter(kept) });
+        }
         // Rendering per replayed event would redraw the timeline thousands of times.
         if (this.replay) {
           this.replay.push(logged);

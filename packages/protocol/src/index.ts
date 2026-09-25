@@ -107,9 +107,19 @@ export interface DeviceInfo {
  * git.info. attachments: upload channels and attachments on send. history:
  * the agent attach limit and history paging. archive: threads.archive.
  * tabs: tabs.*, threads.workdir, fs.list and file channels. desktop:
- * desktop.info, desktop.start and desktop.stop (remote desktop).
+ * desktop.info, desktop.start and desktop.stop (remote desktop). rewind: the
+ * agent channel's rewind request.
  */
-export type DeviceFeature = "claude" | "update" | "worktrees" | "attachments" | "history" | "archive" | "tabs" | "desktop";
+export type DeviceFeature =
+  | "claude"
+  | "update"
+  | "worktrees"
+  | "attachments"
+  | "history"
+  | "archive"
+  | "tabs"
+  | "desktop"
+  | "rewind";
 
 /**
  * What desktop.start captures: a monitor by name, or a window by id
@@ -422,7 +432,13 @@ export type AgentClientMsg =
   | { t: "setWorkspace"; workspace: "local" | "worktree"; baseBranch?: string }
   /** "" means the model's default effort. */
   | { t: "setEffort"; effort: EffortLevel | "" }
-  | { t: "setThinking"; thinking: boolean };
+  | { t: "setThinking"; thinking: boolean }
+  /**
+   * Rolls the conversation back to before the prompt with event id `id`,
+   * forking claude's session there. files: also undo claude's file edits since
+   * (only edits made through its edit tools, not by shell commands).
+   */
+  | { t: "rewind"; id: string; files?: boolean };
 
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -596,6 +612,11 @@ export type AgentEvent = AgentEventBase &
         durationMs?: number;
       }
     | { type: "notice"; text: string }
+    /**
+     * The conversation was rolled back to before prompt `id` (whose text is
+     * `text`): events from fromSeq up to this one were removed.
+     */
+    | { type: "rewind"; id: string; text: string; fromSeq: number; filesRestored?: number }
     /** What a local slash command (e.g. /cost) printed. */
     | { type: "commandOutput"; text: string }
   );
