@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "@tanstack/react-router";
 import {
   ArchiveIcon,
   ArchiveRestoreIcon,
+  ArrowDownUpIcon,
   BugIcon,
   ChevronRightIcon,
   ChevronsUpDownIcon,
@@ -39,6 +40,8 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -68,8 +71,42 @@ interface ArchivedRow {
   project: Project | undefined;
 }
 
+interface ThreadListRow {
+  entry: Entry;
+  project: Project;
+  thread: Thread;
+}
+
+type SortBy = "name" | "recent" | "device";
+type GroupBy = "project" | "device" | "none";
+
 const COLLAPSED_KEY = "ew:collapsed";
 const ARCHIVED_OPEN_KEY = "ew:archived-open";
+const VIEW_KEY = "ew:sidebar-view";
+
+/** How the sidebar sorts and groups projects and threads, remembered per browser. */
+function useSidebarView() {
+  const [view, setView] = useState<{ sort: SortBy; group: GroupBy }>(() => {
+    try {
+      const v = JSON.parse(localStorage.getItem(VIEW_KEY) ?? "{}") as { sort?: SortBy; group?: GroupBy };
+      return { sort: v.sort ?? "name", group: v.group ?? "project" };
+    } catch {
+      return { sort: "name", group: "project" };
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(VIEW_KEY, JSON.stringify(view));
+    } catch {
+      // Only a convenience.
+    }
+  }, [view]);
+  return {
+    ...view,
+    setSort: (sort: SortBy) => setView((v) => ({ ...v, sort })),
+    setGroup: (group: GroupBy) => setView((v) => ({ ...v, group })),
+  };
+}
 
 function useCollapsed() {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => {
@@ -100,6 +137,35 @@ const projectKey = (deviceId: string, projectId: string) => `${deviceId}/${proje
 const connected = (e: Entry) => e.conn.state === "connected";
 const hasFeature = (e: Entry, f: string) => e.info.data?.features?.includes(f as never) ?? false;
 const deviceName = (e: Entry) => e.device.name || e.info.data?.hostname || "Device";
+/** When a thread was last used: opened, or else created. */
+const threadRecency = (t: Thread) => Math.max(t.lastOpenedAt ?? 0, t.createdAt);
+/** A project is as recent as its most recent thread. */
+const projectRecency = (r: ProjectRow) => Math.max(r.project.createdAt, ...r.threads.map(threadRecency));
+
+/** Projects by name, each device's home folder after them. */
+const byProjectName = (a: ProjectRow, b: ProjectRow) =>
+  Number(a.project.isHome) - Number(b.project.isHome) || a.project.name.localeCompare(b.project.name);
+const byDeviceName = (a: { entry: Entry }, b: { entry: Entry }) =>
+  deviceName(a.entry).localeCompare(deviceName(b.entry)) || a.entry.deviceId.localeCompare(b.entry.deviceId);
+
+function compareProjects(sort: SortBy) {
+  return (a: ProjectRow, b: ProjectRow) =>
+    sort === "recent"
+      ? projectRecency(b) - projectRecency(a)
+      : sort === "device"
+        ? byDeviceName(a, b) || byProjectName(a, b)
+        : byProjectName(a, b) || byDeviceName(a, b);
+}
+
+function compareThreads(sort: SortBy) {
+  return (a: ThreadListRow, b: ThreadListRow) =>
+    sort === "recent"
+      ? threadRecency(b.thread) - threadRecency(a.thread)
+      : (sort === "device" && byDeviceName(a, b)) ||
+        a.project.name.localeCompare(b.project.name) ||
+        byDeviceName(a, b) ||
+        a.thread.createdAt - b.thread.createdAt;
+}
 
 export function AppSidebar({
   className,
@@ -114,6 +180,7 @@ export function AppSidebar({
   const navigate = useNavigate();
   const { deviceId: activeDeviceId, threadId: activeThreadId } = useParams({ strict: false });
   const { collapsed, toggle } = useCollapsed();
+  const view = useSidebarView();
   const [archivedOpen, setArchivedOpen] = useState(() => localStorage.getItem(ARCHIVED_OPEN_KEY) === "1");
   const [pending, setPending] = useState<Pending>(null);
   // Deleting a claude thread that has a worktree: also remove the worktree?
@@ -143,16 +210,37 @@ export function AppSidebar({
         projects.push({ entry, project, threads });
       }
     }
-    // Projects by name, each device's home folder after them.
-    projects.sort(
-      (a, b) =>
-        Number(a.project.isHome) - Number(b.project.isHome) ||
-        a.project.name.localeCompare(b.project.name) ||
-        deviceName(a.entry).localeCompare(deviceName(b.entry)),
-    );
     archived.sort((a, b) => (b.thread.archivedAt ?? 0) - (a.thread.archivedAt ?? 0));
     return { projects, archived };
   }, [list]);
+
+  // What the list shows, per the sort and grouping picked in the header.
+  const shown = useMemo(() => {
+    const sorted = projects
+      .map((r) =>
+        view.sort === "recent"
+          ? { ...r, threads: [...r.threads].sort((a, b) => threadRecency(b) - threadRecency(a)) }
+          : r,
+      )
+      .sort(compareProjects(view.sort));
+    if (view.group === "none") {
+      const threads = sorted.flatMap(({ entry, project, threads }) =>
+        threads.map((thread) => ({ entry, project, thread })),
+      );
+      return { group: "none" as const, threads: threads.sort(compareThreads(view.sort)) };
+    }
+    if (view.group === "device") {
+      const devices = [...list]
+        .map((entry) => {
+          const rows = sorted.filter((r) => r.entry === entry);
+          return { entry, rows, recent: Math.max(0, ...rows.map(projectRecency)) };
+        })
+        .filter((d) => d.rows.length > 0)
+        .sort((a, b) => (view.sort === "recent" ? b.recent - a.recent : 0) || byDeviceName(a, b));
+      return { group: "device" as const, devices };
+    }
+    return { group: "project" as const, projects: sorted };
+  }, [projects, list, view.sort, view.group]);
 
   const connectedEntries = list.filter(connected);
   const loading = devices === undefined || list.some((e) => e.conn.state === "connecting" && !e.projects.data);
@@ -185,6 +273,156 @@ export function AppSidebar({
 
   const isActive = (entry: Entry, t: Thread) => entry.deviceId === activeDeviceId && t.id === activeThreadId;
 
+  const threadActions = (entry: Entry, t: Thread) => (
+    <>
+      <DropdownMenuItem onSelect={() => setPending({ kind: "rename-thread", entry, thread: t })}>
+        <PencilIcon />
+        Rename
+      </DropdownMenuItem>
+      <DropdownMenuSeparator />
+      {hasFeature(entry, "archive") ? (
+        <DropdownMenuItem onSelect={() => setArchived(entry, t, true)}>
+          <ArchiveIcon />
+          Archive
+        </DropdownMenuItem>
+      ) : (
+        <DropdownMenuItem
+          variant="destructive"
+          onSelect={() => {
+            setRemoveWorktree(true);
+            setPending({ kind: "delete-thread", entry, thread: t });
+          }}
+        >
+          <Trash2Icon />
+          Delete thread
+        </DropdownMenuItem>
+      )}
+    </>
+  );
+
+  function renderProject({ entry, project: p, threads }: ProjectRow, showDevice: boolean) {
+    const key = projectKey(entry.deviceId, p.id);
+    const isCollapsed = collapsed.has(key);
+    const live = connected(entry);
+    const claude = hasFeature(entry, "claude");
+    return (
+      <li key={key} className={cn(!live && "opacity-50")}>
+        <div className="group flex h-7 items-center rounded-md pr-1 hover:bg-accent/60 pointer-coarse:h-10">
+          <button
+            type="button"
+            onClick={() => toggle(key)}
+            className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-md pl-1.5 text-left focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none"
+            aria-expanded={!isCollapsed}
+            title={`${p.path} on ${deviceName(entry)}`}
+          >
+            <ChevronRightIcon
+              className={cn(
+                "size-3 shrink-0 text-muted-foreground transition-transform",
+                !isCollapsed && "rotate-90",
+              )}
+            />
+            {p.isHome ? (
+              <HomeIcon className="size-3.5 shrink-0 text-muted-foreground" />
+            ) : (
+              <FolderIcon className="size-3.5 shrink-0 text-muted-foreground" />
+            )}
+            <span className="truncate">{p.name}</span>
+            {isCollapsed && threads.length > 0 && (
+              <span className="text-xs text-muted-foreground tabular-nums">{threads.length}</span>
+            )}
+            {showDevice && (
+              <span className="ml-auto max-w-[45%] shrink-0 truncate pl-1 text-[11px] text-muted-foreground pointer-fine:group-hover:hidden pointer-fine:group-has-data-[state=open]:hidden">
+                {deviceName(entry)}
+              </span>
+            )}
+          </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                disabled={!live}
+                className="hidden group-hover:inline-flex focus-visible:inline-flex data-[state=open]:inline-flex pointer-coarse:inline-flex pointer-coarse:size-8"
+                aria-label={`New thread in ${p.name}`}
+                title="New thread"
+              >
+                <PlusIcon />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              <NewThreadItems claude={claude} onPick={(kind) => newThread(entry, p.id, kind)} />
+            </DropdownMenuContent>
+          </DropdownMenu>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                disabled={!live}
+                className="hidden group-hover:inline-flex focus-visible:inline-flex data-[state=open]:inline-flex pointer-coarse:inline-flex pointer-coarse:size-8"
+                aria-label={`Actions for ${p.name}`}
+              >
+                <MoreHorizontalIcon />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              <div className="max-w-64 truncate px-2 py-1 font-mono text-[11px] text-muted-foreground">
+                {deviceName(entry)}:{p.path}
+              </div>
+              <DropdownMenuSeparator />
+              <NewThreadItems claude={claude} onPick={(kind) => newThread(entry, p.id, kind)} />
+              {!p.isHome && (
+                <>
+                  <DropdownMenuItem onSelect={() => setPending({ kind: "rename-project", entry, project: p })}>
+                    <PencilIcon />
+                    Rename
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onSelect={() => setPending({ kind: "delete-project", entry, project: p })}
+                  >
+                    <Trash2Icon />
+                    Delete project
+                  </DropdownMenuItem>
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+
+        {!isCollapsed && (
+          <ul className="flex flex-col gap-px pb-1">
+            {threads.map((t) => (
+              <ThreadRow
+                key={t.id}
+                deviceId={entry.deviceId}
+                thread={t}
+                active={isActive(entry, t)}
+                actions={threadActions(entry, t)}
+              />
+            ))}
+            {threads.length === 0 && live && (
+              <li className="flex gap-1 pl-6">
+                {(claude ? (["terminal", "claude"] as const) : (["terminal"] as const)).map((kind) => (
+                  <button
+                    key={kind}
+                    type="button"
+                    onClick={() => newThread(entry, p.id, kind)}
+                    className="flex h-6 items-center gap-1.5 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground pointer-coarse:h-9 pointer-coarse:px-2.5"
+                  >
+                    <PlusIcon className="size-3" />
+                    {kind === "claude" ? "Claude" : "Terminal"}
+                  </button>
+                ))}
+              </li>
+            )}
+          </ul>
+        )}
+      </li>
+    );
+  }
+
   return (
     <aside className={cn("flex min-h-0 flex-col border-r bg-sidebar", className)}>
       <div className="flex h-10 shrink-0 items-center gap-3 border-b px-3">
@@ -200,10 +438,41 @@ export function AppSidebar({
       </div>
       <div className="flex h-9 shrink-0 items-center pr-1.5 pl-3">
         <span className="text-xs font-medium text-muted-foreground">Projects</span>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className={cn(
+                "ml-auto",
+                (view.sort !== "name" || view.group !== "project") && "text-primary hover:text-primary",
+              )}
+              aria-label="Sort and group"
+              title="Sort and group"
+            >
+              <ArrowDownUpIcon />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuLabel>Sort by</DropdownMenuLabel>
+            <DropdownMenuRadioGroup value={view.sort} onValueChange={(v) => view.setSort(v as SortBy)}>
+              <DropdownMenuRadioItem value="name">Name</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="recent">Recent</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="device">Device</DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel>Group by</DropdownMenuLabel>
+            <DropdownMenuRadioGroup value={view.group} onValueChange={(v) => view.setGroup(v as GroupBy)}>
+              <DropdownMenuRadioItem value="project">Project</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="device">Device</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="none">None</DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
         {connectedEntries.length > 1 ? (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon-sm" className="ml-auto" aria-label="New project" title="New project">
+              <Button variant="ghost" size="icon-sm" aria-label="New project" title="New project">
                 <FolderPlusIcon />
               </Button>
             </DropdownMenuTrigger>
@@ -220,7 +489,6 @@ export function AppSidebar({
           <Button
             variant="ghost"
             size="icon-sm"
-            className="ml-auto"
             disabled={connectedEntries.length === 0}
             onClick={() => setNewProjectFor(connectedEntries[0] ?? null)}
             aria-label="New project"
@@ -238,155 +506,49 @@ export function AppSidebar({
             {connectedEntries.length === 0 ? "No device is connected." : "No projects yet."}
           </p>
         )}
-        <ul className="flex flex-col gap-px">
-          {projects.map(({ entry, project: p, threads }) => {
-            const key = projectKey(entry.deviceId, p.id);
+        {shown.group === "project" && (
+          <ul className="flex flex-col gap-px">{shown.projects.map((r) => renderProject(r, multiDevice))}</ul>
+        )}
+        {shown.group === "device" &&
+          shown.devices.map(({ entry, rows }) => {
+            const key = `device:${entry.deviceId}`;
             const isCollapsed = collapsed.has(key);
-            const live = connected(entry);
-            const claude = hasFeature(entry, "claude");
             return (
-              <li key={key} className={cn(!live && "opacity-50")}>
-                <div className="group flex h-7 items-center rounded-md pr-1 hover:bg-accent/60 pointer-coarse:h-10">
-                  <button
-                    type="button"
-                    onClick={() => toggle(key)}
-                    className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-md pl-1.5 text-left focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none"
-                    aria-expanded={!isCollapsed}
-                    title={`${p.path} on ${deviceName(entry)}`}
-                  >
-                    <ChevronRightIcon
-                      className={cn(
-                        "size-3 shrink-0 text-muted-foreground transition-transform",
-                        !isCollapsed && "rotate-90",
-                      )}
-                    />
-                    {p.isHome ? (
-                      <HomeIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                    ) : (
-                      <FolderIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                    )}
-                    <span className="truncate">{p.name}</span>
-                    {isCollapsed && threads.length > 0 && (
-                      <span className="text-xs text-muted-foreground tabular-nums">{threads.length}</span>
-                    )}
-                    {multiDevice && (
-                      <span className="ml-auto max-w-[45%] shrink-0 truncate pl-1 text-[11px] text-muted-foreground pointer-fine:group-hover:hidden pointer-fine:group-has-data-[state=open]:hidden">
-                        {deviceName(entry)}
-                      </span>
-                    )}
-                  </button>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        disabled={!live}
-                        className="hidden group-hover:inline-flex focus-visible:inline-flex data-[state=open]:inline-flex pointer-coarse:inline-flex pointer-coarse:size-8"
-                        aria-label={`New thread in ${p.name}`}
-                        title="New thread"
-                      >
-                        <PlusIcon />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="start">
-                      <NewThreadItems claude={claude} onPick={(kind) => newThread(entry, p.id, kind)} />
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        disabled={!live}
-                        className="hidden group-hover:inline-flex focus-visible:inline-flex data-[state=open]:inline-flex pointer-coarse:inline-flex pointer-coarse:size-8"
-                        aria-label={`Actions for ${p.name}`}
-                      >
-                        <MoreHorizontalIcon />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="start">
-                      <div className="max-w-64 truncate px-2 py-1 font-mono text-[11px] text-muted-foreground">
-                        {deviceName(entry)}:{p.path}
-                      </div>
-                      <DropdownMenuSeparator />
-                      <NewThreadItems claude={claude} onPick={(kind) => newThread(entry, p.id, kind)} />
-                      {!p.isHome && (
-                        <>
-                          <DropdownMenuItem onSelect={() => setPending({ kind: "rename-project", entry, project: p })}>
-                            <PencilIcon />
-                            Rename
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            variant="destructive"
-                            onSelect={() => setPending({ kind: "delete-project", entry, project: p })}
-                          >
-                            <Trash2Icon />
-                            Delete project
-                          </DropdownMenuItem>
-                        </>
-                      )}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-
-                {!isCollapsed && (
-                  <ul className="flex flex-col gap-px pb-1">
-                    {threads.map((t) => (
-                      <ThreadRow
-                        key={t.id}
-                        deviceId={entry.deviceId}
-                        thread={t}
-                        active={isActive(entry, t)}
-                        actions={
-                          <>
-                            <DropdownMenuItem onSelect={() => setPending({ kind: "rename-thread", entry, thread: t })}>
-                              <PencilIcon />
-                              Rename
-                            </DropdownMenuItem>
-                            <DropdownMenuSeparator />
-                            {hasFeature(entry, "archive") ? (
-                              <DropdownMenuItem onSelect={() => setArchived(entry, t, true)}>
-                                <ArchiveIcon />
-                                Archive
-                              </DropdownMenuItem>
-                            ) : (
-                              <DropdownMenuItem
-                                variant="destructive"
-                                onSelect={() => {
-                                  setRemoveWorktree(true);
-                                  setPending({ kind: "delete-thread", entry, thread: t });
-                                }}
-                              >
-                                <Trash2Icon />
-                                Delete thread
-                              </DropdownMenuItem>
-                            )}
-                          </>
-                        }
-                      />
-                    ))}
-                    {threads.length === 0 && live && (
-                      <li className="flex gap-1 pl-6">
-                        {(claude ? (["terminal", "claude"] as const) : (["terminal"] as const)).map((kind) => (
-                          <button
-                            key={kind}
-                            type="button"
-                            onClick={() => newThread(entry, p.id, kind)}
-                            className="flex h-6 items-center gap-1.5 rounded-md px-1.5 text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground pointer-coarse:h-9 pointer-coarse:px-2.5"
-                          >
-                            <PlusIcon className="size-3" />
-                            {kind === "claude" ? "Claude" : "Terminal"}
-                          </button>
-                        ))}
-                      </li>
-                    )}
-                  </ul>
-                )}
-              </li>
+              <div key={key} className="not-first:mt-2">
+                <button
+                  type="button"
+                  onClick={() => toggle(key)}
+                  className="flex h-7 w-full items-center gap-1.5 rounded-md pl-1.5 text-xs font-medium text-muted-foreground hover:bg-accent/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none pointer-coarse:h-9"
+                  aria-expanded={!isCollapsed}
+                >
+                  <ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", !isCollapsed && "rotate-90")} />
+                  <MonitorIcon className="size-3.5 shrink-0" />
+                  <span className="truncate">{deviceName(entry)}</span>
+                  {isCollapsed && <span className="tabular-nums">{rows.length}</span>}
+                </button>
+                {!isCollapsed && <ul className="flex flex-col gap-px">{rows.map((r) => renderProject(r, false))}</ul>}
+              </div>
             );
           })}
-        </ul>
+        {shown.group === "none" && (
+          <ul className="flex flex-col gap-px">
+            {shown.threads.map(({ entry, project, thread: t }) => (
+              <ThreadRow
+                key={`${entry.deviceId}/${t.id}`}
+                deviceId={entry.deviceId}
+                thread={t}
+                active={isActive(entry, t)}
+                flat
+                dimmed={!connected(entry)}
+                detail={[project.name, multiDevice ? deviceName(entry) : undefined].filter(Boolean).join(" · ")}
+                actions={threadActions(entry, t)}
+              />
+            ))}
+            {!loading && shown.threads.length === 0 && projects.length > 0 && (
+              <li className="px-2 py-1 text-xs text-muted-foreground">No threads yet.</li>
+            )}
+          </ul>
+        )}
 
         {archived.length > 0 && (
           <div className="mt-3">
@@ -678,6 +840,8 @@ function ThreadRow({
   thread: t,
   active,
   detail,
+  flat,
+  dimmed,
   actions,
 }: {
   deviceId: string;
@@ -685,6 +849,10 @@ function ThreadRow({
   active: boolean;
   /** Shown under the name (archived threads: their project and device). */
   detail?: string;
+  /** Not nested under a project, so not indented. */
+  flat?: boolean;
+  /** Its device isn't connected. */
+  dimmed?: boolean;
   actions: React.ReactNode;
 }) {
   return (
@@ -693,12 +861,16 @@ function ThreadRow({
         "group flex items-center rounded-md pr-1",
         detail ? "min-h-7 py-0.5" : "h-7 pointer-coarse:h-10",
         active ? "bg-accent text-accent-foreground" : "hover:bg-accent/60",
+        dimmed && "opacity-50",
       )}
     >
       <Link
         to="/d/$deviceId/t/$threadId"
         params={{ deviceId, threadId: t.id }}
-        className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-md pl-7 focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none"
+        className={cn(
+          "flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-md focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none",
+          flat ? "pl-2" : "pl-7",
+        )}
       >
         {t.kind === "claude" ? (
           <SparklesIcon className={cn("size-3.5 shrink-0", active ? "text-primary" : "text-muted-foreground")} />

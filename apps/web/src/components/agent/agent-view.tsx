@@ -441,7 +441,9 @@ function Composer({
         }
         className="block max-h-60 w-full resize-none bg-transparent px-3 pt-2.5 pb-1 outline-none placeholder:text-muted-foreground disabled:opacity-50"
       />
-      <div className="flex min-w-0 flex-wrap items-center gap-1 px-1.5 pb-1.5">
+      <div className="flex items-end gap-1 px-1.5 pb-1.5">
+        {/* The controls wrap; send/stop stays pinned bottom-right so it never lands on a row of its own. */}
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
         {canAttach && (
           <>
             <Button
@@ -495,11 +497,12 @@ function Composer({
         <StatusText state={state} />
         <UsageMeter limits={limits} />
         <ContextMeter context={state?.context} />
+        </div>
         {busy ? (
           <Button
             size="icon-sm"
             variant="secondary"
-            className="ml-auto size-7"
+            className="size-7 shrink-0"
             onClick={() => agent.send({ t: "interrupt" })}
             aria-label="Stop"
             title="Stop (Esc)"
@@ -509,7 +512,7 @@ function Composer({
         ) : (
           <Button
             size="icon-sm"
-            className="ml-auto size-7"
+            className="size-7 shrink-0"
             disabled={!canSend}
             onClick={submit}
             aria-label="Send"
