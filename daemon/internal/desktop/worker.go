@@ -37,7 +37,7 @@ func helperPath() (string, error) {
 	if p, err := exec.LookPath(HelperName); err == nil {
 		return p, nil
 	}
-	return "", fmt.Errorf("%s is not installed next to the daemon", HelperName)
+	return "", fmt.Errorf("%s isn't installed next to the daemon; run `everywhere desktop enable` on the device to install it", HelperName)
 }
 
 type frame struct {

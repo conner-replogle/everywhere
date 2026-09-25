@@ -27,12 +27,35 @@ var httpClient = &http.Client{Timeout: 2 * time.Minute}
 // Latest downloads the latest release for this platform, verifies its
 // checksum, and atomically replaces the binary at exe.
 func Latest(exe string) error {
-	asset := fmt.Sprintf("everywhere_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
-	base := "https://github.com/" + version.Repo + "/releases/latest/download/"
-
-	sums, err := fetch(base + "checksums.txt")
+	archive, err := download("https://github.com/" + version.Repo + "/releases/latest/download/")
 	if err != nil {
 		return err
+	}
+	return install(exe, archive)
+}
+
+// InstallWorker puts the remote desktop worker from release ver next to exe.
+// Devices that updated to the first release carrying it did so with an
+// updater that didn't know about it.
+func InstallWorker(exe, ver string) error {
+	archive, err := download("https://github.com/" + version.Repo + "/releases/download/v" + strings.TrimPrefix(ver, "v") + "/")
+	if err != nil {
+		return err
+	}
+	worker, err := extract(archive, WorkerName)
+	if err != nil {
+		return fmt.Errorf("release %s has no %s for %s/%s", ver, WorkerName, runtime.GOOS, runtime.GOARCH)
+	}
+	return replace(filepath.Join(filepath.Dir(exe), WorkerName), worker)
+}
+
+// download fetches this platform's archive from a release's download URL and
+// checks it against the release's checksums.
+func download(base string) ([]byte, error) {
+	asset := fmt.Sprintf("everywhere_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	sums, err := fetch(base + "checksums.txt")
+	if err != nil {
+		return nil, err
 	}
 	want := ""
 	sc := bufio.NewScanner(strings.NewReader(string(sums)))
@@ -42,17 +65,17 @@ func Latest(exe string) error {
 		}
 	}
 	if want == "" {
-		return fmt.Errorf("no checksum for %s in latest release", asset)
+		return nil, fmt.Errorf("no checksum for %s in the release", asset)
 	}
 	archive, err := fetch(base + asset)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	sum := sha256.Sum256(archive)
 	if hex.EncodeToString(sum[:]) != want {
-		return fmt.Errorf("checksum mismatch for %s", asset)
+		return nil, fmt.Errorf("checksum mismatch for %s", asset)
 	}
-	return install(exe, archive)
+	return archive, nil
 }
 
 // install puts the release archive's binaries in place of exe.
