@@ -7,6 +7,8 @@ import { requireUser } from "./auth";
 export interface Prefs {
   /** The permission mode new claude threads start in. */
   defaultPermissionMode?: "default" | "acceptEdits" | "plan" | "auto" | "bypassPermissions";
+  /** Ask claude for a recap when returning to an idle thread. */
+  autoRecap?: boolean;
 }
 
 const PERMISSION_MODES = new Set(["default", "acceptEdits", "plan", "auto", "bypassPermissions"]);
@@ -36,6 +38,10 @@ prefs.patch("/", async (c) => {
       return c.json({ error: "unknown permission mode" }, 400);
     }
     next.defaultPermissionMode = mode as Prefs["defaultPermissionMode"];
+  }
+  if ("autoRecap" in body) {
+    if (typeof body.autoRecap !== "boolean") return c.json({ error: "autoRecap must be true or false" }, 400);
+    next.autoRecap = body.autoRecap;
   }
   await c.env.DB.prepare("UPDATE users SET prefs = ? WHERE id = ?").bind(JSON.stringify(next), c.var.user.id).run();
   return c.json({ prefs: next });

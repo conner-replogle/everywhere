@@ -42,8 +42,11 @@ import {
   WorkspacePicker,
 } from "./composer-parts";
 import { PendingRequest } from "./pending";
+import { ResumeBanner } from "./resume-banner";
+import { useAutoRecap } from "./auto-recap";
 import { PERMISSION_MODES } from "@/lib/permission-modes";
-import { buildItems, Timeline, type UserEvent } from "./timeline";
+import { usePrefs } from "@/lib/prefs";
+import { buildItems, RECAP_PROMPT, Timeline, type UserEvent } from "./timeline";
 
 
 const BROWSER_TOOL = /^mcp__everywhere__browser_/;
@@ -105,6 +108,20 @@ export function AgentView({
   const hidden = allItems.length - items.length;
   const canPage = features.includes("history");
   const busy = state?.status === "working" || state?.status === "waiting" || state?.status === "starting";
+  // /compact is a prompt like any other; offered only when one could be sent.
+  const canCompact =
+    !archived && !busy && agent.attached && agent.synced && !state?.pending.length && commands.some((c) => c.name === "compact");
+  const compact = () => agent.send({ t: "send", text: "/compact" });
+  const prefs = usePrefs();
+  useAutoRecap({
+    threadId,
+    enabled: prefs.autoRecap,
+    ready: !archived && agent.attached && agent.synced,
+    state,
+    events: agent.events,
+    commands,
+    send: () => agent.send({ t: "send", text: RECAP_PROMPT }),
+  });
 
   // Rolling back puts the prompt back in the composer once the device has done it.
   const [rewindTo, setRewindTo] = useState<UserEvent | null>(null);
@@ -198,6 +215,8 @@ export function AgentView({
             streaming={state?.streaming ?? []}
             cwd={workdir}
             working={state?.status === "working"}
+            compacting={state?.compacting}
+            onCompact={canCompact ? compact : undefined}
             onRewind={features.includes("rewind") && !archived && !busy ? onRewind : undefined}
           />
         </div>
@@ -230,6 +249,7 @@ export function AgentView({
             {state?.pending.map((r) => (
               <PendingRequest key={r.id} request={r} cwd={workdir} respond={agent.send} />
             ))}
+            <ResumeBanner threadId={threadId} context={state?.context} canCompact={canCompact} onCompact={compact} />
             <StatusBar agent={agent} />
             <Composer
               agent={agent}
@@ -238,6 +258,7 @@ export function AgentView({
               threadId={threadId}
               models={models}
               commands={commands}
+              onCompact={canCompact ? compact : undefined}
               limits={limits}
               git={git.data}
               canAttach={features.includes("attachments")}
@@ -365,6 +386,7 @@ function Composer({
   threadId,
   models,
   commands,
+  onCompact,
   limits,
   git,
   canAttach,
@@ -375,6 +397,7 @@ function Composer({
   threadId: string;
   models: AgentModel[];
   commands: AgentCommand[];
+  onCompact?: () => void;
   limits: AgentLimit[] | undefined;
   git: Parameters<typeof WorkspacePicker>[0]["git"];
   canAttach: boolean;
@@ -599,7 +622,7 @@ function Composer({
           )}
           <StatusText state={state} />
           <UsageMeter limits={limits} />
-          <ContextMeter context={state?.context} />
+          <ContextMeter context={state?.context} onCompact={onCompact} />
         </span>
         </div>
         {busy ? (
@@ -631,8 +654,9 @@ function Composer({
 }
 
 function StatusText({ state }: { state: AgentState | null }) {
-  const label =
-    state?.status === "starting"
+  const label = state?.compacting
+    ? "Compacting…"
+    : state?.status === "starting"
       ? "Starting Claude…"
       : state?.status === "waiting"
         ? "Waiting for you"

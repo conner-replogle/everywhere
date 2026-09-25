@@ -460,6 +460,8 @@ type AgentState struct {
 	Suggestion string `json:"suggestion,omitempty"`
 	// Limits are the plan's usage windows, when known.
 	Limits []AgentLimit `json:"limits,omitempty"`
+	// Compacting: claude is summarizing the conversation to free context.
+	Compacting bool `json:"compacting,omitempty"`
 }
 
 type AgentCommand struct {
@@ -489,6 +491,9 @@ type AgentContext struct {
 	Used       int     `json:"used"` // tokens in the context window
 	Max        int     `json:"max"`  // usable window size
 	Percentage float64 `json:"percentage"`
+	// UpdatedAt is when it was measured (Unix ms): the last time the
+	// conversation was used, for noticing it's gone stale.
+	UpdatedAt int64 `json:"updatedAt,omitempty"`
 }
 
 // AgentAttachment is a file uploaded for a prompt.
@@ -593,7 +598,8 @@ type AgentAccount struct {
 //     resolved prompt; decision is allow | allowSession | deny | canceled
 //   - turn {status, text?, costUsd?, durationMs?}: status is started |
 //     completed | interrupted | error
-//   - notice {text}: e.g. compaction, claude exiting
+//   - notice {text, kind?}: e.g. compaction (kind "compact"), claude exiting
+//   - turn errors carry kind "contextFull" when the context window overflowed
 //   - commandOutput {text}: what a local slash command printed
 //
 // ParentID is set on events from a subagent: the id of the tool call that

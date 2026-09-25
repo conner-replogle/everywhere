@@ -11,7 +11,17 @@ import type {
   EffortLevel,
   GitInfo,
 } from "@everywhere/protocol";
-import { BrainIcon, CheckIcon, ChevronDownIcon, FileIcon, GitBranchIcon, ImageIcon, LoaderIcon, XIcon } from "lucide-react";
+import {
+  BrainIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  FileIcon,
+  GitBranchIcon,
+  ImageIcon,
+  LoaderIcon,
+  Minimize2Icon,
+  XIcon,
+} from "lucide-react";
 import { useCallback, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -94,24 +104,22 @@ export function WorkspacePicker({
 
 // --- context -----------------------------------------------------------------------
 
-function formatTokens(n: number): string {
+export function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}M`;
   if (n >= 1000) return `${(n / 1000).toFixed(n >= 100_000 ? 0 : 1)}k`;
   return String(n);
 }
 
 /** A ring showing how full the context window is. */
-export function ContextMeter({ context }: { context: AgentContext | undefined }) {
+export function ContextMeter({ context, onCompact }: { context: AgentContext | undefined; onCompact?: () => void }) {
   if (!context || context.max <= 0) return null;
   const pct = Math.min(100, Math.max(0, context.percentage));
   const r = 6;
   const circumference = 2 * Math.PI * r;
   const tone = pct >= 90 ? "text-destructive" : pct >= 75 ? "text-warn" : "text-muted-foreground";
-  const label = `${formatTokens(context.used)} of ${formatTokens(context.max)} tokens of context used (${Math.round(pct)}%). ${
-    pct >= 75 ? "Claude compacts the conversation when it fills up." : ""
-  }`;
-  return (
-    <span className={cn("flex h-6 shrink-0 items-center gap-1 px-1.5 text-xs tabular-nums", tone)} title={label}>
+  const label = `${formatTokens(context.used)} of ${formatTokens(context.max)} tokens of context used (${Math.round(pct)}%).`;
+  const ring = (
+    <>
       <svg viewBox="0 0 16 16" className="size-3.5 -rotate-90" aria-hidden>
         <circle cx="8" cy="8" r={r} fill="none" stroke="currentColor" strokeOpacity="0.25" strokeWidth="2" />
         <circle
@@ -128,7 +136,35 @@ export function ContextMeter({ context }: { context: AgentContext | undefined })
       </svg>
       <span className="max-sm:hidden">{Math.round(pct)}%</span>
       <span className="sr-only">{label}</span>
-    </span>
+    </>
+  );
+  const box = cn("flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-xs tabular-nums", tone);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button type="button" className={cn(box, "hover:bg-accent/60 data-[state=open]:bg-accent")} title={label}>
+          {ring}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-64">
+        <div className="grid gap-1.5 px-2 py-1.5 text-xs">
+          <span className="font-medium text-foreground">Context window</span>
+          <span className="text-muted-foreground tabular-nums">
+            {Math.round(pct)}% · {formatTokens(context.used)} of {formatTokens(context.max)} tokens
+          </span>
+          <span className="h-1 overflow-hidden rounded-full bg-muted">
+            <span className={cn("block h-full rounded-full bg-current", tone)} style={{ width: `${pct}%` }} />
+          </span>
+          <span className="text-muted-foreground">Claude compacts the conversation on its own when it fills up.</span>
+        </div>
+        {onCompact && (
+          <DropdownMenuItem onSelect={onCompact}>
+            <Minimize2Icon />
+            Compact now
+          </DropdownMenuItem>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

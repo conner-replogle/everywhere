@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { CheckIcon } from "lucide-react";
 import { useState } from "react";
 import { Section } from "@/components/settings-section";
+import { Button } from "@/components/ui/button";
 import { PERMISSION_MODES } from "@/lib/permission-modes";
 import { setPref, usePrefs } from "@/lib/prefs";
 import { cn, errorMessage } from "@/lib/utils";
@@ -51,6 +52,28 @@ function ClaudeSettings() {
           })}
         </div>
         {error && <p className="mt-2 text-destructive">{error}</p>}
+      </Section>
+      <Section
+        title="Automatic recaps"
+        description="Coming back to a thread that's been idle 5+ minutes asks Claude for a one-line recap of where it stands, like Claude Code does in the terminal. Each recap is a short turn and costs a little."
+        aside={
+          <Button
+            size="sm"
+            variant={prefs.autoRecap ? "outline" : "default"}
+            onClick={() => {
+              setError(null);
+              setPref("autoRecap", !prefs.autoRecap).catch((e: unknown) => setError(errorMessage(e)));
+            }}
+          >
+            {prefs.autoRecap ? "Turn off" : "Turn on"}
+          </Button>
+        }
+      >
+        <p className="text-muted-foreground">
+          {prefs.autoRecap
+            ? "On. Type /recap in a thread to ask for one any time."
+            : "Off. Type /recap in a thread to ask for one."}
+        </p>
       </Section>
     </div>
   );

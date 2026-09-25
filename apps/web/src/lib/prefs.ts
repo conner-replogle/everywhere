@@ -8,9 +8,11 @@ import { api } from "@/lib/api";
 export interface Prefs {
   /** The permission mode new claude threads start in. */
   defaultPermissionMode: PermissionMode;
+  /** Ask claude for a recap when returning to a thread left idle a while. */
+  autoRecap: boolean;
 }
 
-const DEFAULTS: Prefs = { defaultPermissionMode: "auto" };
+const DEFAULTS: Prefs = { defaultPermissionMode: "auto", autoRecap: true };
 
 let prefs: Prefs = DEFAULTS;
 let loaded: Promise<void> | null = null;

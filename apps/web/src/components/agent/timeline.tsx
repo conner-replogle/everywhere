@@ -4,12 +4,15 @@ import {
   CheckIcon,
   ChevronRightIcon,
   CircleAlertIcon,
+  HistoryIcon,
   LoaderCircleIcon,
+  Minimize2Icon,
   RotateCcwIcon,
   XIcon,
 } from "lucide-react";
 import { memo, useState } from "react";
 import type { LoggedEvent } from "@/lib/agent";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { SentAttachments } from "./composer-parts";
 import { Markdown } from "./markdown";
@@ -29,6 +32,8 @@ interface ToolItem {
 
 type Item =
   | ToolItem
+  /** A /recap prompt and its answer, drawn as one card. */
+  | { kind: "recap"; key: number; at: number; text: string }
   | {
       kind: "event";
       key: number;
@@ -44,8 +49,25 @@ type Item =
 export function buildItems(events: LoggedEvent[]): Item[] {
   const root: Item[] = [];
   const tools = new Map<string, ToolItem>();
+  // Inside a /recap turn: its prompt and bookkeeping aren't shown, its answer is the card.
+  let recap: { kind: "recap"; key: number; at: number; text: string } | null = null;
   for (const { seq, at, event: e } of events) {
     const into = (e.parentId && tools.get(e.parentId)?.children) || root;
+    if (e.type === "user" && !e.parentId && isRecapPrompt(e.text)) {
+      recap = { kind: "recap", key: seq, at, text: "" };
+      continue;
+    }
+    if (recap && !e.parentId) {
+      if (e.type === "assistant" || e.type === "commandOutput") {
+        if (!recap.text) root.push(recap);
+        recap.text = recap.text ? `${recap.text}\n\n${e.text}` : e.text;
+        continue;
+      }
+      if (e.type === "turn" && e.status !== "started") {
+        recap = null;
+        if (e.status === "completed") continue;
+      }
+    }
     switch (e.type) {
       case "tool": {
         const item: ToolItem = { kind: "tool", key: seq, tool: e, children: [] };
@@ -78,24 +100,36 @@ export function buildItems(events: LoggedEvent[]): Item[] {
 
 export type UserEvent = Ev<"user">;
 
+/** The prompt an automatic (or typed) recap sends. */
+export const RECAP_PROMPT = "/recap";
+
+function isRecapPrompt(text: string): boolean {
+  return text.trim() === RECAP_PROMPT;
+}
+
 export const Timeline = memo(function Timeline({
   items,
   streaming,
   cwd,
   working,
+  compacting,
   onRewind,
+  onCompact,
 }: {
   items: Item[];
   streaming: AgentStreaming[];
   cwd?: string;
   working: boolean;
+  compacting?: boolean;
+  /** Sends /compact; offered when a turn fails because the context is full. */
+  onCompact?: () => void;
   /** Offers rolling back to before a prompt; absent when the device can't. */
   onRewind?: (prompt: UserEvent) => void;
 }) {
   return (
     <div className="flex flex-col gap-3">
       {items.map((item) => (
-        <ItemView key={item.key} item={item} cwd={cwd} onRewind={working ? undefined : onRewind} />
+        <ItemView key={item.key} item={item} cwd={cwd} onRewind={working ? undefined : onRewind} onCompact={onCompact} />
       ))}
       {streaming.map((s) =>
         s.kind === "thinking" ? (
@@ -109,7 +143,7 @@ export const Timeline = memo(function Timeline({
       {working && streaming.length === 0 && (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <LoaderCircleIcon className="size-3.5 animate-spin" />
-          Working…
+          {compacting ? "Compacting the conversation…" : "Working…"}
         </div>
       )}
     </div>
@@ -120,12 +154,15 @@ function ItemView({
   item,
   cwd,
   onRewind,
+  onCompact,
 }: {
   item: Item;
   cwd?: string;
   onRewind?: (prompt: UserEvent) => void;
+  onCompact?: () => void;
 }) {
   if (item.kind === "tool") return <ToolRow item={item} cwd={cwd} />;
+  if (item.kind === "recap") return <RecapCard text={item.text} />;
   const e = item.event;
   switch (e.type) {
     case "user":
@@ -163,14 +200,37 @@ function ItemView({
     case "thinking":
       return <Thinking text={e.text} />;
     case "notice":
+      if (e.kind === "compact") {
+        return (
+          <div role="separator" className="flex items-center gap-3 text-xs text-muted-foreground">
+            <span className="h-px flex-1 bg-border" />
+            <Minimize2Icon className="size-3.5 shrink-0" />
+            <span>{e.text}</span>
+            <span className="h-px flex-1 bg-border" />
+          </div>
+        );
+      }
       return <div className="text-center text-xs text-muted-foreground">— {e.text} —</div>;
     case "commandOutput":
       return <Output text={e.text} />;
     case "request":
       return <RequestLine event={e} />;
     case "turn":
-      return <TurnEnd event={e} />;
+      return <TurnEnd event={e} onCompact={onCompact} />;
   }
+}
+
+/** Claude's summary of where the thread stands, from /recap. */
+function RecapCard({ text }: { text: string }) {
+  return (
+    <div className="flex items-start gap-2 rounded-md border border-dashed px-3 py-2 text-[13px] text-muted-foreground">
+      <HistoryIcon className="mt-0.5 size-3.5 shrink-0" />
+      <div className="min-w-0">
+        <span className="mr-1.5 text-xs font-medium tracking-wide text-foreground/80 uppercase">Recap</span>
+        {text}
+      </div>
+    </div>
+  );
 }
 
 function Thinking({ text, live }: { text: string; live?: boolean }) {
@@ -321,12 +381,18 @@ function RequestLine({ event: e }: { event: Ev<"request"> }) {
   );
 }
 
-function TurnEnd({ event: e }: { event: Ev<"turn"> }) {
+function TurnEnd({ event: e, onCompact }: { event: Ev<"turn">; onCompact?: () => void }) {
   if (e.status === "error") {
     return (
-      <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive">
+      <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive max-sm:flex-wrap">
         <CircleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
-        <span className="whitespace-pre-wrap">{e.text || "The turn failed."}</span>
+        <span className="min-w-0 flex-1 whitespace-pre-wrap">{e.text || "The turn failed."}</span>
+        {e.kind === "contextFull" && onCompact && (
+          <Button size="sm" variant="secondary" className="-my-1 shrink-0" onClick={onCompact}>
+            <Minimize2Icon />
+            Compact conversation
+          </Button>
+        )}
       </div>
     );
   }

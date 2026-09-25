@@ -619,6 +619,8 @@ export interface AgentState {
   suggestion?: string;
   /** The plan's usage windows, when known. */
   limits?: AgentLimit[];
+  /** Claude is summarizing the conversation to free context. */
+  compacting?: boolean;
 }
 
 export interface AgentCommand {
@@ -651,6 +653,8 @@ export interface AgentContext {
   used: number;
   max: number;
   percentage: number;
+  /** When it was measured (Unix ms): the conversation's last use. */
+  updatedAt?: number;
 }
 
 export interface AgentAttachment {
@@ -776,10 +780,13 @@ export type AgentEvent = AgentEventBase &
         type: "turn";
         status: "started" | "completed" | "interrupted" | "error";
         text?: string;
+        /** contextFull: an error because the conversation outgrew the context window. */
+        kind?: "contextFull";
         costUsd?: number;
         durationMs?: number;
       }
-    | { type: "notice"; text: string }
+    /** kind compact: the conversation was compacted. */
+    | { type: "notice"; text: string; kind?: "compact" }
     /**
      * The conversation was rolled back to before prompt `id` (whose text is
      * `text`): events from fromSeq up to this one were removed.

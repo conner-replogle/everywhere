@@ -532,7 +532,9 @@ func (s *session) setContext(used, max int) {
 	if max <= 0 {
 		return
 	}
-	s.state.Context = &protocol.AgentContext{Used: used, Max: max, Percentage: float64(used) * 100 / float64(max)}
+	s.state.Context = &protocol.AgentContext{
+		Used: used, Max: max, Percentage: float64(used) * 100 / float64(max), UpdatedAt: time.Now().UnixMilli(),
+	}
 }
 
 func (s *session) interrupt() {
@@ -909,9 +911,30 @@ func (s *session) onSystem(msg claude.Message) {
 			}
 			s.state.SessionID = msg.SessionID
 		}
+	case "status":
+		var f struct {
+			Status *string `json:"status"`
+		}
+		if msg.Decode(&f) == nil {
+			s.state.Compacting = f.Status != nil && *f.Status == "compacting"
+			s.changed()
+		}
 	case "compact_boundary":
-		s.emit(protocol.AgentEvent{Type: "notice", Text: "Conversation compacted"})
+		var f struct {
+			Meta struct {
+				Trigger    string `json:"trigger"`
+				PreTokens  int    `json:"pre_tokens"`
+				PostTokens int    `json:"post_tokens"`
+			} `json:"compact_metadata"`
+		}
+		_ = msg.Decode(&f)
+		s.state.Compacting = false
+		s.emit(protocol.AgentEvent{Type: "notice", Kind: "compact", Text: compactNotice(f.Meta.Trigger, f.Meta.PreTokens, f.Meta.PostTokens)})
+		if f.Meta.PostTokens > 0 && s.state.Context != nil {
+			s.setContext(f.Meta.PostTokens, s.state.Context.Max)
+		}
 		s.refreshContext()
+		s.changed()
 	case "commands_changed":
 		var f struct {
 			Commands []claude.SlashCommand `json:"commands"`
@@ -1079,7 +1102,8 @@ func (s *session) onUser(msg claude.Message) {
 func (s *session) onResult(msg claude.Message) {
 	var r claude.Result
 	var e struct {
-		Errors []string `json:"errors"`
+		Errors         []string `json:"errors"`
+		TerminalReason string   `json:"terminal_reason"`
 	}
 	if msg.Decode(&r) != nil || msg.Decode(&e) != nil {
 		return
@@ -1094,7 +1118,16 @@ func (s *session) onResult(msg claude.Message) {
 		if len(e.Errors) > 0 {
 			ev.Text = strings.Join(e.Errors, "\n")
 		}
+		if contextFull(e.TerminalReason, ev.Text) {
+			ev.Kind = "contextFull"
+			if e.TerminalReason == "rapid_refill_breaker" {
+				ev.Text = "The context filled up again right after compacting. Compact again, or start a new thread."
+			} else {
+				ev.Text = "The conversation no longer fits in the model's context window. Compact it to continue."
+			}
+		}
 	}
+	s.state.Compacting = false
 	s.endTurn(ev)
 	s.maybeRefineTitle(ev.Status == "completed")
 	s.refreshContext()
@@ -1411,4 +1444,36 @@ func newUUID() string {
 	b[6] = b[6]&0x0f | 0x40
 	b[8] = b[8]&0x3f | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+// compactNotice describes a compaction: how it started and what it freed.
+func compactNotice(trigger string, pre, post int) string {
+	text := "Conversation compacted"
+	if trigger == "auto" {
+		text = "Conversation compacted automatically"
+	}
+	if pre > 0 && post > 0 {
+		text += fmt.Sprintf(" · %s → %s tokens", shortTokens(pre), shortTokens(post))
+	}
+	return text
+}
+
+func shortTokens(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1000:
+		return fmt.Sprintf("%dk", (n+500)/1000)
+	}
+	return fmt.Sprint(n)
+}
+
+// contextFull reports whether a turn failed because the conversation
+// outgrew the context window.
+func contextFull(reason, text string) bool {
+	if reason == "prompt_too_long" || reason == "rapid_refill_breaker" {
+		return true
+	}
+	t := strings.ToLower(text)
+	return strings.Contains(t, "prompt is too long") || strings.Contains(t, "context window") && strings.Contains(t, "exceed")
 }
