@@ -82,6 +82,12 @@
   #root {
     height: var(--app-height, 100dvh);
   }
+  /* Clear of the notch, the status bar (it overlays the page in the installed
+     app) and the home indicator, which the keyboard covers when it's up. */
+  #root {
+    padding: env(safe-area-inset-top) env(safe-area-inset-right)
+      var(--safe-bottom, env(safe-area-inset-bottom)) env(safe-area-inset-left);
+  }
   body {
     @apply bg-background text-foreground font-sans antialiased;
     font-size: 13px;

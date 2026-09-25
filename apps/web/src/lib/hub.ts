@@ -27,6 +27,10 @@ export interface SignalSink {
 }
 
 const PING_INTERVAL_MS = 25_000;
+/** A ping unanswered this long means the socket is dead (it can look open for minutes after a network change). */
+const PONG_TIMEOUT_MS = 10_000;
+/** After the app comes back to the foreground, a quicker check. */
+const PROBE_TIMEOUT_MS = 4_000;
 const BACKOFF_MIN_MS = 500;
 const BACKOFF_MAX_MS = 15_000;
 /** The hub closes a browser socket with this when its session is signed out or expires. */
@@ -37,6 +41,7 @@ class Hub {
   private running = false;
   private attempt = 0;
   private pingTimer: ReturnType<typeof setInterval> | undefined;
+  private pongTimer: ReturnType<typeof setTimeout> | undefined;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private sinks = new Map<string, SignalSink>();
   private listeners = new Set<() => void>();
@@ -86,6 +91,8 @@ class Hub {
     this.running = false;
     clearTimeout(this.retryTimer);
     clearInterval(this.pingTimer);
+    clearTimeout(this.pongTimer);
+    this.pongTimer = undefined;
     const ws = this.ws;
     this.ws = null;
     ws?.close(1000, "bye");
@@ -131,9 +138,7 @@ class Hub {
       opened = true;
       this.attempt = 0;
       clearInterval(this.pingTimer);
-      this.pingTimer = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(HUB_PING);
-      }, PING_INTERVAL_MS);
+      this.pingTimer = setInterval(() => this.ping(PONG_TIMEOUT_MS), PING_INTERVAL_MS);
       // Presence stays "unknown" until the hub's snapshot arrives.
       this.update({ ...this.snap, status: "open", presenceKnown: false });
       this.sentViewing = ""; // a new connection starts out viewing nothing
@@ -141,7 +146,12 @@ class Hub {
     };
 
     ws.onmessage = (ev) => {
-      if (this.ws !== ws || typeof ev.data !== "string" || ev.data === HUB_PONG) return;
+      if (this.ws !== ws || typeof ev.data !== "string") return;
+      if (ev.data === HUB_PONG) {
+        clearTimeout(this.pongTimer);
+        this.pongTimer = undefined;
+        return;
+      }
       let msg: HubToClient;
       try {
         msg = JSON.parse(ev.data) as HubToClient;
@@ -155,6 +165,8 @@ class Hub {
       if (this.ws !== ws) return;
       this.ws = null;
       clearInterval(this.pingTimer);
+      clearTimeout(this.pongTimer);
+      this.pongTimer = undefined;
       // Any in-flight negotiation was addressed to the old connection id.
       this.sinks.clear();
       this.update({ ...this.snap, status: "closed", presenceKnown: false });
@@ -171,6 +183,45 @@ class Hub {
       if (!opened) void this.checkSession();
       this.scheduleReconnect();
     };
+  }
+
+  /**
+   * Makes sure the socket is alive now, e.g. after the app was in the
+   * background (iOS drops sockets without telling the page). A dead one is
+   * replaced right away rather than after the backoff.
+   */
+  checkAlive(): void {
+    if (!this.running) return;
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ping(PROBE_TIMEOUT_MS);
+      return;
+    }
+    if (this.ws?.readyState === WebSocket.CONNECTING) return;
+    clearTimeout(this.retryTimer);
+    this.attempt = 0;
+    this.connect();
+  }
+
+  /** Pings, and gives up on the socket if no pong arrives within timeoutMs. */
+  private ping(timeoutMs: number): void {
+    const ws = this.ws;
+    if (ws?.readyState !== WebSocket.OPEN) return;
+    ws.send(HUB_PING);
+    if (this.pongTimer) return; // already waiting on one
+    this.pongTimer = setTimeout(() => {
+      this.pongTimer = undefined;
+      if (this.ws !== ws) return;
+      console.warn("hub socket stopped answering; reconnecting");
+      // Detach first: a dead socket's close event can take minutes.
+      this.ws = null;
+      ws.onopen = ws.onmessage = ws.onclose = null;
+      ws.close();
+      clearInterval(this.pingTimer);
+      this.sinks.clear();
+      this.update({ ...this.snap, status: "closed", presenceKnown: false });
+      this.attempt = 0;
+      this.connect();
+    }, timeoutMs);
   }
 
   private scheduleReconnect(): void {

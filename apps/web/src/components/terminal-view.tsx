@@ -3,6 +3,7 @@ import { WebglAddon } from "@xterm/addon-webgl";
 import { type ITheme, Terminal } from "@xterm/xterm";
 import { EyeIcon, RotateCcwIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { applyModifiers, type Modifiers, TerminalKeys, useCoarsePointer } from "@/components/terminal-keys";
 import { Button } from "@/components/ui/button";
 import type { DevicePeer, TerminalChannel } from "@/lib/peer";
 import { errorMessage } from "@/lib/utils";
@@ -32,6 +33,8 @@ const THEME: ITheme = {
   brightCyan: "#8fe6ea",
   brightWhite: "#f2f4f8",
 };
+
+const NO_MODS: Modifiers = { ctrl: false, alt: false };
 
 export type WriterState = "pending" | "writer" | "viewer" | "exited";
 
@@ -64,6 +67,23 @@ export function TerminalView({
   const [attachKey, setAttachKey] = useState(0);
 
   const reattach = useCallback(() => setAttachKey((k) => k + 1), []);
+
+  // Sticky Ctrl/Alt from the key row; they apply to the next key, from the row or the keyboard.
+  const touch = useCoarsePointer();
+  const [mods, setMods] = useState<Modifiers>(NO_MODS);
+  const modsRef = useRef<Modifiers>(NO_MODS);
+  const setModifiers = useCallback((m: Modifiers) => {
+    modsRef.current = m;
+    setMods(m);
+  }, []);
+  const sendKeys = useCallback(
+    (data: string) => {
+      setModifiers(NO_MODS);
+      if (exitedRef.current) reattach();
+      else if (writerRef.current) chanRef.current?.sendInput(data);
+    },
+    [reattach, setModifiers],
+  );
 
   const onWriterChangeRef = useRef(onWriterChange);
   onWriterChangeRef.current = onWriterChange;
@@ -114,11 +134,8 @@ export function TerminalView({
       fit.fit();
 
       const onData = term.onData((data) => {
-        if (exitedRef.current) {
-          reattach();
-          return;
-        }
-        if (writerRef.current) chanRef.current?.sendInput(data);
+        const m = modsRef.current;
+        sendKeys(m.ctrl || m.alt ? applyModifiers(data, m) : data);
       });
       const onResize = term.onResize(({ cols, rows }) => {
         if (writerRef.current) chanRef.current?.sendControl({ t: "resize", cols, rows });
@@ -158,7 +175,7 @@ export function TerminalView({
       setReady(false);
       cleanup();
     };
-  }, [reattach]);
+  }, [sendKeys]);
 
   // Terminal channel: one per (thread, connection, attach).
   useEffect(() => {
@@ -262,6 +279,14 @@ export function TerminalView({
           </button>
         )}
       </div>
+      {touch && writer === "writer" && !exited && !closed && (
+        <TerminalKeys
+          mods={mods}
+          onToggle={(mod) => setModifiers({ ...modsRef.current, [mod]: !modsRef.current[mod] })}
+          onKeys={sendKeys}
+          applicationCursor={() => !!termRef.current?.modes.applicationCursorKeysMode}
+        />
+      )}
     </div>
   );
 }

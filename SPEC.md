@@ -354,6 +354,14 @@ interrupt the user asked for).
 /settings/security              password, 2FA, sessions, connected apps (MCP URL, revoke grants)
 ```
 
+On phones (coarse pointer) a terminal gets a key row: Esc, Tab, sticky Ctrl
+and Alt (applied to the next key from the row or the keyboard), arrows and a
+few symbols. When the page returns from the background (10 s or more) or the
+network comes back, the hub socket is pinged and each device connection
+probed with `device.info`; dead ones are replaced at once instead of waiting
+out timeouts and backoff. The hub socket also counts an unanswered ping
+(10 s) as dead.
+
 A PeerConnection to a device is opened lazily the first time it's viewed and
 reused for every thread on that device in that tab.
 

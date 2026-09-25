@@ -4,6 +4,7 @@ import { FleetProvider } from "@/components/fleet";
 import { auth } from "@/lib/auth";
 import { hub } from "@/lib/hub";
 import { syncPushSubscription } from "@/lib/pwa";
+import { watchResume } from "@/lib/resume";
 
 export const Route = createFileRoute("/_app")({
   beforeLoad: async ({ location }) => {
@@ -27,8 +28,10 @@ function AppLayout() {
     };
     hub.start();
     syncPushSubscription().catch((err) => console.warn("push subscription:", err));
+    const stopWatching = watchResume();
     return () => {
       hub.onUnauthorized = null;
+      stopWatching();
     };
   }, [navigate]);
 

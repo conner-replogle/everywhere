@@ -83,6 +83,8 @@ const STUN_ONLY: RTCIceServer[] = [{ urls: "stun:stun.cloudflare.com:3478" }];
 const CONNECT_TIMEOUT_MS = 20_000;
 const DISCONNECT_GRACE_MS = 5_000;
 const RPC_TIMEOUT_MS = 15_000;
+/** How long a liveness probe after coming back to the foreground may take. */
+const PROBE_TIMEOUT_MS = 4_000;
 const UPLOAD_CHUNK = 16 * 1024;
 export const UNREACHABLE_MESSAGE = "Couldn't reach device — direct and relayed connections both failed.";
 /** The offer went out through the hub but the daemon never answered it. */
@@ -211,6 +213,40 @@ export class DevicePeer {
     this.teardown();
     this.set({ state: "idle", error: null });
     this.ensure();
+  }
+
+  /**
+   * Makes sure the connection still works, e.g. after the app was in the
+   * background: mobile browsers freeze the page and the network can change
+   * underneath it. A dead or failed connection is redone right away.
+   */
+  checkAlive(): void {
+    if (this.viewers === 0) return;
+    const { state } = this.snap;
+    if (state === "failed") {
+      this.retry();
+      return;
+    }
+    if (state === "connecting" && !this.pc) {
+      // Waiting out a reconnect backoff: go now.
+      clearTimeout(this.reconnectTimer);
+      this.reconnectAttempt = 0;
+      this.kick();
+      return;
+    }
+    if (state !== "connected") return;
+    const pc = this.pc;
+    const reconnect = (why: string) => {
+      if (this.pc !== pc) return;
+      this.record("info", `${why}; reconnecting`);
+      this.reconnectAttempt = 0;
+      this.onDrop();
+    };
+    if (pc?.connectionState !== "connected") {
+      reconnect(`connection ${pc?.connectionState ?? "gone"} after resume`);
+      return;
+    }
+    this.call("device.info", {}, PROBE_TIMEOUT_MS).catch(() => reconnect("device stopped answering after resume"));
   }
 
   /** Permanently close (logout). */
@@ -815,6 +851,11 @@ export function getPeer(deviceId: string): DevicePeer {
     peers.set(deviceId, p);
   }
   return p;
+}
+
+/** Checks every open device connection (see DevicePeer.checkAlive). */
+export function checkPeersAlive(): void {
+  for (const p of peers.values()) p.checkAlive();
 }
 
 export function disposeAllPeers(): void {
