@@ -71,11 +71,21 @@ func (c *Client) Run(ctx context.Context) error {
 
 // Send relays a signal to a browser connection. Safe for concurrent use.
 func (c *Client) Send(to, sid string, data protocol.SignalData) {
+	c.write(protocol.SignalOut{T: "signal", To: to, SID: sid, Data: data})
+}
+
+// Notify asks the hub to push a notification to the account's browsers.
+// It's dropped while disconnected. Safe for concurrent use.
+func (c *Client) Notify(n protocol.HubNotify) {
+	c.write(n)
+}
+
+func (c *Client) write(msg any) {
 	conn := c.conn.Load()
 	if conn == nil {
 		return
 	}
-	b, _ := json.Marshal(protocol.SignalOut{T: "signal", To: to, SID: sid, Data: data})
+	b, _ := json.Marshal(msg)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := conn.Write(ctx, websocket.MessageText, b); err != nil {

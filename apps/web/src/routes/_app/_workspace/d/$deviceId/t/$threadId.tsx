@@ -24,6 +24,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { sendToComposer } from "@/lib/composer-inbox";
+import { hub } from "@/lib/hub";
 import { useRpc } from "@/lib/peer";
 import { cn, errorMessage } from "@/lib/utils";
 
@@ -56,7 +57,7 @@ export const Route = createFileRoute("/_app/_workspace/d/$deviceId/t/$threadId")
 });
 
 function ThreadPage() {
-  const { threadId } = Route.useParams();
+  const { deviceId, threadId } = Route.useParams();
   const { tab: tabParam } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
   const { peer, conn, threads, projects, info } = useDevice();
@@ -88,6 +89,11 @@ function ThreadPage() {
   const activeId = active?.id;
   // Before the effect below, so a new thread starts empty and then opens.
   useEffect(() => setOpened(new Set()), [threadId]);
+  // No push notifications about the thread on screen.
+  useEffect(() => {
+    hub.setThread({ deviceId, threadId });
+    return () => hub.setThread(null);
+  }, [deviceId, threadId]);
   useEffect(() => {
     if (activeId) setOpened((s) => (s.has(activeId) ? s : new Set(s).add(activeId)));
   }, [activeId]);

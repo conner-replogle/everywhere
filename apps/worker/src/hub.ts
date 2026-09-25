@@ -3,19 +3,23 @@ import type {
   ClientToHub,
   DaemonToHub,
   HubErrorCode,
+  HubNotify,
   HubFeature,
   HubToClient,
   HubToDaemon,
   RemoteMethod,
   RemoteMethods,
+  SignalData,
 } from "@everywhere/protocol";
 import { HUB_PING, HUB_PONG } from "@everywhere/protocol";
-import { randomId } from "./crypto";
+import { randomId, sha256 } from "./crypto";
 import { versionAtLeast } from "./version";
+import { deliver, type PushOptions } from "./webpush";
 
 type Attachment =
   | { kind: "device"; id: string; since?: number; features?: HubFeature[] }
-  | { kind: "client"; id: string; session: string };
+  /** viewing: "<deviceId>/<threadId>" while the tab shows that thread, visible and focused. */
+  | { kind: "client"; id: string; session: string; viewing?: string };
 
 /** How a relayed rpc request ended. */
 export type DeviceRpcResult<T = unknown> =
@@ -34,6 +38,10 @@ interface PendingRpc {
 const DEVICE_SILENT_MS = 60_000;
 const SWEEP_INTERVAL_MS = 30_000;
 
+// Several permission prompts can arrive at once (parallel tool calls); one
+// notification per thread and kind in this window is enough.
+const NOTIFY_THROTTLE_MS = 5_000;
+
 export const HUB_KIND_HEADER = "x-ew-kind";
 export const HUB_ID_HEADER = "x-ew-id";
 export const HUB_SESSION_HEADER = "x-ew-session";
@@ -42,11 +50,14 @@ export const HUB_SESSION_HEADER = "x-ew-session";
  * One per account. Holds a hibernatable WebSocket for every connected daemon
  * and browser tab, relays WebRTC signaling between them, and broadcasts device
  * presence. It never sees browsers' terminal data; the only project and thread
- * data through it is rpc for agents using the MCP endpoint.
+ * data through it is rpc for agents using the MCP endpoint, and thread names
+ * in push notifications.
  */
 export class AccountHub extends DurableObject<Env> {
   /** rpc requests waiting on a daemon. In memory: the caller's request keeps the DO awake. */
   private pending = new Map<string, PendingRpc>();
+  /** When each thread last caused a notification of each kind. In memory: losing it only risks a repeat. */
+  private lastNotified = new Map<string, number>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -91,6 +102,14 @@ export class AccountHub extends DurableObject<Env> {
 
     if (me.kind === "client") {
       const m = msg as ClientToHub;
+      if (m?.t === "viewing") {
+        const viewing =
+          typeof m.deviceId === "string" && typeof m.threadId === "string" && m.deviceId.length + m.threadId.length < 256
+            ? `${m.deviceId}/${m.threadId}`
+            : undefined;
+        ws.serializeAttachment({ ...me, viewing } satisfies Attachment);
+        return;
+      }
       if (!isSignal(m)) return this.fail(ws, "bad_message", "unknown message");
       // Re-check the session before each new connection, so sessions removed
       // out of band (expiry, reset-password script) can't open new peers.
@@ -132,6 +151,10 @@ export class AccountHub extends DurableObject<Env> {
           ? { ok: false, code: "error", message: String(m.error.message ?? "failed") }
           : { ok: true, result: m.result },
       );
+      return;
+    }
+    if (m.t === "notify") {
+      if (isNotify(m)) this.ctx.waitUntil(this.notify(me.id, m));
       return;
     }
     if (isSignal(m)) {
@@ -233,6 +256,54 @@ export class AccountHub extends DurableObject<Env> {
     }
   }
 
+  /**
+   * Pushes a notification about a claude thread to every browser that turned
+   * them on, unless someone is looking at that thread right now.
+   */
+  private async notify(deviceId: string, n: HubNotify): Promise<void> {
+    const thread = n.parentId || n.threadId;
+    const viewing = `${deviceId}/${thread}`;
+    for (const ws of this.ctx.getWebSockets()) {
+      const a = ws.deserializeAttachment() as Attachment | null;
+      if (a?.kind === "client" && a.viewing === viewing) return;
+    }
+    const key = `${deviceId}/${n.threadId}/${n.kind}`;
+    const now = Date.now();
+    if (now - (this.lastNotified.get(key) ?? 0) < NOTIFY_THROTTLE_MS) return;
+    this.lastNotified.set(key, now);
+    for (const [k, at] of this.lastNotified) if (now - at > NOTIFY_THROTTLE_MS) this.lastNotified.delete(k);
+
+    const { results } = await this.env.DB.prepare(
+      `SELECT p.endpoint, p.p256dh, p.auth, d.name AS device
+       FROM devices d
+       JOIN push_subscriptions p ON p.user_id = d.account_id
+       JOIN sessions s ON s.id_hash = p.session_id
+       WHERE d.id = ? AND d.revoked_at IS NULL AND s.expires_at > ?`,
+    )
+      .bind(deviceId, now)
+      .all<{ endpoint: string; p256dh: string; auth: string; device: string }>();
+    if (results.length === 0) return;
+
+    const needsYou = n.kind !== "done" && n.kind !== "error";
+    const url = `/d/${encodeURIComponent(deviceId)}/t/${encodeURIComponent(thread)}${
+      n.parentId ? `?tab=${encodeURIComponent(n.threadId)}` : ""
+    }`;
+    const payload = {
+      title: n.name.trim() || "Claude",
+      body: `${notifyText(n)} · ${results[0]!.device}`,
+      // One notification per thread on the device: a newer one replaces it.
+      tag: `${deviceId}/${n.threadId}`,
+      url,
+      renotify: needsYou,
+    };
+    const opts: PushOptions = {
+      ttl: needsYou ? 24 * 60 * 60 : 60 * 60,
+      urgency: needsYou ? "high" : "normal",
+      topic: (await sha256(payload.tag)).slice(0, 32),
+    };
+    await deliver(this.env, results, payload, opts);
+  }
+
   private async onGone(ws: WebSocket): Promise<void> {
     const me = ws.deserializeAttachment() as Attachment | null;
     if (me?.kind !== "device") return;
@@ -310,7 +381,7 @@ export class AccountHub extends DurableObject<Env> {
   }
 }
 
-function isSignal(m: unknown): m is { t: "signal"; to: string; sid: string; data: ClientToHub["data"] } {
+function isSignal(m: unknown): m is { t: "signal"; to: string; sid: string; data: SignalData } {
   const x = m as Record<string, unknown> | null;
   return (
     !!x &&
@@ -321,6 +392,38 @@ function isSignal(m: unknown): m is { t: "signal"; to: string; sid: string; data
     typeof x.data === "object" &&
     x.data !== null
   );
+}
+
+const NOTIFY_KINDS = new Set<string>(["permission", "question", "plan", "done", "error"]);
+
+function isNotify(m: unknown): m is HubNotify {
+  const x = m as Record<string, unknown> | null;
+  const str = (v: unknown, max: number) => typeof v === "string" && v.length <= max;
+  return (
+    !!x &&
+    str(x.threadId, 128) &&
+    (x.threadId as string).length > 0 &&
+    (x.parentId === undefined || str(x.parentId, 128)) &&
+    str(x.name, 200) &&
+    (x.tool === undefined || str(x.tool, 100)) &&
+    typeof x.kind === "string" &&
+    NOTIFY_KINDS.has(x.kind)
+  );
+}
+
+function notifyText(n: HubNotify): string {
+  switch (n.kind) {
+    case "permission":
+      return n.tool ? `Wants to use ${n.tool}` : "Needs your permission";
+    case "question":
+      return "Has a question for you";
+    case "plan":
+      return "Has a plan for you to review";
+    case "done":
+      return "Finished";
+    case "error":
+      return "Stopped with an error";
+  }
 }
 
 function send(ws: WebSocket, msg: HubToClient | HubToDaemon): void {

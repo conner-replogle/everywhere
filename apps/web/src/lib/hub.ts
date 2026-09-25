@@ -42,8 +42,38 @@ class Hub {
   private listeners = new Set<() => void>();
   private snap: HubSnapshot = { status: "idle", presenceKnown: false, online: new Set() };
 
+  /** The thread the page shows, and what the hub last heard about it ("" = nothing). */
+  private thread: { deviceId: string; threadId: string } | null = null;
+  private sentViewing = "";
+
   /** Called when the socket can't be opened because the session is gone. */
   onUnauthorized: (() => void) | null = null;
+
+  constructor() {
+    const sync = () => this.syncViewing();
+    document.addEventListener("visibilitychange", sync);
+    window.addEventListener("focus", sync);
+    window.addEventListener("blur", sync);
+  }
+
+  /**
+   * Which thread the page shows (null for none). While it's visible and
+   * focused the hub skips push notifications about it.
+   */
+  setThread(thread: { deviceId: string; threadId: string } | null): void {
+    this.thread = thread;
+    this.syncViewing();
+  }
+
+  private syncViewing(): void {
+    const t = this.thread && document.visibilityState === "visible" && document.hasFocus() ? this.thread : null;
+    const key = t ? `${t.deviceId}/${t.threadId}` : "";
+    if (key === this.sentViewing) return;
+    const sent = this.send(
+      t ? { t: "viewing", deviceId: t.deviceId, threadId: t.threadId } : { t: "viewing", deviceId: null, threadId: null },
+    );
+    if (sent) this.sentViewing = key;
+  }
 
   start(): void {
     if (this.running) return;
@@ -106,6 +136,8 @@ class Hub {
       }, PING_INTERVAL_MS);
       // Presence stays "unknown" until the hub's snapshot arrives.
       this.update({ ...this.snap, status: "open", presenceKnown: false });
+      this.sentViewing = ""; // a new connection starts out viewing nothing
+      this.syncViewing();
     };
 
     ws.onmessage = (ev) => {

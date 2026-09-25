@@ -6,3 +6,6 @@ ALLOWED_ORIGINS=http://localhost:5173
 TOTP_KEY=10jtzL/xzwfR5UE61xi1GMR383n1rOhgpHSY/GTtY28=
 # Cloudflare Realtime TURN API token (optional; without it only STUN is used).
 # TURN_API_TOKEN=
+# Signs Web Push requests (P-256 JWK). Dev-only key; generate your own with
+# `bun run vapid-key`. Production uses `wrangler secret put VAPID_KEY`.
+VAPID_KEY='{"kty":"EC","crv":"P-256","x":"nRUmzEqQVpeWiKAUvpnQ-Va5nx-TFIBZEZw-l4_WAJo","y":"4J0_kFqeJTd1pWY8cKMFHfIzEaLBO687lyNaEMWOyHI","d":"TIsjqxdOQl_hidcHh10nwFl_HqvSycb7ZD9ilfeoBwo"}'

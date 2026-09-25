@@ -121,6 +121,9 @@ func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string) *Serve
 // ContinueAgents resumes claude turns that a daemon update interrupted.
 func (s *Server) ContinueAgents() { s.agents.ContinueMarked() }
 
+// SetNotifier sets where claude threads' notifications go (the hub).
+func (s *Server) SetNotifier(fn func(protocol.HubNotify)) { s.agents.Notify = fn }
+
 // SetSignaler sets how answers and candidates reach browsers.
 func (s *Server) SetSignaler(fn Signaler) {
 	s.mu.Lock()

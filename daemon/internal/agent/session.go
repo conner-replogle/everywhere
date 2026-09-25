@@ -1001,6 +1001,12 @@ func (s *session) onPermission(req *claude.PermissionRequest) {
 		DecisionReason:  req.DecisionReason,
 		CanAllowSession: len(req.Suggestions) > 0,
 	})
+	kind := requestKind(req.ToolName)
+	if kind == "tool" {
+		s.notify("permission", req.ToolName)
+	} else {
+		s.notify(kind, "")
+	}
 }
 
 // onExit handles the claude process ending, on purpose or not.
@@ -1042,6 +1048,27 @@ func (s *session) endTurn(ev protocol.AgentEvent) {
 	s.turnActive, s.interrupted = false, false
 	s.state.Streaming = []protocol.AgentStreaming{}
 	s.emit(ev)
+	switch ev.Status {
+	case "completed":
+		s.notify("done", "")
+	case "error":
+		s.notify("error", "")
+	}
+}
+
+// notify tells the manager's Notify that the thread needs the user (kind
+// permission, question or plan) or finished its turn (done or error).
+func (s *session) notify(kind, tool string) {
+	if s.m.Notify == nil {
+		return
+	}
+	t, err := s.m.store.GetThread(s.threadID)
+	if err != nil {
+		return
+	}
+	go s.m.Notify(protocol.HubNotify{
+		T: "notify", ThreadID: t.ID, ParentID: t.ParentID, Name: t.Name, Kind: kind, Tool: tool,
+	})
 }
 
 // resolve records the outcome of a pending request and forgets it. ev

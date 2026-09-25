@@ -133,4 +133,9 @@ export const api = {
   removeDevice: (id: string) => request<object>("DELETE", `/api/devices/${encodeURIComponent(id)}`),
 
   createEnrollToken: () => request<EnrollToken>("POST", "/api/enroll-tokens"),
+
+  pushKey: async () => (await request<{ publicKey: string }>("GET", "/api/push/key")).publicKey,
+  subscribePush: (sub: PushSubscriptionJSON) => request<object>("POST", "/api/push/subscriptions", sub),
+  unsubscribePush: (endpoint: string) => request<object>("POST", "/api/push/unsubscribe", { endpoint }),
+  testPush: (endpoint: string) => request<object>("POST", "/api/push/test", { endpoint }),
 };

@@ -19,6 +19,13 @@ declare module "@tanstack/react-router" {
   }
 }
 
+// A clicked notification opens its thread in this window (sw.js).
+navigator.serviceWorker?.addEventListener("message", (e: MessageEvent<{ t?: string; url?: string }>) => {
+  if (e.data?.t === "navigate" && typeof e.data.url === "string" && e.data.url.startsWith("/") && !e.data.url.startsWith("//")) {
+    void router.navigate({ href: e.data.url });
+  }
+});
+
 // iOS Safari overlays the soft keyboard instead of resizing the page (Android honors
 // interactive-widget in index.html). Size the app to what's visible so the composer
 // and the terminal's cursor line stay above the keyboard.

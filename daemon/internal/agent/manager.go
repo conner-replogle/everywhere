@@ -77,6 +77,9 @@ type Manager struct {
 	// like an MCP server of the daemon's own with a token for that thread.
 	// release is called once that process has ended.
 	ThreadArgs func(threadID, projectID string) (args []string, release func(), err error)
+	// Notify, if set, is told when a thread needs the user or finishes a
+	// turn (for push notifications). It's called on its own goroutine.
+	Notify func(protocol.HubNotify)
 
 	attachments attachmentStore
 

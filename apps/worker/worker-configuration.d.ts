@@ -12,6 +12,7 @@ interface __BaseEnv_Env {
 	ALLOWED_ORIGINS: string;
 	TOTP_KEY: string;
 	TURN_API_TOKEN: string;
+	VAPID_KEY: string;
 	HUB: DurableObjectNamespace<import("./src/index").AccountHub>;
 }
 declare namespace Cloudflare {
@@ -26,7 +27,7 @@ type StringifyValues<EnvType extends Record<string, unknown>> = {
 	[Binding in keyof EnvType]: EnvType[Binding] extends string ? EnvType[Binding] : string;
 };
 declare namespace NodeJS {
-	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "TURN_KEY_ID" | "GITHUB_REPO" | "MIN_DAEMON_VERSION" | "PUBLIC_URL" | "ALLOWED_ORIGINS" | "TOTP_KEY" | "TURN_API_TOKEN">> {}
+	interface ProcessEnv extends StringifyValues<Pick<Cloudflare.Env, "TURN_KEY_ID" | "GITHUB_REPO" | "MIN_DAEMON_VERSION" | "PUBLIC_URL" | "ALLOWED_ORIGINS" | "TOTP_KEY" | "TURN_API_TOKEN" | "VAPID_KEY">> {}
 }
 
 // Begin runtime types

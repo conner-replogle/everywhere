@@ -8,7 +8,9 @@
     "migrate:local": "wrangler d1 migrations apply DB --local",
     "types": "wrangler types",
     "typecheck": "tsc -p .",
-    "reset-password": "bun scripts/reset-password.ts"
+    "reset-password": "bun scripts/reset-password.ts",
+    "vapid-key": "bun scripts/vapid-key.ts",
+    "test": "bun test test/"
   },
   "dependencies": {
     "@everywhere/protocol": "workspace:*",

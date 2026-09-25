@@ -6,6 +6,7 @@ import { failingScript, installScript } from "./install";
 import { mcp } from "./mcp";
 import { oauth } from "./oauth";
 import { auth, requireUser } from "./routes/auth";
+import { push } from "./routes/push";
 import { iceServers, TURN_TTL_SECONDS } from "./turn";
 import { apiGuard, clientIp, originAllowed, rateLimited, tooMany } from "./security";
 import type { App } from "./types";
@@ -18,6 +19,7 @@ const app = new Hono<App>();
 
 app.use("/api/*", apiGuard);
 app.route("/api/auth", auth);
+app.route("/api/push", push);
 // The MCP endpoint for agents, and the OAuth server that authorizes them.
 app.route("/", oauth);
 app.route("/", mcp);

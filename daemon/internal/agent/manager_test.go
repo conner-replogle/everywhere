@@ -556,6 +556,47 @@ func TestInterrupt(t *testing.T) {
 	}
 }
 
+func TestNotify(t *testing.T) {
+	h := newHarness(t)
+	var mu sync.Mutex
+	var got []string
+	h.m.Notify = func(n protocol.HubNotify) {
+		mu.Lock()
+		defer mu.Unlock()
+		if n.ThreadID != h.thread || n.T != "notify" {
+			t.Errorf("notify %+v", n)
+		}
+		got = append(got, n.Kind+":"+n.Tool)
+	}
+	notified := func(want string) {
+		t.Helper()
+		eventually(t, "notifications "+want, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return strings.Join(got, " ") == want
+		})
+	}
+	c := h.attach(0)
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "go"})
+	p := h.proc(0)
+	p.emit(`{"type":"control_request","request_id":"r1","request":{"subtype":"can_use_tool","tool_name":"Bash","tool_use_id":"t1","input":{}}}`)
+	notified("permission:Bash")
+	h.do(c, protocol.AgentClientMsg{T: "respond", RequestID: "r1", Decision: "allow"})
+	p.emit(`{"type":"control_request","request_id":"q1","request":{"subtype":"can_use_tool","tool_name":"AskUserQuestion","tool_use_id":"t2","input":{}}}`)
+	notified("permission:Bash question:")
+	h.do(c, protocol.AgentClientMsg{T: "respond", RequestID: "q1", Decision: "allow", Answers: map[string]string{}})
+	p.emit(`{"type":"result","subtype":"success"}`)
+	notified("permission:Bash question: done:")
+
+	// An interrupted turn was the user's doing: nothing to tell them.
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "again"})
+	h.waitStatus(c, "working")
+	h.do(c, protocol.AgentClientMsg{T: "interrupt"})
+	h.waitStatus(c, "idle")
+	time.Sleep(50 * time.Millisecond)
+	notified("permission:Bash question: done:")
+}
+
 func TestCrashThenResume(t *testing.T) {
 	h := newHarness(t)
 	c := h.attach(0)

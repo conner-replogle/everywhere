@@ -17,8 +17,15 @@ export type SignalData =
   | { type: "candidate"; candidate: IceCandidate }
   | { type: "bye" };
 
-/** Sent by a browser to the hub. `to` is a device id. */
-export type ClientToHub = { t: "signal"; to: string; sid: string; data: SignalData };
+/**
+ * Sent by a browser to the hub. `to` is a device id. `viewing` says which
+ * thread the tab shows while it's visible and focused (null otherwise), so the
+ * hub doesn't push notifications about a thread someone is looking at.
+ */
+export type ClientToHub =
+  | { t: "signal"; to: string; sid: string; data: SignalData }
+  | { t: "viewing"; deviceId: string; threadId: string }
+  | { t: "viewing"; deviceId: null; threadId: null };
 
 /** Sent by the hub to a browser. `from` is a device id. */
 export type HubToClient =
@@ -33,7 +40,26 @@ export type DaemonToHub =
   | { t: "hello"; version: string; features?: HubFeature[] }
   | { t: "signal"; to: string; sid: string; data: SignalData }
   /** Answers an rpc request. */
-  | { t: "rpc.result"; id: string; result?: unknown; error?: { message: string } };
+  | { t: "rpc.result"; id: string; result?: unknown; error?: { message: string } }
+  /** Something the user should hear about, sent as a push notification. */
+  | HubNotify;
+
+/**
+ * A claude thread needs the user (a permission prompt, a question, a plan to
+ * approve) or finished its turn. `threadId` is the thread or tab it happened
+ * in; `parentId` is the tab's thread. Only names travel, never content.
+ */
+export interface HubNotify {
+  t: "notify";
+  threadId: string;
+  parentId?: string;
+  name: string;
+  kind: NotifyKind;
+  /** For kind "permission": the tool's name. */
+  tool?: string;
+}
+
+export type NotifyKind = "permission" | "question" | "plan" | "done" | "error";
 
 /** rpc: the daemon answers rpc requests (see RemoteMethods). */
 export type HubFeature = "rpc";

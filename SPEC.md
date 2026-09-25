@@ -35,7 +35,8 @@ something you run in a terminal. Harness-specific support comes later.
 - Browsers never send project, thread, or terminal data through the Worker.
   It lives only on the daemon (SQLite) and travels over WebRTC. The exception
   is agents using the MCP endpoint (see MCP): their requests and the answers
-  are relayed through the hub.
+  are relayed through the hub. Push notifications carry thread names (see
+  Push notifications).
 - ICE prefers direct paths: LAN, Tailscale (the daemon's tailnet host candidate
   plus peer-reflexive discovery) and NAT traversal via STUN. Cloudflare Realtime
   TURN is the fallback. The Worker mints 12-hour credentials for browsers
@@ -309,6 +310,36 @@ has `search` and `fetch`, the pair ChatGPT expects.
   request except attach/history), `term.read` (scrollback as plain text) and
   `term.write` (typing; bypasses the writer role).
 
+## Push notifications
+
+A claude thread notifies the user when it needs them (a permission prompt, a
+question, a plan to approve) or finishes a turn (completed or error; not an
+interrupt the user asked for).
+
+- **Daemon → hub**: `{t:"notify", threadId, parentId?, name, kind, tool?}`
+  where kind is permission | question | plan | done | error. Only the
+  thread's name and the tool's name travel, never content. Dropped while the
+  hub socket is down.
+- **Browser → hub**: `{t:"viewing", deviceId, threadId}` while a tab shows a
+  thread and is visible and focused, `{t:"viewing", deviceId:null,
+  threadId:null}` otherwise. The hub skips notifications about a thread (or
+  its tabs) that any tab is viewing.
+- **Hub → browsers**: Web Push (VAPID, aes128gcm; `apps/worker/src/webpush.ts`)
+  to every subscription of the account whose session is still valid, with
+  `{title: thread name, body: "<what> · <device>", tag, url}`. One per thread
+  and kind per 5 s. Urgency high and a 24 h TTL for "needs you", normal and
+  1 h for finished.
+- **Subscriptions** (`push_subscriptions`): made under Settings →
+  Notifications, per browser. Each belongs to the session that made it and is
+  deleted with it (sign-out, revoke, password change); signing in again
+  re-registers it. Endpoints must be a known push service. Gone subscriptions
+  (404/410) are deleted.
+- **Service worker** (`apps/web/public/sw.js`): shows the notification; a
+  click focuses an open window and routes it in-app, or opens one.
+- The `VAPID_KEY` Worker secret is the P-256 private key (JWK) that signs
+  pushes; `GET /api/push/key` hands browsers its public half. iOS delivers
+  push only to the app installed on the Home Screen.
+
 ## Web app
 
 ```
@@ -319,6 +350,7 @@ has `search` and `fetch`, the pair ChatGPT expects.
                                 claude: timeline, permission/question/plan cards, composer
                                 tab strip: the thread, then its tabs; ?tab=<id> picks one
 /settings/devices               add device (shows install command), rename, revoke
+/settings/notifications         push notifications on this browser, test
 /settings/security              password, 2FA, sessions, connected apps (MCP URL, revoke grants)
 ```
 

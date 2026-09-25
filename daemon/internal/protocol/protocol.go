@@ -62,6 +62,18 @@ type HubRPCResult struct {
 	Error  *RPCError `json:"error,omitempty"`
 }
 
+// HubNotify tells the hub a claude thread needs the user or finished its
+// turn, for a push notification. ThreadID is the thread or tab it happened
+// in, ParentID a tab's thread. Only names travel, never content.
+type HubNotify struct {
+	T        string `json:"t"` // "notify"
+	ThreadID string `json:"threadId"`
+	ParentID string `json:"parentId,omitempty"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`           // permission | question | plan | done | error
+	Tool     string `json:"tool,omitempty"` // for permission
+}
+
 type SignalOut struct {
 	T    string     `json:"t"` // "signal"
 	To   string     `json:"to"`

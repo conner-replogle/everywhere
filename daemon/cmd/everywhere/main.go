@@ -163,6 +163,7 @@ func daemon(args []string) error {
 		OnRPC:           srv.Remote,
 	}
 	srv.SetSignaler(hc.Send)
+	srv.SetNotifier(hc.Notify)
 	go srv.ContinueAgents() // turns interrupted by an update
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

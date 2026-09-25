@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { FleetProvider } from "@/components/fleet";
 import { auth } from "@/lib/auth";
 import { hub } from "@/lib/hub";
+import { syncPushSubscription } from "@/lib/pwa";
 
 export const Route = createFileRoute("/_app")({
   beforeLoad: async ({ location }) => {
@@ -25,6 +26,7 @@ function AppLayout() {
       void navigate({ to: "/login" });
     };
     hub.start();
+    syncPushSubscription().catch((err) => console.warn("push subscription:", err));
     return () => {
       hub.onUnauthorized = null;
     };

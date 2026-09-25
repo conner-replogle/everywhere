@@ -118,7 +118,9 @@ EW_E2E_SERVER=http://localhost:8787 EW_E2E_COOKIE='__Host-ew_session=…' EW_E2E
 - **Daemon:** push a `v*` tag. GitHub Actions runs goreleaser and publishes
   `everywhere_{linux,darwin}_{amd64,arm64}.tar.gz` plus `checksums.txt`. The
   installer and `everywhere update` depend on those names.
-- **Worker:** one-time setup: `openssl rand -base64 32 | tr -d '\n' | bunx wrangler secret put TOTP_KEY`
-  (run in `apps/worker`). Then `bun run deploy`. This builds the web app, applies D1 migrations
+- **Worker:** one-time setup, in `apps/worker`:
+  `openssl rand -base64 32 | tr -d '\n' | bunx wrangler secret put TOTP_KEY` and
+  `bun run vapid-key | bunx wrangler secret put VAPID_KEY` (signs push notifications; changing it
+  later means every browser turns notifications on again). Then `bun run deploy`. This builds the web app, applies D1 migrations
   remotely and deploys to `ai.replogle.dev`. Sign up immediately after the
   first deploy; the first signup becomes the only account.

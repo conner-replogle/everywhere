@@ -65,3 +65,44 @@ async function asset(req) {
   }
   return res;
 }
+
+// --- push notifications ----------------------------------------------------
+// The hub pushes { title, body, tag, url, renotify } when a claude thread
+// needs the user or finishes (apps/worker/src/hub.ts).
+
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data?.json() ?? {};
+  } catch {
+    // not JSON; show a generic notification
+  }
+  event.waitUntil(
+    self.registration.showNotification(data.title || "everywhere", {
+      body: data.body,
+      tag: data.tag,
+      renotify: !!(data.renotify && data.tag),
+      icon: "/icon-192.png",
+      data: { url: data.url || "/" },
+    }),
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  const url = new URL(event.notification.data?.url || "/", self.location.origin);
+  if (url.origin !== self.location.origin) return;
+  event.waitUntil(
+    (async () => {
+      const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+      // Reuse an open window: it navigates in-app (see main.tsx) so its connections stay up.
+      const win = windows.find((w) => w.focused) ?? windows.find((w) => w.visibilityState === "visible") ?? windows[0];
+      if (win) {
+        await win.focus();
+        win.postMessage({ t: "navigate", url: url.pathname + url.search });
+        return;
+      }
+      await self.clients.openWindow(url.href);
+    })(),
+  );
+});
