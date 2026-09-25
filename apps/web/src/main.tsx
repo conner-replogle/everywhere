@@ -19,6 +19,20 @@ declare module "@tanstack/react-router" {
   }
 }
 
+// After a deploy, an open page's lazy chunks (browser, claude, files…) are
+// gone from the server. Reload to pick up the new build, but not in a loop.
+window.addEventListener("vite:preloadError", (e) => {
+  const KEY = "everywhere.chunkReloadAt";
+  try {
+    if (Date.now() - Number(sessionStorage.getItem(KEY) ?? 0) < 30_000) return;
+    sessionStorage.setItem(KEY, String(Date.now()));
+  } catch {
+    // storage blocked: reload anyway
+  }
+  e.preventDefault();
+  window.location.reload();
+});
+
 // A clicked notification opens its thread in this window (sw.js).
 navigator.serviceWorker?.addEventListener("message", (e: MessageEvent<{ t?: string; url?: string }>) => {
   if (e.data?.t === "navigate" && typeof e.data.url === "string" && e.data.url.startsWith("/") && !e.data.url.startsWith("//")) {

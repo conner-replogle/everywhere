@@ -6,7 +6,7 @@
 // - Everything else (/api, /mcp, /oauth, /i, /.well-known, …): untouched.
 
 const SHELL = "shell-v1";
-const ASSETS = "assets-v1";
+const ASSETS = "assets-v2"; // v1 could hold index.html under a chunk's name
 const MAX_ASSETS = 150;
 
 self.addEventListener("install", () => self.skipWaiting());
@@ -57,7 +57,10 @@ async function asset(req) {
   const cached = await cache.match(req);
   if (cached) return cached;
   const res = await fetch(req);
-  if (res.ok && res.type === "basic") {
+  // A chunk from an older build is gone, and the SPA fallback answers with
+  // index.html; caching that would keep the import failing after a reload.
+  const html = res.headers.get("content-type")?.startsWith("text/html");
+  if (res.ok && res.type === "basic" && !html) {
     await cache.put(req, res.clone());
     // Old builds' chunks pile up; keys() is in insertion order, so drop the oldest.
     const keys = await cache.keys();
