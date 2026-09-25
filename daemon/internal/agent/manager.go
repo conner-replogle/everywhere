@@ -386,7 +386,7 @@ func (m *Manager) startClaude(ctx context.Context, o claude.Options) (process, e
 			m.launchMu.Unlock()
 			return nil, err
 		}
-		m.bin, m.env = bin, loginEnv(ctx)
+		m.bin, m.env = bin, LoginEnv(ctx)
 	}
 	o.Binary, o.Env = m.bin, m.env
 	m.launchMu.Unlock()
@@ -402,10 +402,10 @@ func (m *Manager) transcriptForkPoint(sessionID, promptID string) (string, error
 	return claude.ForkPoint(claude.ConfigDir(env), sessionID, promptID)
 }
 
-// loginEnv returns the environment of the user's login shell, which is what
+// LoginEnv returns the environment of the user's login shell, which is what
 // they'd have in a terminal: systemd starts the daemon with a minimal PATH,
 // and claude's tools inherit whatever we give it.
-func loginEnv(ctx context.Context) []string {
+func LoginEnv(ctx context.Context) []string {
 	shell := os.Getenv("SHELL")
 	if shell == "" {
 		return nil

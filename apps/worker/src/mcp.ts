@@ -16,7 +16,8 @@ Each device has projects (directories), and each project has threads.
 - Start with list_projects or list_threads to find ids; every thread and project belongs to one device, so pass its device_id too.
 - A claude thread is a Claude Code agent working in the project. send_message prompts it and waits a while for the reply; if it's still working, call read_thread with wait_seconds to keep waiting.
 - When a thread's status is "waiting", it's blocked on a permission prompt or question: read_thread shows the request id; answer with respond_to_request.
-- A terminal thread is a shell: send_message types a command, read_thread shows recent output.`;
+- A terminal thread is a shell: send_message types a command and waits for its output to settle; read_thread shows recent output. Use one for servers, watchers and anything long-running or interactive.
+- To work on code directly: run_command runs a command and returns its exit code and output; read_file, write_file, edit_file, glob and grep work with files. Pass thread_id or project_id to work in that directory (relative paths resolve there).`;
 
 export const mcp = new Hono<App>();
 

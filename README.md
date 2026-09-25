@@ -57,7 +57,12 @@ the Linux release next to `everywhere`. macOS is planned (see TODO.md).
 The Worker serves an MCP server at `https://ai.replogle.dev/mcp`. An agent that
 connects to it can see every device's projects and threads, read them, create
 projects and threads, message claude threads and answer their permission
-prompts, and type into terminals. In ChatGPT, turn on developer mode
+prompts, and type into terminals. It can also work on code directly, like a
+coding agent: `run_command` runs a shell command (with your login environment)
+and returns its exit code and output, and `read_file`, `write_file`,
+`edit_file`, `glob` and `grep` work with files, rooted in a thread's or
+project's directory. These run as your user on the device, so only connect
+agents you trust with a shell. In ChatGPT, turn on developer mode
 (Settings → Apps & Connectors → Advanced), create a connector with that URL
 and OAuth authentication, then sign in and approve it. Connected apps are
 listed under Settings → Security, where you can disconnect them. Devices need

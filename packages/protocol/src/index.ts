@@ -398,6 +398,22 @@ export type RpcMethod = keyof RpcMethods;
  */
 export interface RemoteMethods
   extends Omit<RpcMethods, "debug.peer" | "device.update" | `desktop.${string}`> {
+  // Coding tools for MCP agents. Relative paths (and cwd) are resolved against
+  // the thread's working directory (its worktree, if any), else the project,
+  // else home.
+  /** Runs a command with bash -c and the user's login environment. */
+  "code.exec": [CodeWhere & { command: string; stdin?: string; timeoutMs?: number }, CodeExecResult];
+  /** offset: first line (1-based); limit: lines (default 2000). */
+  "code.read": [CodeWhere & { path: string; offset?: number; limit?: number }, CodeReadResult];
+  "code.write": [CodeWhere & { path: string; content: string }, { path: string; bytes: number; created: boolean }];
+  /** Replaces old with new: exactly one occurrence, or all of them. */
+  "code.edit": [CodeWhere & { path: string; old: string; new: string; all?: boolean }, { path: string; replacements: number }];
+  /** Files matching pattern under path, newest first; follows .gitignore in a repo. */
+  "code.glob": [CodeWhere & { pattern?: string; limit?: number }, { dir: string; files: string[]; truncated?: boolean }];
+  "code.grep": [
+    CodeWhere & { pattern: string; glob?: string; ignoreCase?: boolean; filesOnly?: boolean; context?: number; limit?: number },
+    { dir: string; output: string; count: number; truncated?: boolean },
+  ];
   /** projects.clone, with a token answering git's HTTPS credential prompt. */
   "projects.clone": [{ url: string; path: string; name?: string; token?: string }, Project];
   "threads.get": [{ threadId: string }, Thread];
@@ -420,6 +436,38 @@ export interface RemoteMethods
   "term.write": [{ threadId: string; text: string }, Record<string, never>];
 }
 export type RemoteMethod = keyof RemoteMethods;
+
+/** Where a code.* request is rooted, and the path it's about. */
+export interface CodeWhere {
+  threadId?: string;
+  projectId?: string;
+  /** A directory to resolve relative paths against instead. */
+  cwd?: string;
+  path?: string;
+}
+
+export interface CodeExecResult {
+  /** -1 if it didn't exit on its own. */
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  /** Bytes dropped from the start of the stream (the end is kept). */
+  stdoutCut?: number;
+  stderrCut?: number;
+  timedOut?: boolean;
+  durationMs: number;
+  cwd: string;
+}
+
+export interface CodeReadResult {
+  path: string;
+  /** Each line prefixed with its number and a tab. */
+  content: string;
+  startLine: number;
+  endLine: number;
+  totalLines: number;
+  truncated?: boolean;
+}
 
 export interface SearchHit {
   threadId: string;

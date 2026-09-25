@@ -51,6 +51,7 @@ type Server struct {
 
 	clones  cloneSet
 	fetches gitFetches
+	codeEnv codeEnv
 
 	updating atomic.Bool
 	updateMu sync.Mutex

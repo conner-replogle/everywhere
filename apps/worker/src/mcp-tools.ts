@@ -101,6 +101,9 @@ async function call<M extends RemoteMethod>(
   // Typed by hand: narrowing doesn't survive the stub's RPC types.
   const r = (await hub(ctx).deviceRpc(device.id, method, params, timeoutMs)) as DeviceRpcResult<RemoteMethods[M][1]>;
   if (r.ok) return r.result;
+  if (r.message.startsWith("unknown method")) {
+    throw new ToolError(`${device.name}'s daemon is too old for this; update it (everywhere update on the device)`);
+  }
   throw new ToolError(`${device.name}: ${r.message}`);
 }
 
@@ -382,9 +385,32 @@ async function actAndRead(
   return formatAgent(ctx.env, d, after);
 }
 
+/** Output that hasn't changed for this long means the command is done or waiting. */
+const TERMINAL_SETTLE_MS = 1500;
+
+/**
+ * Types into a terminal, then waits (up to wait) until its output settles,
+ * so a quick command's result is there and a slow one's progress is.
+ */
 async function sendToTerminal(ctx: ToolContext, d: Device, thread: Thread, text: string, enter: boolean, wait: number) {
+  const before = await call(ctx, d, "term.read", { threadId: thread.id, maxBytes: 8000 }).then(
+    (r) => r.output,
+    () => "",
+  );
   await call(ctx, d, "term.write", { threadId: thread.id, text: enter ? `${text}\r` : text });
-  await sleep(Math.min(wait, 10_000));
+  const deadline = Date.now() + wait;
+  let last = before;
+  let stableSince = Date.now();
+  while (Date.now() < deadline) {
+    await sleep(400);
+    const now = (await call(ctx, d, "term.read", { threadId: thread.id, maxBytes: 8000 })).output;
+    if (now !== last) {
+      last = now;
+      stableSince = Date.now();
+    } else if (last !== before && Date.now() - stableSince >= TERMINAL_SETTLE_MS) {
+      break;
+    }
+  }
   return readTerminal(ctx, d, thread, 8000);
 }
 
@@ -424,6 +450,21 @@ const agentSettings = {
   effort: { type: "string", enum: EFFORTS, description: "Reasoning effort, for models that support it." },
   thinking: { type: "boolean", description: "Extended thinking on or off." },
 };
+
+/** Where a coding tool works: a thread's directory, a project's, or home. */
+const where = {
+  thread_id: { type: "string", description: "Work in this thread's directory (its git worktree, if it has one)." },
+  project_id: { type: "string", description: "Work in this project's directory (when no thread_id)." },
+};
+const pathArg = {
+  type: "string",
+  description: "Absolute, ~/..., or relative to the thread's or project's directory (home without either).",
+};
+const EXEC_MAX_S = 120;
+
+function whereParams(args: Args): { threadId?: string; projectId?: string } {
+  return { threadId: str(args, "thread_id"), projectId: str(args, "project_id") };
+}
 
 const read = { readOnlyHint: true, openWorldHint: false } as const;
 const write = { readOnlyHint: false, destructiveHint: false, openWorldHint: false } as const;
@@ -657,7 +698,7 @@ export const tools: Tool[] = [
     name: "send_message",
     title: "Send a message",
     description:
-      "Send a prompt to a claude thread (starting or resuming Claude as needed) and wait for its reply; while it's still working, keep waiting with read_thread. For a terminal thread, types the text as a command and returns the output.",
+      "Send a prompt to a claude thread (starting or resuming Claude as needed) and wait for its reply; while it's still working, keep waiting with read_thread. For a terminal thread, types the text as a command and returns the output once it stops changing (up to wait_seconds, default 10).",
     inputSchema: {
       type: "object",
       properties: {
@@ -676,7 +717,7 @@ export const tools: Tool[] = [
       const text = str(args, "text", true);
       if (thread.archivedAt) throw new ToolError("this thread is archived; restore it with update_thread (archived: false) first");
       if (thread.kind !== "claude") {
-        return sendToTerminal(ctx, d, thread, text, bool(args, "press_enter") ?? true, Math.min(waitMs(args, 2), 10_000));
+        return sendToTerminal(ctx, d, thread, text, bool(args, "press_enter") ?? true, waitMs(args, 10));
       }
       return actAndRead(ctx, d, thread.id, () => agentRequest(ctx, d, thread.id, { t: "send", text }), waitMs(args));
     },
@@ -720,7 +761,7 @@ export const tools: Tool[] = [
       const message = str(args, "message");
       if (kind === "terminal") {
         if (!message) return created;
-        return `${created}\n\n${await sendToTerminal(ctx, d, thread, message, true, Math.min(waitMs(args, 2), 10_000))}`;
+        return `${created}\n\n${await sendToTerminal(ctx, d, thread, message, true, waitMs(args, 10))}`;
       }
       await applyAgentSettings(ctx, d, thread.id, args);
       if (!message) return created;
@@ -856,6 +897,212 @@ export const tools: Tool[] = [
     async run(ctx, args) {
       const d = await resolveDevice(ctx, args.device_id);
       return call(ctx, d, "fs.listDirs", { path: str(args, "path") ?? "~" });
+    },
+  },
+
+  // --- coding: commands and files ---------------------------------------------------------
+  {
+    name: "run_command",
+    title: "Run a command",
+    description:
+      "Run a shell command on a device (bash -c, with the user's login environment) and return its exit code, stdout and stderr. " +
+      "It runs in the thread's working directory (its git worktree, if it has one), else the project's, else cwd or home. " +
+      `Non-interactive, stdin closed unless given; stops after timeout_seconds (default 30, max ${EXEC_MAX_S}). ` +
+      "For servers, watchers and long builds, use a terminal thread instead (create_thread kind terminal, then send_message and read_thread).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        device_id: deviceId,
+        command: { type: "string", description: "The command line, e.g. \"go test ./...\" or \"git status --short\"." },
+        ...where,
+        cwd: { type: "string", description: "Directory to run in, absolute, ~/..., or relative to the thread's or project's directory." },
+        timeout_seconds: { type: "number", description: `Default 30, max ${EXEC_MAX_S}.` },
+        stdin: { type: "string", description: "Text to feed the command's stdin." },
+      },
+      required: ["device_id", "command"],
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+    async run(ctx, args) {
+      const d = await resolveDevice(ctx, args.device_id);
+      const timeout = Math.max(1, Math.min(num(args, "timeout_seconds") ?? 30, EXEC_MAX_S)) * 1000;
+      const command = str(args, "command", true);
+      const r = await call(
+        ctx,
+        d,
+        "code.exec",
+        { ...whereParams(args), cwd: str(args, "cwd"), command, stdin: str(args, "stdin"), timeoutMs: timeout },
+        timeout + 15_000,
+      );
+      const status = r.timedOut
+        ? `timed out after ${timeout / 1000}s and was killed`
+        : `exit ${r.exitCode}, ${(r.durationMs / 1000).toFixed(1)}s`;
+      const out = [`$ ${command}`, `(${status}, in ${r.cwd} on ${d.name})`];
+      const stream = (name: string, text: string, cut?: number) => {
+        if (!text && !cut) return;
+        out.push("", cut ? `${name} (first ${cut} bytes cut):` : `${name}:`, "```", text.trimEnd(), "```");
+      };
+      stream("stdout", r.stdout, r.stdoutCut);
+      stream("stderr", r.stderr, r.stderrCut);
+      if (!r.stdout && !r.stderr) out.push("", "(no output)");
+      return out.join("\n");
+    },
+  },
+  {
+    name: "read_file",
+    title: "Read a file",
+    description:
+      "Read a text file on a device, with line numbers. Relative paths are from the thread's working directory (or the project's). " +
+      "Reads up to 2000 lines; use offset and limit for more.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        device_id: deviceId,
+        path: pathArg,
+        ...where,
+        offset: { type: "number", description: "First line to read, 1-based (default 1)." },
+        limit: { type: "number", description: "How many lines (default 2000)." },
+      },
+      required: ["device_id", "path"],
+    },
+    annotations: read,
+    async run(ctx, args) {
+      const d = await resolveDevice(ctx, args.device_id);
+      const r = await call(ctx, d, "code.read", {
+        ...whereParams(args),
+        path: str(args, "path", true),
+        offset: num(args, "offset"),
+        limit: num(args, "limit"),
+      });
+      if (r.totalLines === 0) return `${r.path} is empty.`;
+      const head = `${r.path} (lines ${r.startLine}-${r.endLine} of ${r.totalLines})`;
+      const more = r.truncated ? `\n(more below: read_file with offset=${r.endLine + 1})` : "";
+      return `${head}\n${r.content}${more}`;
+    },
+  },
+  {
+    name: "write_file",
+    title: "Write a file",
+    description:
+      "Create a file, or replace a file's whole content, on a device (creating its directories). Prefer edit_file for changes to an existing file.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        device_id: deviceId,
+        path: pathArg,
+        content: { type: "string", description: "The full new content." },
+        ...where,
+      },
+      required: ["device_id", "path", "content"],
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    async run(ctx, args) {
+      const d = await resolveDevice(ctx, args.device_id);
+      const content = args.content;
+      if (typeof content !== "string") throw new ToolError("content must be a string");
+      const r = await call(ctx, d, "code.write", { ...whereParams(args), path: str(args, "path", true), content });
+      return `${r.created ? "Created" : "Wrote"} ${r.path} (${r.bytes} bytes).`;
+    },
+  },
+  {
+    name: "edit_file",
+    title: "Edit a file",
+    description:
+      "Replace text in a file on a device. old_string must match exactly (whitespace included) and occur once, unless replace_all is set; " +
+      "include a few surrounding lines to make it unique. Read the file first.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        device_id: deviceId,
+        path: pathArg,
+        old_string: { type: "string", description: "The exact text to replace." },
+        new_string: { type: "string", description: "What replaces it." },
+        replace_all: { type: "boolean", description: "Replace every occurrence (default false)." },
+        ...where,
+      },
+      required: ["device_id", "path", "old_string", "new_string"],
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+    async run(ctx, args) {
+      const d = await resolveDevice(ctx, args.device_id);
+      const [old, next] = [args.old_string, args.new_string];
+      if (typeof old !== "string" || typeof next !== "string") throw new ToolError("old_string and new_string must be strings");
+      const r = await call(ctx, d, "code.edit", {
+        ...whereParams(args),
+        path: str(args, "path", true),
+        old,
+        new: next,
+        all: bool(args, "replace_all") ?? false,
+      });
+      return `Edited ${r.path} (${r.replacements} replacement${r.replacements === 1 ? "" : "s"}).`;
+    },
+  },
+  {
+    name: "glob",
+    title: "Find files",
+    description:
+      'Find files by name pattern on a device, newest first: "**/*.go", "src/**/*.{ts,tsx}", "*.md" (a pattern without a slash matches in any directory). ' +
+      "In a git repo it follows .gitignore.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        device_id: deviceId,
+        pattern: { type: "string", description: 'Default "**/*" (every file).' },
+        path: { type: "string", description: "Directory to search (default the thread's or project's directory)." },
+        ...where,
+        max_results: { type: "number", description: "Default 200." },
+      },
+      required: ["device_id"],
+    },
+    annotations: read,
+    async run(ctx, args) {
+      const d = await resolveDevice(ctx, args.device_id);
+      const r = await call(ctx, d, "code.glob", {
+        ...whereParams(args),
+        path: str(args, "path"),
+        pattern: str(args, "pattern"),
+        limit: num(args, "max_results"),
+      });
+      if (r.files.length === 0) return `No files match in ${r.dir}.`;
+      return `${r.files.length}${r.truncated ? "+" : ""} files in ${r.dir}:\n${r.files.join("\n")}`;
+    },
+  },
+  {
+    name: "grep",
+    title: "Search file contents",
+    description:
+      "Search file contents on a device with a regular expression (ripgrep syntax when it's installed), returning path:line:text. " +
+      "Respects .gitignore. Narrow it with glob (e.g. \"*.ts\") or path.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        device_id: deviceId,
+        pattern: { type: "string", description: "Regular expression." },
+        path: { type: "string", description: "Directory or file to search (default the thread's or project's directory)." },
+        glob: { type: "string", description: 'Only files matching this, e.g. "*.go" or "src/**/*.tsx".' },
+        ignore_case: { type: "boolean" },
+        files_only: { type: "boolean", description: "Return only the names of matching files." },
+        context: { type: "number", description: "Lines of context around each match (0-10)." },
+        max_results: { type: "number", description: "Lines returned at most (default 200)." },
+        ...where,
+      },
+      required: ["device_id", "pattern"],
+    },
+    annotations: read,
+    async run(ctx, args) {
+      const d = await resolveDevice(ctx, args.device_id);
+      const r = await call(ctx, d, "code.grep", {
+        ...whereParams(args),
+        path: str(args, "path"),
+        pattern: str(args, "pattern", true),
+        glob: str(args, "glob"),
+        ignoreCase: bool(args, "ignore_case"),
+        filesOnly: bool(args, "files_only"),
+        context: num(args, "context"),
+        limit: num(args, "max_results"),
+      });
+      if (r.count === 0) return `No matches in ${r.dir}.`;
+      const more = r.truncated ? `\n(${r.count} lines in all; narrow the search or raise max_results)` : "";
+      return `${r.dir}:\n${r.output}${more}`;
     },
   },
 ];
