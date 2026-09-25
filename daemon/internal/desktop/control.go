@@ -33,6 +33,24 @@ type controller struct {
 	mu    sync.Mutex
 	moved bool
 	seq   uint16
+	// held is the keys the viewer holds down. A capture restart (another
+	// monitor, a resize) brings a new virtual keyboard that knows nothing of
+	// them, so they're pressed on it again: Super held across a
+	// workspace switch keeps working.
+	held map[uint16]bool
+}
+
+// replayHeld presses the held keys on a new capture's keyboard.
+func (c *controller) replayHeld() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	w, _ := c.sess.input()
+	if w == nil {
+		return
+	}
+	for code := range c.held {
+		w.Key(uint32(code), true)
+	}
 }
 
 func (c *controller) attach(dc *webrtc.DataChannel) {
@@ -132,8 +150,17 @@ func (c *controller) apply(msg any) {
 				c.sess.focusCaptured(win)
 			}
 		}
+		if c.held == nil {
+			c.held = map[uint16]bool{}
+		}
+		if m.Pressed {
+			c.held[m.Code] = true
+		} else {
+			delete(c.held, m.Code)
+		}
 		w.Key(uint32(m.Code), m.Pressed)
 	case wire.ReleaseAll:
+		clear(c.held)
 		w.ReleaseAll()
 	}
 }

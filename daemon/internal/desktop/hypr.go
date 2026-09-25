@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -28,6 +29,8 @@ type hyprInstance struct {
 	Dir       string // $XDG_RUNTIME_DIR/hypr/<signature>
 	Wayland   string // wayland socket name, e.g. wayland-1
 	Runtime   string // $XDG_RUNTIME_DIR
+
+	lua atomic.Bool // dispatches take Lua (the config is Lua, as Omarchy's is)
 }
 
 func runtimeDir() string {
@@ -152,17 +155,47 @@ func (h *hyprInstance) workspaces() ([]hyprWorkspace, error) {
 	return ws, h.requestJSON("workspaces", &ws)
 }
 
-// dispatch runs a Hyprland dispatcher. Callers build args from validated
-// values only: dispatchers include exec.
-func (h *hyprInstance) dispatch(args string) error {
-	out, err := h.request("dispatch " + args)
-	if err != nil {
-		return err
+// dispatcher is one dispatch in both of Hyprland's config languages: with a
+// Lua config, IPC dispatches are Lua (`hl.dsp.focus({ workspace = "3" })`);
+// with hyprlang, the classic form (`workspace 3`). Callers build both from
+// validated values only: dispatchers include exec.
+type dispatcher struct {
+	classic, lua string
+}
+
+func focusWorkspace(id int32) dispatcher {
+	return dispatcher{fmt.Sprintf("workspace %d", id), fmt.Sprintf(`hl.dsp.focus({ workspace = "%d" })`, id)}
+}
+
+func focusMonitor(name string) dispatcher {
+	return dispatcher{"focusmonitor " + name, "hl.dsp.focus({ monitor = " + strconv.Quote(name) + " })"}
+}
+
+func focusWindowAddress(address string) dispatcher {
+	return dispatcher{"focuswindow address:" + address, `hl.dsp.focus({ window = "address:` + address + `" })`}
+}
+
+// dispatch runs d in the syntax that last worked, falling back to the other.
+func (h *hyprInstance) dispatch(d dispatcher) error {
+	forms := []string{d.classic, d.lua}
+	if h.lua.Load() {
+		forms = []string{d.lua, d.classic}
 	}
-	if r := strings.TrimSpace(string(out)); r != "ok" {
-		return fmt.Errorf("hyprland dispatch %s: %s", args, r)
+	var firstErr error
+	for _, f := range forms {
+		out, err := h.request("dispatch " + f)
+		if err == nil && strings.TrimSpace(string(out)) == "ok" {
+			h.lua.Store(f == d.lua)
+			return nil
+		}
+		if err == nil {
+			err = fmt.Errorf("hyprland dispatch %s: %s", f, strings.TrimSpace(string(out)))
+		}
+		if firstErr == nil {
+			firstErr = err
+		}
 	}
-	return nil
+	return firstErr
 }
 
 // events streams Hyprland's event names (the part before ">>") until done

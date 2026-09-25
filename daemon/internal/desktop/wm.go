@@ -1,7 +1,6 @@
 package desktop
 
 import (
-	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -154,7 +153,7 @@ func (s *session) showWorkspace(id int32) {
 	if id < 1 || id > 9999 {
 		return
 	}
-	if err := s.hypr.dispatch(fmt.Sprintf("workspace %d", id)); err != nil {
+	if err := s.hypr.dispatch(focusWorkspace(id)); err != nil {
 		slog.Warn("desktop workspace switch", "session", s.id, "err", err)
 	}
 }
@@ -186,7 +185,7 @@ func (s *session) dispatchFocus(address string) {
 	if !strings.HasPrefix(address, "0x") || strings.ContainsAny(address, " ,;") {
 		return
 	}
-	if err := s.hypr.dispatch("focuswindow address:" + address); err != nil {
+	if err := s.hypr.dispatch(focusWindowAddress(address)); err != nil {
 		slog.Warn("desktop focus window", "session", s.id, "err", err)
 		return
 	}
@@ -205,7 +204,7 @@ func (s *session) selectOutput(name string) {
 	if !slices.ContainsFunc(mons, func(m hyprMonitor) bool { return m.Name == name && !m.Disabled }) {
 		return
 	}
-	if err := s.hypr.dispatch("focusmonitor " + name); err != nil {
+	if err := s.hypr.dispatch(focusMonitor(name)); err != nil {
 		slog.Warn("desktop focus monitor", "session", s.id, "err", err)
 	}
 	s.switchOutput(name)

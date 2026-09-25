@@ -289,6 +289,9 @@ func (s *session) startMedia(src source) error {
 	s.media = md
 	go s.pump(md)
 	go s.cursorLoop(md)
+	if s.ctl != nil {
+		go s.ctl.replayHeld() // after s.mu is released; the controller locks in the other order
+	}
 	return nil
 }
 
@@ -600,7 +603,7 @@ func (s *session) cursorLoop(md *media) {
 		}
 		if cur.RGBA != nil {
 			img := wire.CursorImage{}
-			if hasVisiblePixels(cur.RGBA) && cur.Width <= 256 && cur.Height <= 256 {
+			if cursorImageUsable(cur.RGBA) && cur.Width <= 128 && cur.Height <= 128 {
 				img = wire.CursorImage{Width: uint16(cur.Width), Height: uint16(cur.Height), HotX: uint16(cur.HotX), HotY: uint16(cur.HotY), RGBA: cur.RGBA}
 			}
 			if img.Width != 0 || sentImage {
@@ -617,13 +620,21 @@ func (s *session) cursorLoop(md *media) {
 	}
 }
 
-func hasVisiblePixels(rgba []byte) bool {
+// cursorImageUsable is whether a captured cursor bitmap can be shown. Hyprland
+// captures cursors apps set by shape (most toolkits) as fully transparent, and
+// a fully opaque one is a square, not a cursor; the viewer shows its own
+// arrow for both.
+func cursorImageUsable(rgba []byte) bool {
+	visible, clear := false, false
 	for i := 3; i < len(rgba); i += 4 {
 		if rgba[i] != 0 {
-			return true
+			visible = true
+		}
+		if rgba[i] != 255 {
+			clear = true
 		}
 	}
-	return false
+	return visible && clear
 }
 
 func norm(v, extent float64) uint16 {

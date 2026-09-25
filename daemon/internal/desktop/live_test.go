@@ -65,3 +65,28 @@ func TestLive(t *testing.T) {
 		t.Fatal("no keyframe from the encoder")
 	}
 }
+
+// TestLiveDispatch focuses the monitor that already has focus (a no-op) in
+// whichever syntax this Hyprland takes (Lua config or hyprlang).
+//
+//	EW_DESKTOP_LIVE=1 go test ./internal/desktop -run LiveDispatch -v
+func TestLiveDispatch(t *testing.T) {
+	if os.Getenv("EW_DESKTOP_LIVE") == "" {
+		t.Skip("EW_DESKTOP_LIVE not set")
+	}
+	h, err := findHyprland()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mons, err := h.monitors()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.dispatch(focusMonitor(focusedOutput(mons))); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("lua dispatch: %v", h.lua.Load())
+	if err := h.dispatch(focusMonitor(focusedOutput(mons))); err != nil {
+		t.Fatal(err)
+	}
+}

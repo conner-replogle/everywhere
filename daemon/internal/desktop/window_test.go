@@ -60,3 +60,25 @@ func TestWindowInfosOrder(t *testing.T) {
 		t.Fatalf("first %+v", infos[0])
 	}
 }
+
+func TestCursorImageUsable(t *testing.T) {
+	px := func(a ...byte) []byte {
+		var b []byte
+		for _, v := range a {
+			b = append(b, 0, 0, 0, v)
+		}
+		return b
+	}
+	for _, tc := range []struct {
+		rgba []byte
+		want bool
+	}{
+		{px(0, 0, 0, 0), false},         // Hyprland's shape cursors
+		{px(255, 255, 255, 255), false}, // a solid square
+		{px(0, 255, 128, 0), true},
+	} {
+		if got := cursorImageUsable(tc.rgba); got != tc.want {
+			t.Errorf("cursorImageUsable(%v) = %v", tc.rgba, got)
+		}
+	}
+}

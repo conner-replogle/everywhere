@@ -1,3 +1,4 @@
+import { viewerIsMac } from "../browser-input";
 import type { DesktopConnection } from "./connection";
 import { EVDEV, KEY_LEFTMETA } from "./keycodes";
 import * as proto from "./protocol";
@@ -109,6 +110,22 @@ export class InputForwarder {
     if (pressed) this.pressedKeys.add(code);
     else this.pressedKeys.delete(code);
     this.send(this.conn.control, proto.key(code, pressed));
+
+    // macOS browsers never fire keyup for a key pressed while ⌘ is down, so the
+    // host would hold it (and repeat it) forever: tap it instead. Anything still
+    // down when ⌘ comes up is released too.
+    if (!viewerIsMac) return;
+    const meta = e.code === "MetaLeft" || e.code === "MetaRight" || code === KEY_LEFTMETA;
+    if (pressed && e.metaKey && !meta && !MODIFIERS.has(e.code)) {
+      this.pressedKeys.delete(code);
+      this.send(this.conn.control, proto.key(code, false));
+    } else if (!pressed && meta) {
+      for (const held of [...this.pressedKeys]) {
+        if (MODIFIER_CODES.has(held)) continue;
+        this.pressedKeys.delete(held);
+        this.send(this.conn.control, proto.key(held, false));
+      }
+    }
   }
 
   releaseAll() {
@@ -116,6 +133,11 @@ export class InputForwarder {
     this.send(this.conn.control, proto.releaseAll());
   }
 }
+
+const MODIFIERS = new Set([
+  "ShiftLeft", "ShiftRight", "ControlLeft", "ControlRight", "AltLeft", "AltRight", "MetaLeft", "MetaRight", "CapsLock",
+]);
+const MODIFIER_CODES = new Set([...MODIFIERS].map((c) => EVDEV[c]));
 
 function isWheelNotch(d: number): boolean {
   return d === 0 || (Number.isInteger(d) && d % 120 === 0);
