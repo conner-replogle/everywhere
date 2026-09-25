@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"math"
 	"net/netip"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -20,12 +21,6 @@ import (
 )
 
 const rtpMTU = 1200
-
-var codecMimes = map[ipc.Codec]string{
-	ipc.H264: webrtc.MimeTypeH264,
-	ipc.H265: webrtc.MimeTypeH265,
-	ipc.AV1:  webrtc.MimeTypeAV1,
-}
 
 // Viewer is who opened a session.
 type Viewer struct {
@@ -45,27 +40,25 @@ type session struct {
 	est    cc.BandwidthEstimator // nil if the congestion controller didn't attach
 	hypr   *hyprInstance
 
-	sender *webrtc.RTPSender
-	// One track per negotiated codec; the sender switches between them with ReplaceTrack.
-	tracks         map[ipc.Codec]*webrtc.TrackLocalStaticRTP
+	track          *webrtc.TrackLocalStaticRTP
+	sender         *webrtc.RTPSender
 	playoutDelayID uint8
 	seq            rtp.Sequencer
 
-	mu         sync.Mutex // guards everything below
-	mode       wire.Mode
-	boundCodec ipc.Codec
-	media      *media
-	control    *webrtc.DataChannel
-	follow     bool   // switch the capture to whichever monitor Hyprland focuses
-	wm         []byte // the last Workspaces message
-	windows    []byte // the last Windows message
-	activeWin  string // the focused window's address
-	clipSync   bool   // exchange clipboard text with the viewer
-	clipLast   string // the clipboard text both sides have
-	closed     bool
-	done       chan struct{}
-	connected  bool
-	uninhibit  func()
+	mu        sync.Mutex // guards everything below
+	mode      wire.Mode
+	media     *media
+	control   *webrtc.DataChannel
+	follow    bool   // switch the capture to whichever monitor Hyprland focuses
+	wm        []byte // the last Workspaces message
+	windows   []byte // the last Windows message
+	activeWin string // the focused window's address
+	clipSync  bool   // exchange clipboard text with the viewer
+	clipLast  string // the clipboard text both sides have
+	closed    bool
+	done      chan struct{}
+	connected bool
+	uninhibit func()
 
 	closeOnce sync.Once
 }
@@ -76,7 +69,6 @@ type media struct {
 	src           source      // what was asked for, to restart it
 	output        string      // the monitor: captured, or the window's
 	win           *windowGeom // the captured window; nil for a monitor
-	codec         ipc.Codec
 	scale         float64
 	width, height int // encoded size
 	nativeW       int
@@ -84,7 +76,6 @@ type media struct {
 	kbps          int
 	kbpsChanged   time.Time
 	pumpDone      chan struct{}
-	cursorDone    chan struct{}
 }
 
 // startSession answers offer at once; the daemon's ICE candidates follow
@@ -96,7 +87,7 @@ func startSession(m *Manager, id, offer string, mode wire.Mode, v Viewer, src so
 	}
 	s := &session{
 		m: m, id: id, viewer: v, pc: pc, mode: mode, hypr: h, seq: rtp.NewRandomSequencer(), follow: true,
-		tracks: map[ipc.Codec]*webrtc.TrackLocalStaticRTP{}, done: make(chan struct{}),
+		done: make(chan struct{}),
 	}
 	select {
 	case s.est = <-m.estimators:
@@ -108,16 +99,15 @@ func startSession(m *Manager, id, offer string, mode wire.Mode, v Viewer, src so
 		return nil, "", err
 	}
 
-	h264, err := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264, ClockRate: 90000}, "video", "everywhere")
+	s.track, err = webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264, ClockRate: 90000}, "video", "everywhere")
 	if err != nil {
 		return fail(err)
 	}
-	transceiver, err := pc.AddTransceiverFromTrack(h264, webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendonly})
+	transceiver, err := pc.AddTransceiverFromTrack(s.track, webrtc.RTPTransceiverInit{Direction: webrtc.RTPTransceiverDirectionSendonly})
 	if err != nil {
 		return fail(err)
 	}
 	s.sender = transceiver.Sender()
-	s.boundCodec = ipc.H264
 	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
 		if c != nil && onCandidate != nil {
 			onCandidate(c.ToJSON())
@@ -140,20 +130,9 @@ func startSession(m *Manager, id, offer string, mode wire.Mode, v Viewer, src so
 			s.playoutDelayID = uint8(ext.ID)
 		}
 	}
-	for codec, mime := range codecMimes {
-		for _, c := range params.Codecs {
-			if !strings.EqualFold(c.MimeType, mime) {
-				continue
-			}
-			if codec == ipc.H264 {
-				s.tracks[codec] = h264
-			} else if t, err := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{MimeType: mime, ClockRate: 90000}, "video", "everywhere"); err == nil {
-				s.tracks[codec] = t
-			}
-			break
-		}
-	}
-	if s.tracks[ipc.H264] == nil {
+	if !slices.ContainsFunc(params.Codecs, func(c webrtc.RTPCodecParameters) bool {
+		return strings.EqualFold(c.MimeType, webrtc.MimeTypeH264)
+	}) {
 		return fail(errors.New("this browser doesn't support H.264 (packetization-mode=1)"))
 	}
 
@@ -208,16 +187,8 @@ func (s *session) addCandidate(c webrtc.ICECandidateInit) {
 // startMedia captures src with the current mode's profile. Must hold s.mu (or
 // be constructing).
 func (s *session) startMedia(src source) error {
-	prof := profileFor(s.mode, s.m.AV1)
-
-	codec := ipc.H264
-	for _, c := range prof.codecs {
-		if s.tracks[c] != nil {
-			codec = c
-			break
-		}
-	}
-	md := &media{codec: codec, scale: 1, pumpDone: make(chan struct{}), cursorDone: make(chan struct{})}
+	prof := profileFor(s.mode)
+	md := &media{scale: 1, pumpDone: make(chan struct{})}
 	mons, err := s.hypr.monitors()
 	if err != nil {
 		return err
@@ -260,8 +231,11 @@ func (s *session) startMedia(src source) error {
 
 	c, err := startWorker(ipc.Config{
 		Output: md.output, Window: src.Window, BitrateKbps: md.kbps, TargetUsage: prof.targetUsage,
-		Codec: codec, Width: encW, Height: encH, MaxFPS: prof.maxFPS,
-		Input: true, Keymap: s.hypr.keymap(),
+		Codec: ipc.H264, Width: encW, Height: encH, MaxFPS: prof.maxFPS,
+		// The cursor is in the video, so its hover shapes (a hand, a text
+		// caret) show; the viewer hides its own.
+		PaintCursor: true,
+		Input:       true, Keymap: s.hypr.keymap(),
 	}, s.hypr.env())
 	if err != nil {
 		return err
@@ -276,19 +250,10 @@ func (s *session) startMedia(src source) error {
 		slog.Warn("desktop input unavailable; session is view-only", "session", s.id, "err", msg)
 	}
 
-	if codec != s.boundCodec {
-		if err := s.sender.ReplaceTrack(s.tracks[codec]); err != nil {
-			c.Close()
-			c.Free()
-			return err
-		}
-		s.boundCodec = codec
-	}
-	slog.Info("desktop capture started", "session", s.id, "output", md.output, "window", src.Window, "codec", codec, "size", [2]int{md.width, md.height}, "kbps", md.kbps, "mode", s.mode)
+	slog.Info("desktop capture started", "session", s.id, "output", md.output, "window", src.Window, "size", [2]int{md.width, md.height}, "kbps", md.kbps, "mode", s.mode)
 
 	s.media = md
 	go s.pump(md)
-	go s.cursorLoop(md)
 	if s.ctl != nil {
 		go s.ctl.replayHeld() // after s.mu is released; the controller locks in the other order
 	}
@@ -303,7 +268,6 @@ func (s *session) stopMedia() {
 	s.media = nil
 	md.cap.Close()
 	<-md.pumpDone
-	<-md.cursorDone
 	md.cap.Free()
 }
 
@@ -415,7 +379,7 @@ func (s *session) adaptBitrate() {
 			s.mu.Unlock()
 			continue
 		}
-		prof := profileFor(s.mode, s.m.AV1)
+		prof := profileFor(s.mode)
 		// Leave headroom for RTP overhead, retransmissions and keyframe bursts.
 		target := clamp(s.est.GetTargetBitrate()*85/100/1000, prof.minKbps, prof.maxKbps)
 		since := time.Since(md.kbpsChanged)
@@ -477,7 +441,7 @@ func (s *session) sendControl(b []byte) {
 func (s *session) modeInfoLocked() wire.ModeInfo {
 	info := wire.ModeInfo{Mode: s.mode}
 	if md := s.media; md != nil {
-		info.Codec = uint8(md.codec)
+		info.Codec = uint8(ipc.H264)
 		info.Width, info.Height = uint16(md.width), uint16(md.height)
 		info.BitrateKbps = uint32(md.kbps)
 	}
@@ -528,22 +492,9 @@ func (s *session) readRTCP() {
 	}
 }
 
-type payloader interface {
-	Payload(mtu uint16, payload []byte) [][]byte
-}
-
 func (s *session) pump(md *media) {
 	defer close(md.pumpDone)
-	var pl payloader
-	switch md.codec {
-	case ipc.H265:
-		pl = &codecs.H265Payloader{}
-	case ipc.AV1:
-		pl = &codecs.AV1Payloader{}
-	default:
-		pl = &codecs.H264Payloader{}
-	}
-	track := s.tracks[md.codec]
+	pl := &codecs.H264Payloader{}
 	// Chrome treats min=max=0 as "render immediately", bypassing its smoothing buffer.
 	playoutDelay := []byte{0, 0, 0}
 
@@ -574,67 +525,11 @@ func (s *session) pump(md *media) {
 			if s.playoutDelayID != 0 {
 				_ = pkt.Header.SetExtension(s.playoutDelayID, playoutDelay)
 			}
-			if err := track.WriteRTP(pkt); err != nil {
+			if err := s.track.WriteRTP(pkt); err != nil {
 				slog.Debug("write rtp", "err", err)
 			}
 		}
 	}
-}
-
-// cursorLoop forwards the host cursor image and position to the viewer.
-func (s *session) cursorLoop(md *media) {
-	defer close(md.cursorDone)
-	var prev *cursor
-	// Hyprland reports cursor positions in logical (scaled) output coordinates.
-	scale := md.scale
-	if scale <= 0 {
-		scale = 1
-	}
-	logicalW, logicalH := float64(md.nativeW)/scale, float64(md.nativeH)/scale
-	var lastPos wire.CursorPosition
-	sentImage := false
-	for {
-		cur, err := md.cap.WaitCursor(prev, time.Second)
-		if err != nil {
-			return
-		}
-		if cur == nil {
-			continue
-		}
-		if cur.RGBA != nil {
-			img := wire.CursorImage{}
-			if cursorImageUsable(cur.RGBA) && cur.Width <= 128 && cur.Height <= 128 {
-				img = wire.CursorImage{Width: uint16(cur.Width), Height: uint16(cur.Height), HotX: uint16(cur.HotX), HotY: uint16(cur.HotY), RGBA: cur.RGBA}
-			}
-			if img.Width != 0 || sentImage {
-				s.sendControl(img.Marshal())
-				sentImage = img.Width != 0
-			}
-		}
-		pos := wire.CursorPosition{Inside: cur.Inside, X: norm(float64(cur.X), logicalW), Y: norm(float64(cur.Y), logicalH)}
-		if pos != lastPos {
-			s.sendControl(pos.Marshal())
-			lastPos = pos
-		}
-		prev = cur
-	}
-}
-
-// cursorImageUsable is whether a captured cursor bitmap can be shown. Hyprland
-// captures cursors apps set by shape (most toolkits) as fully transparent, and
-// a fully opaque one is a square, not a cursor; the viewer shows its own
-// arrow for both.
-func cursorImageUsable(rgba []byte) bool {
-	visible, clear := false, false
-	for i := 3; i < len(rgba); i += 4 {
-		if rgba[i] != 0 {
-			visible = true
-		}
-		if rgba[i] != 255 {
-			clear = true
-		}
-	}
-	return visible && clear
 }
 
 func norm(v, extent float64) uint16 {

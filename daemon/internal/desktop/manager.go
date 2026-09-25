@@ -34,9 +34,6 @@ type Manager struct {
 	ICEServers func() []webrtc.ICEServer
 	// Enabled reports whether the device owner turned remote desktop on.
 	Enabled func() bool
-	// AV1 lets Sharp mode use AV1. Off: on the Radeon 840M (Mesa 26.2), AV1
-	// encoding of captured dmabufs hangs the VCN firmware.
-	AV1 bool
 
 	api        *webrtc.API
 	estimators chan cc.BandwidthEstimator
@@ -58,8 +55,6 @@ func NewManager(se webrtc.SettingEngine) (*Manager, error) {
 	}{
 		{webrtc.MimeTypeH264, "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=64001f"},
 		{webrtc.MimeTypeH264, "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"},
-		{webrtc.MimeTypeH265, "level-id=180;profile-id=1;tier-flag=0;tx-mode=SRST"},
-		{webrtc.MimeTypeAV1, "level-idx=5;profile=0;tier=0"},
 	}
 	for i, c := range videoCodecs {
 		err := m.RegisterCodec(webrtc.RTPCodecParameters{

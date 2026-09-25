@@ -108,7 +108,7 @@ export async function connectDesktop(
   };
 }
 
-/** Offers only codecs the host can send, H.264 High first. The host picks per mode. */
+/** Offers only H.264, the one codec the host sends: High profile first. */
 function preferCodecs(t: RTCRtpTransceiver) {
   const caps = RTCRtpReceiver.getCapabilities?.("video");
   if (!caps || !t.setCodecPreferences) return;
@@ -116,8 +116,6 @@ function preferCodecs(t: RTCRtpTransceiver) {
     const mime = c.mimeType.toLowerCase();
     const fmtp = c.sdpFmtpLine ?? "";
     if (mime === "video/h264" && fmtp.includes("packetization-mode=1")) return fmtp.includes("profile-level-id=64") ? 0 : 1;
-    if (mime === "video/h265" && /profile-id=1(;|$)/.test(fmtp)) return 2;
-    if (mime === "video/av1" && /profile=0/.test(fmtp)) return 3;
     return -1;
   };
   const wanted = caps.codecs.filter((c) => rank(c) >= 0).sort((a, b) => rank(a) - rank(b));

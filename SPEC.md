@@ -380,9 +380,11 @@ TODO.md items come later.
   a new one takes over and the old viewer is told who.
 - **Media**: `ext-image-copy-capture-v1` straight from Hyprland (no portal,
   no picker on the host) into dmabufs → GStreamer `vapostproc` → VA-API
-  H.264/H.265, no B-frames, bitrate from send-side BWE. Sharp (native, 4–40
-  Mbps), Smooth (≤1080p60) and Low (≤720p30, ≤3 Mbps). The viewer sets
-  `jitterBufferTarget = 0`; frames carry playout-delay 0.
+  H.264 in every mode, no B-frames, bitrate from send-side BWE. Sharp
+  (native, 4–40 Mbps), Smooth (≤1080p60) and Low (≤720p30, ≤3 Mbps). The
+  viewer sets `jitterBufferTarget = 0`; frames carry playout-delay 0. The
+  host cursor is painted into the video (so hover shapes show) and the
+  viewer hides its own.
 - **Worker**: capture, encoding and input injection run in
   `everywhere-desktop` (cgo: Wayland, libgbm, GStreamer, xkbcommon), next to
   the daemon binary; the daemon stays CGO-free. Linux release archives carry
@@ -399,7 +401,7 @@ TODO.md items come later.
   retransmits: pointer moves) and `control` (keys by physical code → evdev,
   buttons, scroll, ping, monitor and mode changes, workspace switches and
   follow, window select/focus, clipboard and clipboard sync; from the host:
-  hello (with the captured window), cursor image and position, monitors,
+  hello (with the captured window), monitors,
   mode info, workspaces, windows, clipboard, relay path, session ended).
 - **Input**: `zwlr_virtual_pointer_v1` bound to the captured monitor and
   `zwp_virtual_keyboard_v1` with the host's XKB keymap. Everything held is
