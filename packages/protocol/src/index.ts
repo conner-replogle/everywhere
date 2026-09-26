@@ -141,7 +141,8 @@ export interface DeviceInfo {
  * desktop.info, desktop.start and desktop.stop (remote desktop). rewind: the
  * agent channel's rewind request. icons: projects.icon. clone: projects.clone,
  * clones.list and clones.changed. gitStatus: git.status, git.fetch, git.pull,
- * git.updateDefault and git.changed.
+ * git.updateDefault and git.changed. claudeUpdate: agent.claudeVersion and
+ * agent.updateClaude.
  */
 export type DeviceFeature =
   | "claude"
@@ -155,7 +156,8 @@ export type DeviceFeature =
   | "rewind"
   | "icons"
   | "clone"
-  | "gitStatus";
+  | "gitStatus"
+  | "claudeUpdate";
 
 /**
  * What desktop.start captures: a monitor by name, or a window by id
@@ -186,6 +188,18 @@ export interface UpdateInfo {
   available: boolean;
   /** Why this daemon can't update itself (e.g. a dev build). */
   reason?: string;
+}
+
+/** agent.claudeVersion: the device's Claude Code and the newest release. */
+export interface ClaudeVersion {
+  current: string;
+  latest: string;
+  available: boolean;
+  /** The claude executable. */
+  path: string;
+  /** agent.updateClaude runs `command`, the update of the installer that owns this install. */
+  canUpdate: boolean;
+  command?: string;
 }
 
 export interface Project {
@@ -367,6 +381,13 @@ export interface RpcMethods {
   "git.updateDefault": [{ threadId?: string; projectId?: string }, GitStatus];
   /** Claude Code's models and account, before any thread has started. */
   "agent.info": [Record<string, never>, AgentInfo];
+  /** force: skip the daemon's hour-long cache of the newest release. */
+  "agent.claudeVersion": [{ force?: boolean }, ClaudeVersion];
+  /**
+   * Runs the update of the installer that owns claude (see ClaudeVersion).
+   * Open threads move to the new version when they're next idle.
+   */
+  "agent.updateClaude": [Record<string, never>, { version: string }];
   "debug.peer": [Record<string, never>, PeerDebug];
   "desktop.info": [Record<string, never>, DesktopInfo];
   /**
@@ -623,6 +644,8 @@ export interface AgentState {
   compacting?: boolean;
   /** The turn in progress is only a /recap (the thread shows idle elsewhere). */
   recapping?: boolean;
+  /** The Claude Code version the thread's claude runs, or would start with. */
+  claudeVersion?: string;
 }
 
 export interface AgentCommand {
@@ -748,6 +771,8 @@ export interface AgentModel {
   value: string;
   displayName: string;
   description?: string;
+  /** The model id an alias (like default) stands for now. Absent on older daemons. */
+  resolvedModel?: string;
   /** Effort levels the model accepts; absent when it has no effort control. */
   effortLevels?: EffortLevel[];
   /** Whether the model can think. */

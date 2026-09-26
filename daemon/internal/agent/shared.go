@@ -20,10 +20,11 @@ func (m *Manager) noteInit(init claude.InitResponse) {
 	models := make([]protocol.AgentModel, 0, len(init.Models))
 	for _, mo := range init.Models {
 		am := protocol.AgentModel{
-			Value:       mo.Value,
-			DisplayName: mo.DisplayName,
-			Description: mo.Description,
-			Thinking:    mo.SupportsAdaptiveThinking,
+			Value:         mo.Value,
+			ResolvedModel: mo.ResolvedModel,
+			DisplayName:   mo.DisplayName,
+			Description:   mo.Description,
+			Thinking:      mo.SupportsAdaptiveThinking,
 		}
 		if mo.SupportsEffort {
 			am.EffortLevels = mo.SupportedEffortLevels

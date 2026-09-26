@@ -105,18 +105,19 @@ type DeviceInfo struct {
 }
 
 const (
-	FeatureClaude      = "claude"      // claude threads and the agent channel
-	FeatureUpdate      = "update"      // device.checkUpdate and device.update
-	FeatureWorktrees   = "worktrees"   // claude threads in their own worktree; git.info
-	FeatureAttachments = "attachments" // upload channels and send attachments
-	FeatureHistory     = "history"     // agent attach limit and history paging
-	FeatureArchive     = "archive"     // threads.archive and Thread.archivedAt
-	FeatureTabs        = "tabs"        // tabs.*, fs.list, threads.workdir and file channels
-	FeatureDesktop     = "desktop"     // desktop.info, desktop.start and desktop.stop
-	FeatureRewind      = "rewind"      // the agent channel's rewind request
-	FeatureIcons       = "icons"       // projects.icon
-	FeatureClone       = "clone"       // projects.clone, clones.list and clones.changed
-	FeatureGitStatus   = "gitStatus"   // git.status, git.fetch, git.pull, git.updateDefault and git.changed
+	FeatureClaude       = "claude"       // claude threads and the agent channel
+	FeatureUpdate       = "update"       // device.checkUpdate and device.update
+	FeatureWorktrees    = "worktrees"    // claude threads in their own worktree; git.info
+	FeatureAttachments  = "attachments"  // upload channels and send attachments
+	FeatureHistory      = "history"      // agent attach limit and history paging
+	FeatureArchive      = "archive"      // threads.archive and Thread.archivedAt
+	FeatureTabs         = "tabs"         // tabs.*, fs.list, threads.workdir and file channels
+	FeatureDesktop      = "desktop"      // desktop.info, desktop.start and desktop.stop
+	FeatureRewind       = "rewind"       // the agent channel's rewind request
+	FeatureIcons        = "icons"        // projects.icon
+	FeatureClone        = "clone"        // projects.clone, clones.list and clones.changed
+	FeatureGitStatus    = "gitStatus"    // git.status, git.fetch, git.pull, git.updateDefault and git.changed
+	FeatureClaudeUpdate = "claudeUpdate" // agent.claudeVersion and agent.updateClaude
 )
 
 // DesktopInfo is the result of desktop.info.
@@ -168,6 +169,25 @@ type UpdateInfo struct {
 	Available bool   `json:"available"`
 	// Reason says why this daemon can't update itself (e.g. a dev build).
 	Reason string `json:"reason,omitempty"`
+}
+
+// ClaudeVersion is the result of agent.claudeVersion: the device's Claude
+// Code and the newest release.
+type ClaudeVersion struct {
+	Current   string `json:"current"`
+	Latest    string `json:"latest"`
+	Available bool   `json:"available"`
+	Path      string `json:"path"` // the claude executable
+	// CanUpdate: agent.updateClaude runs Command, the update of the installer
+	// that evidently owns this install. Otherwise it's updated the way it
+	// was installed.
+	CanUpdate bool   `json:"canUpdate"`
+	Command   string `json:"command,omitempty"`
+}
+
+// ClaudeUpdateResult is the result of agent.updateClaude.
+type ClaudeUpdateResult struct {
+	Version string `json:"version"`
 }
 
 // UpdateResult is the result of device.update, sent just before the daemon
@@ -465,6 +485,9 @@ type AgentState struct {
 	// Recapping: the turn in progress is only a /recap. The thread's
 	// status everywhere else stays idle, and its end notifies no one.
 	Recapping bool `json:"recapping,omitempty"`
+	// ClaudeVersion is the Claude Code version the thread's claude runs, or
+	// would start with.
+	ClaudeVersion string `json:"claudeVersion,omitempty"`
 }
 
 type AgentCommand struct {
@@ -578,10 +601,12 @@ type AgentInfo struct {
 }
 
 type AgentModel struct {
-	Value        string   `json:"value"`
-	DisplayName  string   `json:"displayName"`
-	Description  string   `json:"description,omitempty"`
-	EffortLevels []string `json:"effortLevels,omitempty"` // empty: no effort control
+	Value       string `json:"value"`
+	DisplayName string `json:"displayName"`
+	Description string `json:"description,omitempty"`
+	// ResolvedModel is the model id an alias (like default) stands for now.
+	ResolvedModel string   `json:"resolvedModel,omitempty"`
+	EffortLevels  []string `json:"effortLevels,omitempty"` // empty: no effort control
 	// Thinking is whether the model can think (adaptively).
 	Thinking bool `json:"thinking,omitempty"`
 }

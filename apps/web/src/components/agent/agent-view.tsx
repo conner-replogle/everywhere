@@ -718,6 +718,13 @@ function ModeMenu({
   );
 }
 
+/** What the model button says: for claude's default, the model it stands for. */
+function modelName(m: AgentModel, models: AgentModel[]): string {
+  if (m.value !== "default") return m.displayName;
+  const same = m.resolvedModel && models.find((o) => o !== m && o.resolvedModel === m.resolvedModel);
+  return same ? same.displayName : (m.description?.split(" · ")[0] ?? m.displayName);
+}
+
 function ModelMenu({
   state,
   models,
@@ -731,7 +738,7 @@ function ModelMenu({
 }) {
   const configured = state?.model ?? "";
   const current = models.find((m) => m.value === (configured || "default"));
-  const label = current?.displayName ?? (configured || "Default model");
+  const label = current ? modelName(current, models) : configured || "Default model";
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild disabled={disabled || models.length === 0}>
@@ -746,7 +753,12 @@ function ModelMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" side="top">
-        <DropdownMenuLabel>Model</DropdownMenuLabel>
+        <DropdownMenuLabel className="flex items-baseline justify-between gap-4">
+          Model
+          {state?.claudeVersion && (
+            <span className="text-[11px] font-normal text-muted-foreground">Claude Code {state.claudeVersion}</span>
+          )}
+        </DropdownMenuLabel>
         {models.map((m) => (
           <DropdownMenuItem key={m.value} onSelect={() => onPick(m.value === "default" ? "" : m.value)}>
             <div className="grid">

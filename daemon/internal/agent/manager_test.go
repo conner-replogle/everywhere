@@ -1166,3 +1166,33 @@ func TestRewindDuringTurnIsRefused(t *testing.T) {
 	h.do(c, protocol.AgentClientMsg{T: "rewind", ID: ids[0]})
 	eventually(t, "an error", func() bool { return len(c.errors()) == 1 })
 }
+
+func TestClaudeUpdateWaitsForIdle(t *testing.T) {
+	h := newHarness(t)
+	c := h.attach(0)
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "hello"})
+	p := h.proc(0)
+	h.waitStatus(c, "working")
+
+	// Claude is updated mid-turn: the turn carries on.
+	h.m.mu.Lock()
+	h.m.build, h.m.version = "new-build", "9.9.9"
+	h.m.mu.Unlock()
+	h.m.claudeChanged()
+	h.m.State(h.thread) // after the session has seen the change
+	p.mu.Lock()
+	closed := p.closed
+	p.mu.Unlock()
+	if closed {
+		t.Fatal("a working claude was stopped for the update")
+	}
+
+	// Once idle, it makes way for the new build.
+	p.emit(`{"type":"result","subtype":"success","result":"done"}`)
+	h.waitStatus(c, "stopped")
+	if v := c.state().ClaudeVersion; v != "9.9.9" {
+		t.Errorf("claudeVersion = %q, want the new build's", v)
+	}
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "again"})
+	h.waitStatus(c, "working")
+}

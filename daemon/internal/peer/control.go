@@ -51,7 +51,7 @@ func (s *Server) serveControl(p *peer, dc *webrtc.DataChannel) {
 		}
 		// Requests are answered in order, except slow ones (GitHub, starting
 		// claude or a desktop capture), which would hold up everything behind them.
-		if req.Method == "device.checkUpdate" || req.Method == "device.update" || req.Method == "agent.info" || req.Method == "desktop.start" {
+		if req.Method == "device.checkUpdate" || req.Method == "device.update" || req.Method == "agent.info" || req.Method == "agent.claudeVersion" || req.Method == "agent.updateClaude" || req.Method == "desktop.start" {
 			go handle()
 		} else {
 			handle()
@@ -95,6 +95,10 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
 		return s.agents.Info(ctx), nil
+	case "agent.claudeVersion":
+		return s.agents.ClaudeVersion(context.Background(), params.Force)
+	case "agent.updateClaude":
+		return s.agents.UpdateClaude(context.Background())
 	case "device.checkUpdate":
 		return s.checkUpdate(params.Force)
 	case "device.update":

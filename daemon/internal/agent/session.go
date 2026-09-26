@@ -79,6 +79,10 @@ type session struct {
 	proc        process
 	procMsgs    <-chan claude.Message
 	releaseArgs func() // from Manager.ThreadArgs, for the running process
+	// The claude build the running process is (see Manager.noteBuild), and
+	// its version.
+	procBuild   string
+	procVersion string
 	clients     map[Client]bool
 	state       protocol.AgentState
 	pending     map[string]*claude.PermissionRequest
@@ -391,6 +395,7 @@ func (s *session) ensureProc() error {
 		return fail(err)
 	}
 	s.proc, s.procMsgs = p, p.Messages()
+	s.procBuild, s.procVersion = s.m.currentBuild()
 	s.m.noteInit(p.Init())
 	s.state.Status = statusIdle
 	s.state.Workspace.Locked = true
@@ -1319,6 +1324,11 @@ func (s *session) stateMsg() protocol.AgentStateMsg {
 	}
 	st.Commands = s.m.visibleCommands()
 	st.Limits = s.m.currentLimits()
+	if s.proc != nil {
+		st.ClaudeVersion = s.procVersion
+	} else {
+		_, st.ClaudeVersion = s.m.currentBuild()
+	}
 	return protocol.AgentStateMsg{T: "state", State: st}
 }
 
@@ -1350,6 +1360,14 @@ func (s *session) changed() {
 	}
 	if prev := s.pub.Swap(next); *prev != *next {
 		s.m.onChange()
+	}
+	// Claude was updated: an idle process makes way for the new build. The
+	// next prompt starts it, resuming the conversation.
+	if s.proc != nil && s.state.Status == statusIdle && !s.stopping {
+		if build, _ := s.m.currentBuild(); build != s.procBuild {
+			slog.Info("stopping claude for its new version", "thread", s.threadID)
+			s.closeProc()
+		}
 	}
 }
 

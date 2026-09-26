@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/claude"
@@ -99,6 +100,9 @@ type Manager struct {
 	bin      string
 	env      []string
 
+	checking atomic.Bool // looking for a new claude build
+	updating atomic.Bool // agent.updateClaude is running
+
 	mu           sync.Mutex
 	sessions     map[string]*session
 	models       []protocol.AgentModel
@@ -107,6 +111,10 @@ type Manager struct {
 	terminalOnly []string // commands claude's own terminal UI keeps to itself
 	limits       []protocol.AgentLimit
 	infoAt       time.Time // when models/account were last refreshed
+	build        string    // the claude build last seen (claude.Build); "" before the first start
+	version      string    // that build's version
+	latest       string    // the newest Claude Code release, as of latestAt
+	latestAt     time.Time
 
 	probeMu sync.Mutex // one Info probe at a time
 }
@@ -138,6 +146,7 @@ func (m *Manager) Attach(threadID string, c Client, afterSeq int64, limit int) e
 		return err
 	}
 	s.do(func() { s.attach(c, afterSeq, limit) })
+	go m.checkClaude()
 	return nil
 }
 
@@ -376,22 +385,33 @@ func (m *Manager) initInfo() ([]protocol.AgentModel, *protocol.AgentAccount) {
 	return m.models, m.account
 }
 
-// startClaude launches the real CLI. The binary and the login-shell
-// environment are looked up on first use; a failed lookup is retried next
-// time, so installing claude doesn't need a daemon restart.
+// startClaude launches the real CLI.
 func (m *Manager) startClaude(ctx context.Context, o claude.Options) (process, error) {
+	bin, env, err := m.claudeBinary(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if m.noteBuild(ctx, bin, env) {
+		go m.claudeChanged()
+	}
+	o.Binary, o.Env = bin, env
+	return claude.Start(ctx, o)
+}
+
+// claudeBinary is the claude executable and the login-shell environment it
+// runs with, looked up on first use. A failed lookup is retried next time,
+// so installing claude doesn't need a daemon restart.
+func (m *Manager) claudeBinary(ctx context.Context) (string, []string, error) {
 	m.launchMu.Lock()
+	defer m.launchMu.Unlock()
 	if m.bin == "" {
 		bin, err := claude.FindBinary(ctx)
 		if err != nil {
-			m.launchMu.Unlock()
-			return nil, err
+			return "", nil, err
 		}
 		m.bin, m.env = bin, LoginEnv(ctx)
 	}
-	o.Binary, o.Env = m.bin, m.env
-	m.launchMu.Unlock()
-	return claude.Start(ctx, o)
+	return m.bin, m.env, nil
 }
 
 // transcriptForkPoint reads the fork point from the claude config directory

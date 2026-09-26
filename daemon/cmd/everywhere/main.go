@@ -150,7 +150,7 @@ func daemon(args []string) error {
 
 	hostname, _ := os.Hostname()
 	home, _ := os.UserHomeDir()
-	features := []string{protocol.FeatureClaude, protocol.FeatureUpdate, protocol.FeatureWorktrees, protocol.FeatureAttachments, protocol.FeatureHistory, protocol.FeatureArchive, protocol.FeatureTabs, protocol.FeatureRewind, protocol.FeatureIcons, protocol.FeatureClone, protocol.FeatureGitStatus}
+	features := []string{protocol.FeatureClaude, protocol.FeatureUpdate, protocol.FeatureWorktrees, protocol.FeatureAttachments, protocol.FeatureHistory, protocol.FeatureArchive, protocol.FeatureTabs, protocol.FeatureRewind, protocol.FeatureIcons, protocol.FeatureClone, protocol.FeatureGitStatus, protocol.FeatureClaudeUpdate}
 	if runtime.GOOS == "linux" {
 		features = append(features, protocol.FeatureDesktop)
 	}

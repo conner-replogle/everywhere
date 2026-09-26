@@ -28,6 +28,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { DeviceContext, type DeviceContextValue, useDevice } from "@/components/device-context";
+import { ClaudeUpdate, useClaudeUpdateCheck } from "@/components/claude-update";
 import { DeviceUpdate, RefreshVersionButton, useUpdateCheck } from "@/components/device-update";
 import { useFleet } from "@/components/fleet";
 import { HubStatus } from "@/components/hub-status";
@@ -752,6 +753,7 @@ function DeviceRow({
   const { device, conn, info, peer } = entry;
   const online = useDeviceOnline(device.id);
   const update = useUpdateCheck();
+  const claudeUpdate = useClaudeUpdateCheck();
   const navigate = useNavigate();
   const live = conn.state === "connected";
   const hasDesktop = live && !!info.data?.features?.includes("desktop");
@@ -776,7 +778,7 @@ function DeviceRow({
             {status}
           </span>
         </div>
-        {live && info.data && <RefreshVersionButton update={update} />}
+        {live && info.data && <RefreshVersionButton update={update} onRefresh={() => claudeUpdate.check(true)} />}
         {hasDesktop && (
           <Button
             variant="ghost"
@@ -834,6 +836,7 @@ function DeviceRow({
         </DropdownMenu>
       </div>
       <DeviceUpdate update={update} />
+      <ClaudeUpdate update={claudeUpdate} />
     </div>
   );
 }

@@ -65,7 +65,7 @@ export function useUpdateCheck(): UpdateCheck {
 }
 
 /** The small button next to the version: re-read the device and look for a release now. */
-export function RefreshVersionButton({ update }: { update: UpdateCheck }) {
+export function RefreshVersionButton({ update, onRefresh }: { update: UpdateCheck; onRefresh?: () => void }) {
   const { info } = useDevice();
   const upToDate = update.data && !update.data.available && !update.data.reason;
   return (
@@ -74,6 +74,7 @@ export function RefreshVersionButton({ update }: { update: UpdateCheck }) {
       onClick={() => {
         info.refetch();
         if (update.supported) update.check(true);
+        onRefresh?.();
       }}
       disabled={update.checking}
       className={cn(
