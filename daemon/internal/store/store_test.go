@@ -321,3 +321,34 @@ func TestSearchAgentEvents(t *testing.T) {
 		t.Errorf("_ matched as a wildcard: %+v", hits)
 	}
 }
+
+func TestTouchThread(t *testing.T) {
+	s := open(t)
+	p, err := s.CreateProject(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	th, err := s.CreateThread(p.ID, "", protocol.ThreadClaude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tab, err := s.CreateTab(th.ID, protocol.ThreadTerminal, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkSpawned(tab.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetThread(th.ID); got.LastOpenedAt != nil {
+		t.Errorf("starting a shell counted as using the thread")
+	}
+	// Using a tab counts as using its thread.
+	if err := s.TouchThread(tab.ID); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{th.ID, tab.ID} {
+		if got, err := s.GetThread(id); err != nil || got.LastOpenedAt == nil {
+			t.Errorf("GetThread(%s).LastOpenedAt = nil, %v", id, err)
+		}
+	}
+}

@@ -437,7 +437,15 @@ WHERE t.id = ?`, threadID,
 
 // MarkSpawned implements term.Resolver.
 func (s *Store) MarkSpawned(threadID string) error {
-	_, err := s.db.Exec("UPDATE threads SET had_session = 1, last_opened_at = ? WHERE id = ?", now(), threadID)
+	_, err := s.db.Exec("UPDATE threads SET had_session = 1 WHERE id = ?", threadID)
+	return err
+}
+
+// TouchThread records someone interacting with a thread (a prompt sent,
+// keys typed), and with the thread a tab belongs to, for sorting by recent.
+func (s *Store) TouchThread(threadID string) error {
+	_, err := s.db.Exec(`UPDATE threads SET last_opened_at = ?1
+WHERE id = ?2 OR id = (SELECT parent_id FROM threads WHERE id = ?2)`, now(), threadID)
 	return err
 }
 
@@ -547,8 +555,8 @@ func (s *Store) SetAgentContext(threadID string, usage json.RawMessage) error {
 // supersedes a pending rollback: it's either the fork that carried it out
 // or a fresh start.
 func (s *Store) SetAgentSessionID(threadID, sessionID string) error {
-	return s.execOne("UPDATE threads SET agent_session_id = NULLIF(?, ''), agent_resume_at = NULL, last_opened_at = ? WHERE id = ?",
-		sessionID, now(), threadID)
+	return s.execOne("UPDATE threads SET agent_session_id = NULLIF(?, ''), agent_resume_at = NULL WHERE id = ?",
+		sessionID, threadID)
 }
 
 // SetAgentResumeAt rolls the thread's conversation back: its next start

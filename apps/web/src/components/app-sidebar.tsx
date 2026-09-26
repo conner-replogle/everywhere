@@ -140,7 +140,7 @@ const projectKey = (deviceId: string, projectId: string) => `${deviceId}/${proje
 const connected = (e: Entry) => e.conn.state === "connected";
 const hasFeature = (e: Entry, f: string) => e.info.data?.features?.includes(f as never) ?? false;
 const deviceName = (e: Entry) => e.device.name || e.info.data?.hostname || "Device";
-/** When a thread was last used: opened, or else created. */
+/** When a thread was last used (a prompt sent, keys typed), or else created. */
 const threadRecency = (t: Thread) => Math.max(t.lastOpenedAt ?? 0, t.createdAt);
 /** A project is as recent as its most recent thread. */
 const projectRecency = (r: ProjectRow) => Math.max(r.project.createdAt, ...r.threads.map(threadRecency));

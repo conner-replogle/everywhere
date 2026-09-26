@@ -15,6 +15,7 @@ type fakeResolver struct {
 
 func (r *fakeResolver) ThreadShell(string) (string, bool, error) { return r.dir, r.spawned > 0, nil }
 func (r *fakeResolver) MarkSpawned(string) error                 { r.spawned++; return nil }
+func (r *fakeResolver) TouchThread(string) error                 { return nil }
 
 type fakeClient struct {
 	mu     sync.Mutex

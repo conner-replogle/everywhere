@@ -311,6 +311,12 @@ func (s *session) send(text string, attachmentIDs []string) error {
 	err = s.proc.Send(claude.UserMessage{UUID: id, Content: content})
 	if err == nil {
 		s.maybeTitle(text, files)
+		if !s.recapping {
+			if err := s.m.store.TouchThread(s.threadID); err != nil {
+				slog.Warn("touch thread", "thread", s.threadID, "err", err)
+			}
+			s.m.onChange()
+		}
 	}
 	return err
 }

@@ -355,6 +355,7 @@ func (r shells) ThreadShell(threadID string) (string, bool, error) {
 }
 
 func (r shells) MarkSpawned(threadID string) error { return r.s.store.MarkSpawned(threadID) }
+func (r shells) TouchThread(threadID string) error { return r.s.store.TouchThread(threadID) }
 
 // agentThreads looks up the claude threads among threads, for cleaning up
 // after they're deleted.

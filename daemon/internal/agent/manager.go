@@ -37,6 +37,7 @@ type Store interface {
 	ReplaceThreadName(id, from, to string) (bool, error)
 	AgentThread(threadID string) (store.AgentThread, error)
 	SetAgentSessionID(threadID, sessionID string) error
+	TouchThread(threadID string) error
 	SetAgentResumeAt(threadID, entry string) error
 	SetAgentModel(threadID, model string) error
 	SetAgentPermissionMode(threadID, mode string) error

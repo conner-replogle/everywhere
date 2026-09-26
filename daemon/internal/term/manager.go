@@ -21,13 +21,16 @@ import (
 
 const (
 	scrollbackBytes = 1 << 20
-	restartNotice   = "\x1b[2m[new shell — previous session ended]\x1b[0m\r\n"
+	// Typing marks a terminal as used at most this often.
+	touchEvery    = 30 * time.Second
+	restartNotice = "\x1b[2m[new shell — previous session ended]\x1b[0m\r\n"
 )
 
 // Resolver supplies per-thread shell details; implemented by store.Store.
 type Resolver interface {
 	ThreadShell(threadID string) (dir string, hadSession bool, err error)
 	MarkSpawned(threadID string) error
+	TouchThread(threadID string) error
 }
 
 // Client is one attached viewer (a browser's term channel).
@@ -56,6 +59,7 @@ type session struct {
 	scrollback []byte
 	clients    []Client // in attach order
 	writer     Client
+	touchedAt  time.Time // when typing last counted as using the thread
 }
 
 func NewManager(r Resolver, onChange func()) *Manager {
@@ -126,9 +130,21 @@ func (m *Manager) Input(threadID string, c Client, p []byte) {
 	}
 	s.mu.Lock()
 	isWriter := s.writer == c
+	touch := isWriter && time.Since(s.touchedAt) > touchEvery
+	if touch {
+		s.touchedAt = time.Now()
+	}
 	s.mu.Unlock()
 	if isWriter {
 		_, _ = s.ptmx.Write(p)
+	}
+	if touch {
+		if err := m.resolver.TouchThread(threadID); err != nil {
+			slog.Warn("touch thread", "thread", threadID, "err", err)
+		}
+		if m.onChange != nil {
+			m.onChange()
+		}
 	}
 }
 
