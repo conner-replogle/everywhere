@@ -52,6 +52,9 @@ type Tool struct {
 	// Call runs the tool. A returned error becomes a result with isError set,
 	// so the model sees it; protocol errors are for the protocol.
 	Call func(ctx context.Context, c Caller, args json.RawMessage) (*Result, error)
+	// Listed, if set, says whether tools/list shows the tool now: a tool
+	// that can't work on this machine stays out of the model's context.
+	Listed func() bool
 }
 
 // Annotations are hints about a tool's behaviour.
@@ -339,6 +342,9 @@ func (s *Server) dispatch(ctx context.Context, c Caller, req request) (any, *rpc
 	case "tools/list":
 		tools := make([]map[string]any, 0, len(s.tools))
 		for _, t := range s.tools {
+			if t.Listed != nil && !t.Listed() {
+				continue
+			}
 			tools = append(tools, map[string]any{
 				"name":        t.Name,
 				"title":       t.Title,

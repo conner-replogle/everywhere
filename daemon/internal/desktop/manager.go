@@ -37,12 +37,15 @@ type Manager struct {
 	// AV1 lets Sharp mode use AV1. Off: on the Radeon 840M (Mesa 26.2), AV1
 	// encoding of captured dmabufs hangs the VCN firmware.
 	AV1 bool
+	// ArtifactsDir is where agents save full-size screenshots.
+	ArtifactsDir string
 
 	api        *webrtc.API
 	estimators chan cc.BandwidthEstimator
 
-	mu   sync.Mutex
-	sess *session
+	mu     sync.Mutex
+	sess   *session
+	agents map[string]*Agent // by thread
 }
 
 // NewManager builds the media stack for desktop sessions. se is the daemon's
@@ -210,6 +213,16 @@ func (m *Manager) CloseTab(tabID string) {
 	m.sess = nil
 }
 
+// agentActed shows the viewer, if any, what an agent did.
+func (m *Manager) agentActed(action string, lx, ly float64, label string) {
+	m.mu.Lock()
+	s := m.sess
+	m.mu.Unlock()
+	if s != nil {
+		go s.showAgent(action, lx, ly, label)
+	}
+}
+
 // sessionEnded is called by a session that died on its own (ICE failure,
 // capture error).
 func (m *Manager) sessionEnded(s *session) {
@@ -220,8 +233,9 @@ func (m *Manager) sessionEnded(s *session) {
 	}
 }
 
-// Shutdown ends the session, telling the viewer why.
+// Shutdown ends the session, telling the viewer why, and stops the agents.
 func (m *Manager) Shutdown() {
+	m.closeAgents()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.sess != nil {

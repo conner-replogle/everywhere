@@ -465,6 +465,36 @@ func (s *session) setControl(dc *webrtc.DataChannel) {
 	}
 }
 
+// showAgent tells the viewer an agent acted at layout position lx, ly (NaN
+// for keyboard actions), marking it if it's inside the capture.
+func (s *session) showAgent(action string, lx, ly float64, label string) {
+	var mons []hyprMonitor
+	if !math.IsNaN(lx) {
+		mons, _ = s.hypr.monitors()
+	}
+	msg := wire.Agent{Action: action, Label: label}
+	s.mu.Lock()
+	md, dc := s.media, s.control
+	var nx, ny float64 = -1, -1
+	if md != nil && !math.IsNaN(lx) {
+		if md.win != nil {
+			nx = (lx - float64(md.win.At[0])) / float64(md.win.Size[0])
+			ny = (ly - float64(md.win.At[1])) / float64(md.win.Size[1])
+		} else if mon, ok := resolveOutput(md.output, mons); ok {
+			nx = (lx - float64(mon.X)) / (float64(mon.Width) / monScale(mon))
+			ny = (ly - float64(mon.Y)) / (float64(mon.Height) / monScale(mon))
+		}
+	}
+	s.mu.Unlock()
+	if dc == nil {
+		return
+	}
+	if nx >= 0 && nx < 1 && ny >= 0 && ny < 1 {
+		msg.Inside, msg.X, msg.Y = true, uint16(nx*65535), uint16(ny*65535)
+	}
+	_ = dc.Send(msg.Marshal())
+}
+
 func (s *session) sendControl(b []byte) {
 	s.mu.Lock()
 	dc := s.control

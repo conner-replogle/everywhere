@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import type { AgentStatus, Tab, TabKind, Thread } from "@everywhere/protocol";
+import type { AgentStatus, DesktopSource, Tab, TabKind, Thread } from "@everywhere/protocol";
 import {
   ArchiveRestoreIcon,
   FolderTreeIcon,
@@ -117,6 +117,9 @@ function ThreadPage() {
   const [renaming, setRenaming] = useState<Tab | null>(null);
   const [closing, setClosing] = useState<Tab | null>(null);
   const browserClosedAt = useRef(0);
+  const desktopClosedAt = useRef(0);
+  // What the thread's claude opened on the desktop, for its Desktop tab to show.
+  const [desktopShow, setDesktopShow] = useState<{ tabId: string; source: DesktopSource; at: number } | null>(null);
 
   const restore = async () => {
     setError(null);
@@ -148,6 +151,7 @@ function ThreadPage() {
 
   const closeTab = async (t: Tab) => {
     if (t.kind === "browser") browserClosedAt.current = Date.now();
+    if (t.kind === "desktop") desktopClosedAt.current = Date.now();
     if (active?.id === t.id) {
       const i = panes.findIndex((p) => p.id === t.id);
       setActive((panes[i + 1] ?? panes[i - 1] ?? thread!).id);
@@ -178,6 +182,33 @@ function ThreadPage() {
     void openTab("browser", false);
   };
 
+  const creatingDesktop = useRef(false);
+  const onDesktopUse = (source?: DesktopSource) => {
+    // Show the desktop as a tab, but not right after the user closed it.
+    if (!canTab || Date.now() - desktopClosedAt.current < 120_000) return;
+    const existing = tabs.data?.find((t) => t.kind === "desktop");
+    if (existing) {
+      if (source) {
+        setDesktopShow({ tabId: existing.id, source, at: Date.now() });
+        void peer.call("tabs.setState", { id: existing.id, state: JSON.stringify({ source }) }).catch(() => {});
+      }
+      return;
+    }
+    if (creatingDesktop.current) return;
+    creatingDesktop.current = true;
+    void (async () => {
+      try {
+        const t = await peer.call("tabs.create", { threadId, kind: "desktop" });
+        if (source) await peer.call("tabs.setState", { id: t.id, state: JSON.stringify({ source }) });
+        tabs.refetch();
+      } catch (e) {
+        setError(errorMessage(e));
+      } finally {
+        creatingDesktop.current = false;
+      }
+    })();
+  };
+
   const renderPane = (p: Pane) => {
     if (!thread) return null;
     switch (p.kind) {
@@ -194,6 +225,7 @@ function ThreadPage() {
               generation={conn.generation}
               cwd={project?.path}
               onBrowserUse={onBrowserUse}
+              onDesktopUse={features.includes("desktop") ? onDesktopUse : undefined}
             />
           </Suspense>
         );
@@ -257,6 +289,16 @@ function ThreadPage() {
               deviceId={deviceId}
               deviceName={device.name || info.data?.hostname || "the device"}
               active={p.id === active?.id}
+              show={desktopShow?.tabId === p.id ? desktopShow : undefined}
+              onAnnotate={
+                claudeTarget
+                  ? (draft) => {
+                      if (!sendToComposer(claudeTarget, draft)) return false;
+                      setActive(claudeTarget);
+                      return true;
+                    }
+                  : undefined
+              }
               tab={{
                 id: p.id,
                 state: p.tabState,

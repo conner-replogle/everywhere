@@ -21,7 +21,7 @@ const WorkerArg = "worker"
 // Version is this protocol's revision. The worker reports it in Hello; a
 // daemon refuses a worker from another revision (they ship together, so a
 // mismatch means a half-finished install).
-const Version = 2
+const Version = 3
 
 // Worker → daemon message types.
 const (
@@ -29,6 +29,9 @@ const (
 	MsgFrame  = 'F' // u64 capture µs (CLOCK_MONOTONIC), u8 keyframe, encoded access unit
 	MsgCursor = 'C' // see CursorHeaderLen
 	MsgError  = 'E' // UTF-8 message; the worker exits after it
+	// Replies to an agent worker's requests, in order.
+	MsgStill = 'I' // u8 ok; then u32 width, u32 height, RGBA pixels, or a UTF-8 error
+	MsgTyped = 'T' // u8: 0 typed, 1 no key on the layout types it
 )
 
 // Daemon → worker commands and their payloads.
@@ -41,12 +44,14 @@ const (
 	CmdScroll     = 'S' // u8 continuous, f64 dx, f64 dy
 	CmdKey        = 'Y' // u32 linux KEY_* code, u8 pressed
 	CmdReleaseAll = 'R' // —
+	CmdStill      = 'G' // — (agent worker); replies MsgStill
+	CmdType       = 'T' // u32 Unicode code point (agent worker); replies MsgTyped
 )
 
 // CommandLen is each command's payload size after the command byte.
 var CommandLen = map[byte]int{
 	CmdKeyframe: 0, CmdBitrate: 4, CmdQuit: 0, CmdMotion: 4, CmdButton: 9,
-	CmdScroll: 17, CmdKey: 5, CmdReleaseAll: 0,
+	CmdScroll: 17, CmdKey: 5, CmdReleaseAll: 0, CmdStill: 0, CmdType: 4,
 }
 
 // CursorHeaderLen is the fixed part of a cursor message: u64 image generation,
@@ -98,6 +103,9 @@ type Config struct {
 	// Input opens a virtual pointer (mapped onto Output) and keyboard.
 	Input  bool
 	Keymap Keymap
+	// Agent makes a worker for an agent's tools: no stream, just
+	// screenshots on request (CmdStill) and input, with typing (CmdType).
+	Agent bool `json:",omitempty"`
 }
 
 type Hello struct {

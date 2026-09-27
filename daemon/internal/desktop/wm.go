@@ -3,7 +3,6 @@ package desktop
 import (
 	"log/slog"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/desktop/wire"
@@ -182,10 +181,7 @@ func (s *session) focusCaptured(win *windowGeom) {
 }
 
 func (s *session) dispatchFocus(address string) {
-	if !strings.HasPrefix(address, "0x") || strings.ContainsAny(address, " ,;") {
-		return
-	}
-	if err := s.hypr.dispatch(focusWindowAddress(address)); err != nil {
+	if err := s.hypr.focusAddress(address); err != nil {
 		slog.Warn("desktop focus window", "session", s.id, "err", err)
 		return
 	}

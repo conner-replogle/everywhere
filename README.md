@@ -52,6 +52,13 @@ Hyprland ≥ 0.56, a VA-API GPU, GStreamer's `va` plugins (`gst-plugins-bad`,
 `gst-plugin-va`) and `wl-clipboard`; the `everywhere-desktop` worker comes in
 the Linux release next to `everywhere`. macOS is planned (see TODO.md).
 
+Claude threads on the device get `desktop_*` tools while remote desktop is on:
+list the windows, open one (or a monitor), take screenshots, and click, drag,
+scroll, type and press keys there, through their own virtual pointer and
+keyboard. The thread's Desktop tab opens on what Claude opened and marks where
+it acts. The tab's Annotate button marks up a still of the picture with
+regions and drawings, and sends it to the thread's chat.
+
 ## Connecting ChatGPT (or another agent)
 
 The Worker serves an MCP server at `https://ai.replogle.dev/mcp`. An agent that

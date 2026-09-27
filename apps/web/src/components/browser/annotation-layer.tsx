@@ -61,7 +61,8 @@ export function AnnotationCanvas({
   tool: AnnotationTool;
   annotations: Annotation[];
   editing: number | null;
-  pick: (x: number, y: number) => Promise<BrowserElement | null>;
+  /** Describes the element at a point; without it (a desktop), marks carry no element. */
+  pick?: (x: number, y: number) => Promise<BrowserElement | null>;
   onAdd: (a: Annotation) => void;
   onUpdate: (id: number, patch: Partial<Annotation>) => void;
   onEdit: (id: number | null) => void;
@@ -77,6 +78,7 @@ export function AnnotationCanvas({
   // One pick in flight at a time; the newest point wins.
   const picking = useRef<{ busy: boolean; next: Point | null }>({ busy: false, next: null });
   const hoverAt = (p: Point) => {
+    if (!pick) return;
     const q = picking.current;
     q.next = p;
     if (q.busy) return;
@@ -111,6 +113,7 @@ export function AnnotationCanvas({
   // Regions and drawings get the element under their middle as context.
   const addWithContext = (a: { kind: "region"; rect: Rect } | { kind: "draw"; points: Point[]; rect: Rect }) => {
     const id = add({ ...a, element: null });
+    if (!pick) return;
     void pick(a.rect.x + a.rect.width / 2, a.rect.y + a.rect.height / 2).then((element) =>
       onUpdate(id, { element } as Partial<Annotation>),
     );
@@ -121,6 +124,7 @@ export function AnnotationCanvas({
     e.preventDefault();
     const p = toPage(e);
     if (tool === "element") {
+      if (!pick) return;
       const el = hover && contains(hover, p) ? hover : await pick(p.x, p.y);
       if (el) add({ kind: "element", element: el });
       return;
@@ -330,6 +334,7 @@ export function AnnotationComment({
 
 /** Tool picker and actions, over the top of the frame while annotating. */
 export function AnnotationBar({
+  tools = ["element", "region", "draw"],
   tool,
   count,
   sending,
@@ -338,6 +343,8 @@ export function AnnotationBar({
   onCancel,
   onSend,
 }: {
+  /** The tools offered; all by default. */
+  tools?: AnnotationTool[];
   tool: AnnotationTool;
   count: number;
   sending: boolean;
@@ -348,7 +355,7 @@ export function AnnotationBar({
 }) {
   return (
     <div className="absolute top-2 left-1/2 z-30 flex -translate-x-1/2 items-center gap-0.5 rounded-lg border bg-popover/95 p-1 shadow-xl backdrop-blur">
-      {TOOLS.map(({ tool: t, label, icon: Icon }) => (
+      {TOOLS.filter(({ tool: t }) => tools.includes(t)).map(({ tool: t, label, icon: Icon }) => (
         <Button
           key={t}
           variant={tool === t ? "secondary" : "ghost"}
@@ -396,12 +403,14 @@ export function AnnotationBar({
 
 /**
  * The frame with the marks drawn on it, and a summary for the agent that
- * refers to them by number.
+ * refers to them by number. about replaces the browser's first line and file
+ * name, for other pictures (the desktop).
  */
 export async function composeAnnotations(
   frame: HTMLCanvasElement,
   page: { width: number; height: number; url: string; title: string },
   annotations: Annotation[],
+  about?: { intro: string; name: string },
 ): Promise<{ file: File; text: string }> {
   const c = document.createElement("canvas");
   c.width = frame.width;
@@ -447,10 +456,11 @@ export async function composeAnnotations(
   const blob = await new Promise<Blob | null>((res) => c.toBlob(res, "image/png"));
   if (!blob) throw new Error("Couldn't encode the screenshot");
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-  const file = new File([blob], `browser-annotations-${stamp}.png`, { type: "image/png" });
+  const file = new File([blob], `${about?.name ?? "browser-annotations"}-${stamp}.png`, { type: "image/png" });
 
   const lines = [
-    `Browser annotations on ${page.url}${page.title ? ` ("${page.title}")` : ""}, viewport ${page.width}×${page.height}. The attached screenshot shows each numbered mark.`,
+    about?.intro ??
+      `Browser annotations on ${page.url}${page.title ? ` ("${page.title}")` : ""}, viewport ${page.width}×${page.height}. The attached screenshot shows each numbered mark.`,
     "",
   ];
   annotations.forEach((a, i) => {

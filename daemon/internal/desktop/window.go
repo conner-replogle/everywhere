@@ -33,6 +33,7 @@ type hyprClient struct {
 		Name string `json:"name"`
 	} `json:"workspace"`
 	Monitor  int    `json:"monitor"`
+	Floating bool   `json:"floating"`
 	Class    string `json:"class"`
 	Title    string `json:"title"`
 	StableID string `json:"stableId"`

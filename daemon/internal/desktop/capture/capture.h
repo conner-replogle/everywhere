@@ -54,6 +54,15 @@ typedef struct {
  * generations. 1 = changed (out filled), 0 = timeout, -1 = closed. */
 int oc_capture_cursor_wait(oc_capture *c, uint64_t img_gen, uint64_t pos_gen, int timeout_ms, oc_cursor *out);
 
+typedef struct {
+	uint8_t *rgba;        /* opaque RGBA; caller frees */
+	int width, height;
+} oc_image;
+
+/* Copies one frame of a window (window set) or an output into out, without a running capture.
+ * 0 = done, -1 = failed (err). */
+int oc_screenshot(const char *output, const char *window, oc_image *out, char *err, size_t errlen);
+
 /* Newline-separated "name\twidth\theight" of all outputs; caller frees. NULL on error. */
 char *oc_list_outputs(char *err, size_t errlen);
 

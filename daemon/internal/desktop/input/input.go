@@ -73,6 +73,21 @@ func (d *Device) Key(code uint32, pressed bool) error {
 	return check(C.oi_key(d.d, C.uint32_t(code), cbool(pressed)))
 }
 
+// ErrNoKey means the keyboard layout has no key for a character.
+var ErrNoKey = errors.New("no key on this keyboard layout types it")
+
+// Type types one character as a key press, with Shift or AltGr if the
+// layout needs them.
+func (d *Device) Type(r rune) error {
+	switch C.oi_type(d.d, C.uint32_t(r)) {
+	case 0:
+		return nil
+	case 1:
+		return ErrNoKey
+	}
+	return ErrBroken
+}
+
 func (d *Device) ReleaseAll() error { return check(C.oi_release_all(d.d)) }
 
 func (d *Device) Close() { C.oi_close(d.d) }

@@ -12,6 +12,7 @@ import "C"
 
 import (
 	"errors"
+	"image"
 	"strconv"
 	"strings"
 	"time"
@@ -114,6 +115,27 @@ func ListOutputs() ([]Output, error) {
 		outs = append(outs, Output{Name: f[0], Width: w, Height: h})
 	}
 	return outs, nil
+}
+
+// Screenshot copies one frame of window (a stableId) or, without one, of
+// output. It needs no running capture and no GPU encoder.
+func Screenshot(output, window string) (*image.RGBA, error) {
+	out := C.CString(output)
+	defer C.free(unsafe.Pointer(out))
+	win := C.CString(window)
+	defer C.free(unsafe.Pointer(win))
+	var img C.oc_image
+	var errbuf [512]C.char
+	if C.oc_screenshot(out, win, &img, &errbuf[0], C.size_t(len(errbuf))) != 0 {
+		return nil, errors.New(C.GoString(&errbuf[0]))
+	}
+	defer C.free(unsafe.Pointer(img.rgba))
+	w, h := int(img.width), int(img.height)
+	return &image.RGBA{
+		Pix:    C.GoBytes(unsafe.Pointer(img.rgba), C.int(w*h*4)),
+		Stride: w * 4,
+		Rect:   image.Rect(0, 0, w, h),
+	}, nil
 }
 
 type Cursor struct {

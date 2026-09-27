@@ -174,6 +174,14 @@ func focusWindowAddress(address string) dispatcher {
 	return dispatcher{"focuswindow address:" + address, `hl.dsp.focus({ window = "address:` + address + `" })`}
 }
 
+// focusAddress focuses a window by its address, showing its workspace.
+func (h *hyprInstance) focusAddress(address string) error {
+	if !strings.HasPrefix(address, "0x") || strings.ContainsAny(address, " ,;\"") {
+		return fmt.Errorf("bad window address %q", address)
+	}
+	return h.dispatch(focusWindowAddress(address))
+}
+
 // dispatch runs d in the syntax that last worked, falling back to the other.
 func (h *hyprInstance) dispatch(d dispatcher) error {
 	forms := []string{d.classic, d.lua}

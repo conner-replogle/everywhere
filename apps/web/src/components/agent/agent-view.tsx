@@ -1,4 +1,4 @@
-import type { AgentCommand, AgentLimit, AgentModel, AgentState, PermissionMode } from "@everywhere/protocol";
+import type { AgentCommand, AgentLimit, AgentModel, AgentState, DesktopSource, PermissionMode } from "@everywhere/protocol";
 import {
   ArchiveRestoreIcon,
   ArrowUpIcon,
@@ -50,6 +50,16 @@ import { buildItems, RECAP_PROMPT, Timeline, type UserEvent } from "./timeline";
 
 
 const BROWSER_TOOL = /^mcp__everywhere__browser_/;
+const DESKTOP_TOOL = /^mcp__everywhere__desktop_/;
+
+/** What a desktop_open call pointed claude at; undefined for other desktop tools. */
+function openedSource(name: string, input: unknown): DesktopSource | undefined {
+  if (name !== "mcp__everywhere__desktop_open") return undefined;
+  const i = (input ?? {}) as { window?: unknown; output?: unknown };
+  if (typeof i.window === "string" && i.window) return { window: i.window };
+  if (typeof i.output === "string" && i.output) return { output: i.output };
+  return undefined;
+}
 
 /** Timeline items drawn at first; earlier ones load on request. */
 const PAGE = 150;
@@ -61,6 +71,7 @@ export function AgentView({
   generation,
   cwd,
   onBrowserUse,
+  onDesktopUse,
   archived,
 }: {
   peer: DevicePeer;
@@ -71,6 +82,8 @@ export function AgentView({
   cwd?: string;
   /** Called when claude starts driving the project's browser. */
   onBrowserUse?: () => void;
+  /** Called when claude uses the desktop, with what it opened there, if it opened something. */
+  onDesktopUse?: (source?: DesktopSource) => void;
   /** Set while the thread is archived: its history shows, with a way back instead of the composer. */
   archived?: { onRestore: () => void; error: string | null };
 }) {
@@ -81,14 +94,19 @@ export function AgentView({
   const seenSeq = useRef(0);
   const onBrowserUseRef = useRef(onBrowserUse);
   onBrowserUseRef.current = onBrowserUse;
+  const onDesktopUseRef = useRef(onDesktopUse);
+  onDesktopUseRef.current = onDesktopUse;
   useEffect(() => {
     const fresh = agent.events.filter((e) => e.seq > seenSeq.current);
     if (!fresh.length) return;
     seenSeq.current = fresh[fresh.length - 1]!.seq;
-    const used = fresh.some(
-      (e) => e.event.type === "tool" && BROWSER_TOOL.test(e.event.name) && Date.now() - e.at < 30_000,
-    );
-    if (used) onBrowserUseRef.current?.();
+    const tools = fresh.flatMap((e) => (e.event.type === "tool" && Date.now() - e.at < 30_000 ? [e.event] : []));
+    if (tools.some((t) => BROWSER_TOOL.test(t.name))) onBrowserUseRef.current?.();
+    const desktop = tools.filter((t) => DESKTOP_TOOL.test(t.name));
+    if (desktop.length) {
+      const opened = desktop.map((t) => openedSource(t.name, t.input)).filter(Boolean);
+      onDesktopUseRef.current?.(opened[opened.length - 1]);
+    }
   }, [agent.events]);
   const { info } = useDevice();
   const features = info.data?.features ?? [];

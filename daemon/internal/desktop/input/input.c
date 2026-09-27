@@ -249,17 +249,72 @@ static void update_modifiers(struct oi_input *in) {
 	zwp_virtual_keyboard_v1_modifiers(in->keyboard, dep, lat, loc, grp);
 }
 
+/* Must hold mu. */
+static int key_locked(struct oi_input *in, uint32_t key, int pressed) {
+	if (key == 0 || key >= KEY_SLOTS || in->keys[key] == !!pressed) return 0;
+	in->keys[key] = !!pressed;
+	zwp_virtual_keyboard_v1_key(in->keyboard, now_ms(), key,
+		pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED);
+	xkb_state_update_key(in->state, key + 8, pressed ? XKB_KEY_DOWN : XKB_KEY_UP);
+	update_modifiers(in);
+	return sync_out(in);
+}
+
 int oi_key(oi_input *in, uint32_t key, int pressed) {
-	if (key == 0 || key >= KEY_SLOTS) return 0;
 	pthread_mutex_lock(&in->mu);
-	int r = 0;
-	if (in->keys[key] != !!pressed) {
-		in->keys[key] = !!pressed;
-		zwp_virtual_keyboard_v1_key(in->keyboard, now_ms(), key,
-			pressed ? WL_KEYBOARD_KEY_STATE_PRESSED : WL_KEYBOARD_KEY_STATE_RELEASED);
-		xkb_state_update_key(in->state, key + 8, pressed ? XKB_KEY_DOWN : XKB_KEY_UP);
-		update_modifiers(in);
-		r = sync_out(in);
+	int r = key_locked(in, key, pressed);
+	pthread_mutex_unlock(&in->mu);
+	return r;
+}
+
+/* The keys that reach each shift level, tried in order: most characters
+ * need no modifier, then Shift, AltGr (level 3), or both. */
+static const uint32_t level_mods[][2] = { { 0, 0 }, { KEY_LEFTSHIFT, 0 }, { KEY_RIGHTALT, 0 }, { KEY_LEFTSHIFT, KEY_RIGHTALT } };
+
+/* Finds the key and modifiers that type keysym on the first layout. */
+static int find_keysym(struct oi_input *in, xkb_keysym_t sym, uint32_t *key, int *level) {
+	xkb_keycode_t lo = xkb_keymap_min_keycode(in->keymap), hi = xkb_keymap_max_keycode(in->keymap);
+	for (int l = 0; l < 4; l++) {
+		struct xkb_state *st = xkb_state_new(in->keymap);
+		for (int m = 0; m < 2; m++)
+			if (level_mods[l][m]) xkb_state_update_key(st, level_mods[l][m] + 8, XKB_KEY_DOWN);
+		/* A key that is itself a modifier would type nothing. */
+		for (xkb_keycode_t kc = lo; kc <= hi && kc - 8 < KEY_SLOTS; kc++) {
+			if (kc < 9 || xkb_state_key_get_one_sym(st, kc) != sym) continue;
+			if (kc - 8 == KEY_LEFTSHIFT || kc - 8 == KEY_RIGHTALT) continue;
+			xkb_state_unref(st);
+			*key = kc - 8;
+			*level = l;
+			return 1;
+		}
+		xkb_state_unref(st);
+	}
+	return 0;
+}
+
+int oi_type(oi_input *in, uint32_t codepoint) {
+	xkb_keysym_t sym;
+	switch (codepoint) {
+	case '\n': case '\r': sym = XKB_KEY_Return; break;
+	case '\t': sym = XKB_KEY_Tab; break;
+	case '\b': sym = XKB_KEY_BackSpace; break;
+	default: sym = xkb_utf32_to_keysym(codepoint);
+	}
+	if (sym == XKB_KEY_NoSymbol) return 1;
+	pthread_mutex_lock(&in->mu);
+	uint32_t key;
+	int level, r = 1;
+	if (find_keysym(in, sym, &key, &level)) {
+		/* Other held keys would change what the key types. */
+		for (uint32_t k = 0; k < KEY_SLOTS; k++)
+			if (in->keys[k]) key_locked(in, k, 0);
+		r = 0;
+		for (int m = 0; m < 2 && r == 0; m++)
+			if (level_mods[level][m]) r = key_locked(in, level_mods[level][m], 1);
+		if (r == 0) r = key_locked(in, key, 1);
+		if (r == 0) r = key_locked(in, key, 0);
+		for (int m = 1; m >= 0 && r == 0; m--)
+			if (level_mods[level][m]) r = key_locked(in, level_mods[level][m], 0);
 	}
 	pthread_mutex_unlock(&in->mu);
 	return r;

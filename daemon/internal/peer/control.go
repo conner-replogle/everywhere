@@ -394,6 +394,9 @@ func (s *Server) killThread(t protocol.Thread, a store.AgentThread, keepWorktree
 	}
 	if t.ParentID == "" {
 		s.browsers.Close(t.ID, "The thread was deleted", true)
+		if s.desktop != nil {
+			s.desktop.CloseAgent(t.ID)
+		}
 	}
 }
 

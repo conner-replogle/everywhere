@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
 	"io"
 	"log/slog"
 	"math"
@@ -65,6 +66,9 @@ type worker struct {
 	exitErr error
 	hello   ipc.Hello
 	frames  chan *frame
+	// replies carries an agent worker's answers (MsgStill, MsgTyped).
+	replies chan reply
+	reqMu   sync.Mutex // one agent request at a time
 
 	mu        sync.Mutex
 	cursor    *cursor
@@ -110,6 +114,7 @@ func startWorker(cfg ipc.Config, env []string) (*worker, error) {
 		cmd:       cmd,
 		stdin:     stdin,
 		frames:    make(chan *frame, 16),
+		replies:   make(chan reply, 1),
 		cursorSig: make(chan struct{}),
 		done:      make(chan struct{}),
 		closeCh:   make(chan struct{}),
@@ -173,6 +178,12 @@ func (w *worker) read(r *bufio.Reader) {
 			}
 		case ipc.MsgCursor:
 			w.setCursor(payload)
+		case ipc.MsgStill, ipc.MsgTyped:
+			select {
+			case w.replies <- reply{typ, payload}:
+			case <-w.closeCh:
+				return
+			}
 		case ipc.MsgError:
 			w.fail(errors.New(string(payload)))
 			return
@@ -313,6 +324,66 @@ func (w *worker) Key(code uint32, pressed bool) {
 }
 
 func (w *worker) ReleaseAll() { w.send([]byte{ipc.CmdReleaseAll}) }
+
+type reply struct {
+	typ     byte
+	payload []byte
+}
+
+// request sends an agent worker a command and waits for its reply.
+func (w *worker) request(cmd []byte, want byte, timeout time.Duration) ([]byte, error) {
+	w.reqMu.Lock()
+	defer w.reqMu.Unlock()
+	w.send(cmd)
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+	select {
+	case r := <-w.replies:
+		if r.typ != want {
+			return nil, fmt.Errorf("desktop worker: unexpected reply %q", r.typ)
+		}
+		return r.payload, nil
+	case <-w.closeCh:
+		return nil, w.state()
+	case <-t.C:
+		w.fail(errors.New("desktop worker stopped responding"))
+		return nil, w.state()
+	}
+}
+
+// Still takes a screenshot of the agent worker's window or output.
+func (w *worker) Still() (*image.RGBA, error) {
+	p, err := w.request([]byte{ipc.CmdStill}, ipc.MsgStill, 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	if len(p) < 1 || p[0] != 1 {
+		if len(p) > 1 {
+			return nil, errors.New(string(p[1:]))
+		}
+		return nil, errors.New("screenshot failed")
+	}
+	if len(p) < 9 {
+		return nil, errors.New("desktop worker: short screenshot")
+	}
+	wd, ht := int(ipc.LE.Uint32(p[1:])), int(ipc.LE.Uint32(p[5:]))
+	if len(p)-9 != wd*ht*4 {
+		return nil, errors.New("desktop worker: screenshot size mismatch")
+	}
+	return &image.RGBA{Pix: p[9:], Stride: wd * 4, Rect: image.Rect(0, 0, wd, ht)}, nil
+}
+
+// Type types one character; false means the keyboard layout has no key for it.
+func (w *worker) Type(r rune) (bool, error) {
+	b := make([]byte, 5)
+	b[0] = ipc.CmdType
+	ipc.LE.PutUint32(b[1:], uint32(r))
+	p, err := w.request(b, ipc.MsgTyped, 5*time.Second)
+	if err != nil {
+		return false, err
+	}
+	return len(p) == 1 && p[0] == 0, nil
+}
 
 func boolByte(v bool) byte {
 	if v {

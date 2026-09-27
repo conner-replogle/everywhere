@@ -125,6 +125,7 @@ struct oc_capture {
 	int session_done;
 	int session_stopped;
 	int buffer_failed;
+	uint32_t shm_formats; /* SHM_* bits the session offers; screenshots only */
 
 	int drm_fd;
 	struct gbm_device *gbm;
@@ -898,6 +899,154 @@ static void destroy_cursor(struct oc_capture *c) {
 	if (c->seat) wl_seat_destroy(c->seat);
 	if (c->shm) wl_shm_destroy(c->shm);
 	memset(cur, 0, sizeof *cur);
+}
+
+/* ---- screenshots ---- */
+
+/* A screenshot is one frame copied into shared memory: no GPU buffers and no
+ * encoder, so it works without VA-API and whether or not a stream is running. */
+
+static void destroy(struct oc_capture *c);
+
+enum { SHM_XRGB = 1, SHM_ARGB = 2, SHM_XBGR = 4, SHM_ABGR = 8 };
+
+struct still {
+	struct oc_capture *c;
+	int ready, failed;
+	uint32_t reason;
+};
+
+static void still_shm_format(void *d, struct ext_image_copy_capture_session_v1 *s, uint32_t f) {
+	struct oc_capture *c = d;
+	switch (f) {
+	case WL_SHM_FORMAT_XRGB8888: c->shm_formats |= SHM_XRGB; break;
+	case WL_SHM_FORMAT_ARGB8888: c->shm_formats |= SHM_ARGB; break;
+	case WL_SHM_FORMAT_XBGR8888: c->shm_formats |= SHM_XBGR; break;
+	case WL_SHM_FORMAT_ABGR8888: c->shm_formats |= SHM_ABGR; break;
+	}
+}
+static void still_dmabuf_device(void *d, struct ext_image_copy_capture_session_v1 *s, struct wl_array *dev) {}
+static void still_dmabuf_format(void *d, struct ext_image_copy_capture_session_v1 *s, uint32_t f, struct wl_array *m) {}
+static void still_session_buffer_size(void *d, struct ext_image_copy_capture_session_v1 *s, uint32_t w, uint32_t h) {
+	struct oc_capture *c = d;
+	c->width = w;
+	c->height = h;
+}
+static const struct ext_image_copy_capture_session_v1_listener still_session_listener = {
+	.buffer_size = still_session_buffer_size,
+	.shm_format = still_shm_format,
+	.dmabuf_device = still_dmabuf_device,
+	.dmabuf_format = still_dmabuf_format,
+	.done = session_done,
+	.stopped = session_stopped,
+};
+
+static void sframe_transform(void *d, struct ext_image_copy_capture_frame_v1 *f, uint32_t t) {}
+static void sframe_damage(void *d, struct ext_image_copy_capture_frame_v1 *f, int32_t x, int32_t y, int32_t w, int32_t h) {}
+static void sframe_presentation_time(void *d, struct ext_image_copy_capture_frame_v1 *f, uint32_t hi, uint32_t lo, uint32_t ns) {}
+static void sframe_ready(void *d, struct ext_image_copy_capture_frame_v1 *f) { ((struct still *)d)->ready = 1; }
+static void sframe_failed(void *d, struct ext_image_copy_capture_frame_v1 *f, uint32_t reason) {
+	struct still *st = d;
+	st->failed = 1;
+	st->reason = reason;
+}
+static const struct ext_image_copy_capture_frame_v1_listener still_frame_listener = {
+	.transform = sframe_transform,
+	.damage = sframe_damage,
+	.presentation_time = sframe_presentation_time,
+	.ready = sframe_ready,
+	.failed = sframe_failed,
+};
+
+int oc_screenshot(const char *output, const char *window, oc_image *out, char *err, size_t errlen) {
+	struct oc_capture *c = calloc(1, sizeof *c);
+	c->drm_fd = -1;
+	c->wake_fd = -1;
+	pthread_mutex_init(&c->mu, NULL);
+	pthread_mutex_init(&c->cursor_mu, NULL);
+	pthread_cond_init(&c->cursor_cond, NULL);
+	c->want_toplevels = window && *window;
+	struct wl_buffer *buf = NULL;
+	uint8_t *data = NULL;
+	size_t size = 0;
+	int r = -1;
+
+	if (connect_wayland(c, err, errlen) < 0) goto done;
+	if (!c->srcmgr || !c->capmgr) { set_err(err, errlen, "compositor lacks ext-image-copy-capture-v1"); goto done; }
+	if (!c->shm) { set_err(err, errlen, "compositor lacks wl_shm"); goto done; }
+
+	if (c->want_toplevels) {
+		if (!c->toplevel_list || !c->toplevel_srcmgr) { set_err(err, errlen, "compositor lacks window capture (ext-foreign-toplevel-image-capture-source)"); goto done; }
+		struct toplevel *t = NULL;
+		for (int i = 0; i < c->ntoplevels; i++)
+			if (!c->toplevels[i].closed && strcmp(c->toplevels[i].id, window) == 0) t = &c->toplevels[i];
+		if (!t) { set_err(err, errlen, "window closed"); goto done; }
+		c->source = ext_foreign_toplevel_image_capture_source_manager_v1_create_source(c->toplevel_srcmgr, t->h);
+	} else {
+		const char *want = (output && *output) ? output : "eDP-1";
+		for (int i = 0; i < c->noutputs; i++)
+			if (strcmp(c->outputs[i].name, want) == 0) c->output = &c->outputs[i];
+		if (!c->output) {
+			if (output && *output) { set_err(err, errlen, "no output named %s", output); goto done; }
+			if (!c->noutputs) { set_err(err, errlen, "no outputs"); goto done; }
+			c->output = &c->outputs[0];
+		}
+		c->source = ext_output_image_capture_source_manager_v1_create_source(c->srcmgr, c->output->wl);
+	}
+	c->session = ext_image_copy_capture_manager_v1_create_session(c->capmgr, c->source, 0);
+	ext_image_copy_capture_session_v1_add_listener(c->session, &still_session_listener, c);
+	while (!c->session_done && !c->session_stopped)
+		if (wl_display_dispatch(c->dpy) < 0) { set_err(err, errlen, "Wayland dispatch failed"); goto done; }
+	if (c->session_stopped) { set_err(err, errlen, "capture session refused by compositor"); goto done; }
+	if (c->width <= 0 || c->height <= 0 || c->width > 16384 || c->height > 16384) { set_err(err, errlen, "bad capture size %dx%d", c->width, c->height); goto done; }
+
+	uint32_t fmt;
+	int bgr;
+	if (c->shm_formats & SHM_XRGB) { fmt = WL_SHM_FORMAT_XRGB8888; bgr = 1; }
+	else if (c->shm_formats & SHM_ARGB) { fmt = WL_SHM_FORMAT_ARGB8888; bgr = 1; }
+	else if (c->shm_formats & SHM_XBGR) { fmt = WL_SHM_FORMAT_XBGR8888; bgr = 0; }
+	else if (c->shm_formats & SHM_ABGR) { fmt = WL_SHM_FORMAT_ABGR8888; bgr = 0; }
+	else { set_err(err, errlen, "compositor offers no 32-bit shm format for screenshots"); goto done; }
+
+	size = (size_t)c->width * c->height * 4;
+	int fd = memfd_create("everywhere-screenshot", MFD_CLOEXEC);
+	if (fd < 0 || ftruncate(fd, size) < 0) { if (fd >= 0) close(fd); set_err(err, errlen, "memfd: %s", strerror(errno)); goto done; }
+	data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	if (data == MAP_FAILED) { data = NULL; close(fd); set_err(err, errlen, "mmap: %s", strerror(errno)); goto done; }
+	struct wl_shm_pool *pool = wl_shm_create_pool(c->shm, fd, size);
+	buf = wl_shm_pool_create_buffer(pool, 0, c->width, c->height, c->width * 4, fmt);
+	wl_shm_pool_destroy(pool);
+	close(fd);
+
+	struct still st = { .c = c };
+	struct ext_image_copy_capture_frame_v1 *frame = ext_image_copy_capture_session_v1_create_frame(c->session);
+	ext_image_copy_capture_frame_v1_add_listener(frame, &still_frame_listener, &st);
+	ext_image_copy_capture_frame_v1_attach_buffer(frame, buf);
+	ext_image_copy_capture_frame_v1_damage_buffer(frame, 0, 0, c->width, c->height);
+	ext_image_copy_capture_frame_v1_capture(frame);
+	while (!st.ready && !st.failed)
+		if (wl_display_dispatch(c->dpy) < 0) { ext_image_copy_capture_frame_v1_destroy(frame); set_err(err, errlen, "Wayland dispatch failed"); goto done; }
+	ext_image_copy_capture_frame_v1_destroy(frame);
+	if (st.failed) { set_err(err, errlen, "screenshot failed (reason %u)", st.reason); goto done; }
+
+	/* Pixels come out opaque: a translucent window's premultiplied colours are
+	 * what it looks like over black. */
+	uint8_t *rgba = malloc(size);
+	for (size_t i = 0; i < size; i += 4) {
+		rgba[i] = data[i + (bgr ? 2 : 0)];
+		rgba[i + 1] = data[i + 1];
+		rgba[i + 2] = data[i + (bgr ? 0 : 2)];
+		rgba[i + 3] = 255;
+	}
+	out->rgba = rgba;
+	out->width = c->width;
+	out->height = c->height;
+	r = 0;
+done:
+	if (buf) wl_buffer_destroy(buf);
+	if (data) munmap(data, size);
+	destroy(c);
+	return r;
 }
 
 /* ---- public API ---- */

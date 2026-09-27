@@ -53,6 +53,9 @@ func main() {
 		_ = write(ipc.MsgError, []byte("desktop worker: bad config"))
 		os.Exit(2)
 	}
+	if cfg.Agent {
+		os.Exit(runAgent(cfg, write))
+	}
 	c, err := capture.Start(cfg)
 	if err != nil {
 		_ = write(ipc.MsgError, []byte(err.Error()))
@@ -164,6 +167,69 @@ func main() {
 	os.Exit(code)
 }
 
+// runAgent serves an agent's tools: screenshots when asked, and input. There
+// is no stream, so it needs no GPU encoder; each screenshot is its own copy.
+func runAgent(cfg ipc.Config, write func(byte, ...[]byte) error) int {
+	hello := ipc.Hello{Version: ipc.Version, Output: cfg.Output}
+	in := &injector{}
+	if cfg.Input {
+		dev, err := input.Open(cfg.Output, cfg.Keymap)
+		if err != nil {
+			slog.Error("input unavailable; screenshots only", "err", err)
+			hello.InputError = err.Error()
+		} else {
+			in.dev = dev
+		}
+	}
+	defer in.close()
+	helloJSON, _ := json.Marshal(hello)
+	if write(ipc.MsgHello, helloJSON) != nil {
+		return 1
+	}
+	r := bufio.NewReader(os.Stdin)
+	for {
+		cmd, err := r.ReadByte()
+		if err != nil || cmd == ipc.CmdQuit {
+			return 0
+		}
+		n, ok := ipc.CommandLen[cmd]
+		if !ok {
+			slog.Error("unknown command", "cmd", cmd)
+			return 1
+		}
+		var buf [32]byte
+		p := buf[:n]
+		if _, err := io.ReadFull(r, p); err != nil {
+			return 0
+		}
+		switch cmd {
+		case ipc.CmdStill:
+			err = still(cfg, write)
+		case ipc.CmdType:
+			result := []byte{in.typeRune(rune(le.Uint32(p)))}
+			err = write(ipc.MsgTyped, result)
+		case ipc.CmdKeyframe, ipc.CmdBitrate:
+		default:
+			in.apply(cmd, p)
+		}
+		if err != nil {
+			return 1
+		}
+	}
+}
+
+func still(cfg ipc.Config, write func(byte, ...[]byte) error) error {
+	img, err := capture.Screenshot(cfg.Output, cfg.Window)
+	if err != nil {
+		return write(ipc.MsgStill, []byte{0}, []byte(err.Error()))
+	}
+	var hdr [9]byte
+	hdr[0] = 1
+	le.PutUint32(hdr[1:], uint32(img.Rect.Dx()))
+	le.PutUint32(hdr[5:], uint32(img.Rect.Dy()))
+	return write(ipc.MsgStill, hdr[:], img.Pix)
+}
+
 // injector applies input commands to the virtual devices. After an injection
 // error the devices are closed and input is ignored (view-only).
 type injector struct {
@@ -198,6 +264,26 @@ func (in *injector) apply(cmd byte, p []byte) {
 		slog.Error("input injection failed; session is now view-only", "err", err)
 		in.dev.Close()
 		in.dev = nil
+	}
+}
+
+// typeRune types r: 0 typed, 1 the layout has no key for it (or input is off).
+func (in *injector) typeRune(r rune) byte {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	if in.dev == nil {
+		return 1
+	}
+	switch err := in.dev.Type(r); {
+	case err == nil:
+		return 0
+	case errors.Is(err, input.ErrNoKey):
+		return 1
+	default:
+		slog.Error("input injection failed; session is now view-only", "err", err)
+		in.dev.Close()
+		in.dev = nil
+		return 1
 	}
 }
 

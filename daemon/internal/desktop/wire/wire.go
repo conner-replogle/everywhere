@@ -46,6 +46,7 @@ const (
 	TypeWorkspaces     byte = 0x88
 	TypeWindows        byte = 0x89
 	TypeHostClipboard  byte = 0x8a
+	TypeAgent          byte = 0x8b // an AI agent acted on the desktop
 )
 
 // MaxClipboard bounds clipboard text in either direction; SCTP messages over
@@ -270,6 +271,25 @@ func MarshalHostClipboard(text string) []byte {
 	b := []byte{TypeHostClipboard}
 	b = le.AppendUint32(b, uint32(len(text)))
 	return append(b, text...)
+}
+
+// Agent shows the viewer what an AI agent did: what, where (when Inside,
+// across the video frame), and a label (the text typed, the keys pressed).
+type Agent struct {
+	Inside        bool
+	X, Y          uint16
+	Action, Label string
+}
+
+func (a Agent) Marshal() []byte {
+	b := []byte{TypeAgent, 0}
+	if a.Inside {
+		b[1] = 1
+	}
+	b = le.AppendUint16(b, a.X)
+	b = le.AppendUint16(b, a.Y)
+	b = append(b, shortString(a.Action)...)
+	return append(b, shortString(a.Label)...)
 }
 
 // CursorImage carries the host cursor bitmap. Width = Height = 0 means the host

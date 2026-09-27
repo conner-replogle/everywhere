@@ -5,6 +5,7 @@ import {
   CircleHelpIcon,
   LoaderIcon,
   MaximizeIcon,
+  MessageSquarePlusIcon,
   MinimizeIcon,
   MonitorIcon,
   MonitorOffIcon,
@@ -15,6 +16,15 @@ import {
   SlidersHorizontalIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import {
+  type Annotation,
+  AnnotationBar,
+  AnnotationCanvas,
+  AnnotationComment,
+  type AnnotationTool,
+  annotationRect,
+  composeAnnotations,
+} from "@/components/browser/annotation-layer";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -25,11 +35,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import type { ComposerDraft } from "@/lib/composer-inbox";
 import { type DesktopConnection, connectDesktop } from "@/lib/desktop/connection";
 import { CursorRenderer } from "@/lib/desktop/cursor";
 import { InputForwarder } from "@/lib/desktop/input";
 import { Trackpad } from "@/lib/desktop/trackpad";
 import {
+  type AgentAction,
   CODEC_NAMES,
   clipboard,
   type DesktopMode,
@@ -142,6 +154,10 @@ export interface DesktopViewProps {
   tab?: { id: string; state?: string; onStateChange: (state: string) => void };
   /** False while the tab is in the background: the session pauses. */
   active?: boolean;
+  /** Hands annotations to the chat; false if there's nowhere to put them. Without it, there's no Annotate button. */
+  onAnnotate?: (draft: ComposerDraft) => boolean;
+  /** What the thread's agent opened, for the tab to switch to; at changes with each. */
+  show?: { source: DesktopSource; at: number };
 }
 
 /**
@@ -192,7 +208,7 @@ export function DesktopView(props: DesktopViewProps) {
   return <DesktopSession {...props} />;
 }
 
-function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps) {
+function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnnotate, show }: DesktopViewProps) {
   const [prefs, setPrefs] = useState(() => loadPrefs(deviceId));
   const updatePrefs = (patch: Partial<Prefs>) =>
     setPrefs((p) => {
@@ -220,6 +236,9 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
   const [stats, setStats] = useState<DesktopStats | null>(null);
   const [inputRtt, setInputRtt] = useState<number | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
+  const [agentMark, setAgentMark] = useState<(AgentAction & { key: number }) | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
   const [attempt, setAttempt] = useState(0);
   const reconnect = useCallback(() => setAttempt((a) => a + 1), []);
 
@@ -336,6 +355,9 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
           case Type.PeerInfo:
             setPath(msg);
             break;
+          case Type.Agent:
+            setAgentMark({ ...msg, key: performance.now() });
+            break;
           case Type.SessionEnded:
             endedByHost = true;
             trackpad?.dispose();
@@ -399,6 +421,106 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
     if (c?.readyState === "open") c.send(msg);
   }, []);
 
+  // Show what the thread's agent opened: now, or when the session next connects.
+  const showAt = show?.at;
+  useEffect(() => {
+    if (!show) return;
+    tabSource.current = show.source;
+    if (show.source.window) sendControl(selectWindow(show.source.window));
+    else if (show.source.output) sendControl(selectOutput(show.source.output));
+  }, [showAt, sendControl]);
+
+  useEffect(() => {
+    if (!agentMark) return;
+    const t = setTimeout(() => setAgentMark(null), 3000);
+    return () => clearTimeout(t);
+  }, [agentMark]);
+
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 4000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    const ro = new ResizeObserver(() => setStageSize({ width: stage.clientWidth, height: stage.clientHeight }));
+    ro.observe(stage);
+    return () => ro.disconnect();
+  }, []);
+
+  // --- annotations: marks on a still of the picture, sent to the chat ---
+
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [annotating, setAnnotating] = useState(false);
+  const [frameSize, setFrameSize] = useState<{ width: number; height: number } | null>(null);
+  const [tool, setTool] = useState<AnnotationTool>("region");
+  const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  const [editingNote, setEditingNote] = useState<number | null>(null);
+  const [sending, setSending] = useState(false);
+
+  const stopAnnotating = useCallback(() => {
+    setAnnotating(false);
+    setAnnotations([]);
+    setEditingNote(null);
+    stageRef.current?.focus({ preventScroll: true });
+  }, []);
+
+  const startAnnotating = () => {
+    const v = videoRef.current;
+    const c = canvasRef.current;
+    if (!v || !c || !v.videoWidth) return;
+    c.width = v.videoWidth;
+    c.height = v.videoHeight;
+    c.getContext("2d")?.drawImage(v, 0, 0);
+    setFrameSize({ width: v.videoWidth, height: v.videoHeight });
+    setTool("region");
+    // Nothing reaches the desktop while annotating: no keys, no clicks.
+    stageRef.current?.blur();
+    setAnnotating(true);
+  };
+
+  useEffect(() => {
+    if (!annotating) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (editingNote !== null) setEditingNote(null);
+      else stopAnnotating();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [annotating, editingNote, stopAnnotating]);
+
+  const sendAnnotations = async () => {
+    const c = canvasRef.current;
+    if (!c || !frameSize || annotations.length === 0) return;
+    setSending(true);
+    try {
+      const what = hello?.window
+        ? `the window "${hello.title}" (${hello.class}, id ${hello.window})`
+        : `the monitor ${hello?.output ?? ""}`;
+      const { file, text } = await composeAnnotations(c, { ...frameSize, url: "", title: "" }, annotations, {
+        intro: `Desktop annotations on ${what} of ${deviceName}, a ${frameSize.width}×${frameSize.height} screenshot. The attached screenshot shows each numbered mark; positions are in its pixels.`,
+        name: "desktop-annotations",
+      });
+      if (onAnnotate?.({ text, files: [file] })) {
+        stopAnnotating();
+        return;
+      }
+      await navigator.clipboard.writeText(text);
+      setNotice("Copied the annotations; there's no chat here to send them to.");
+      stopAnnotating();
+    } catch (e) {
+      setNotice(`Couldn't send the annotations: ${errorMessage(e)}`);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const noteIndex = annotations.findIndex((a) => a.id === editingNote);
+  const note = noteIndex >= 0 ? annotations[noteIndex] : undefined;
+
   // Clipboard. The host's text is written here when it changes (once this
   // page has focus, which writing needs). Ours goes to the host when the
   // viewer comes back from another app or clicks into the picture, which is
@@ -454,6 +576,9 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
   };
 
   const focusStage = () => stageRef.current?.focus({ preventScroll: true });
+  // Where the picture sits in the stage (object-contain), for marks over it.
+  const picture = annotating && frameSize ? frameSize : hello;
+  const box = picture && stageSize.width ? containBox(stageSize, picture) : null;
   const streamingWindow = !!hello?.window;
   const activeOutput = streamingWindow ? undefined : outputs.find((o) => o.active);
   const iconBtn = "pointer-coarse:size-8";
@@ -605,6 +730,20 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
               )}
             </DropdownMenuContent>
           </DropdownMenu>
+          {tab && (
+            <Button
+              variant={annotating ? "secondary" : "ghost"}
+              size="icon-sm"
+              className={iconBtn}
+              aria-label="Annotate"
+              aria-pressed={annotating}
+              title="Annotate the picture for the chat"
+              disabled={status.kind !== "live" && !annotating}
+              onClick={() => (annotating ? stopAnnotating() : startAnnotating())}
+            >
+              <MessageSquarePlusIcon />
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon-sm"
@@ -635,7 +774,7 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
         tabIndex={-1}
         className="relative min-h-0 flex-1 overflow-hidden bg-black outline-none"
         onPointerDown={() => {
-          if (document.activeElement !== stageRef.current) {
+          if (!annotating && document.activeElement !== stageRef.current) {
             focusStage();
             void syncClipboardToHost();
           }
@@ -668,6 +807,89 @@ function DesktopSession({ peer, deviceId, tab, active = true }: DesktopViewProps
                 </Button>
               )}
             </div>
+          </div>
+        )}
+        {agentMark?.inside && box && (
+          <div
+            key={agentMark.key}
+            className="pointer-events-none absolute z-10"
+            style={{ left: box.left + agentMark.x * box.width, top: box.top + agentMark.y * box.height }}
+          >
+            <span className="absolute -top-3 -left-3 size-6 animate-ping rounded-full bg-violet-500/40" />
+            <MousePointer2Icon className="size-5 fill-violet-500 text-white drop-shadow" />
+            <span className="absolute top-5 left-3 rounded bg-violet-600 px-1.5 py-0.5 text-[11px] whitespace-nowrap text-white shadow">
+              Claude · {agentLabel(agentMark)}
+            </span>
+          </div>
+        )}
+        {agentMark && !agentMark.inside && (
+          <div className="pointer-events-none absolute bottom-2 left-2 z-10 max-w-[80%] truncate rounded bg-violet-600 px-2 py-1 text-xs text-white shadow">
+            Claude · {agentLabel(agentMark)}
+          </div>
+        )}
+        {annotating && <div data-local-keys className="absolute inset-0" />}
+        <div
+          data-local-keys
+          className={cn("absolute", !(annotating && box) && "hidden")}
+          style={box ? { left: box.left, top: box.top, width: box.width, height: box.height } : undefined}
+        >
+          <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 size-full" />
+          {annotating && frameSize && (
+            <AnnotationCanvas
+              width={frameSize.width}
+              height={frameSize.height}
+              tool={tool}
+              annotations={annotations}
+              editing={editingNote}
+              onAdd={(a) => setAnnotations((as) => [...as, a])}
+              onUpdate={(id, patch) =>
+                setAnnotations((as) => as.map((a) => (a.id === id ? ({ ...a, ...patch } as Annotation) : a)))
+              }
+              onEdit={setEditingNote}
+            />
+          )}
+        </div>
+        {annotating && note && frameSize && box && (
+          <div data-local-keys className="contents">
+            <AnnotationComment
+              key={note.id}
+              annotation={note}
+              n={noteIndex + 1}
+              left={box.left + (annotationRect(note).x * box.width) / frameSize.width}
+              top={Math.min(
+                box.top + ((annotationRect(note).y + annotationRect(note).height) * box.height) / frameSize.height + 8,
+                stageSize.height - 130,
+              )}
+              maxWidth={stageSize.width}
+              onChange={(comment) => setAnnotations((as) => as.map((a) => (a.id === note.id ? { ...a, comment } : a)))}
+              onDelete={() => {
+                setAnnotations((as) => as.filter((a) => a.id !== note.id));
+                setEditingNote(null);
+              }}
+              onClose={() => setEditingNote(null)}
+            />
+          </div>
+        )}
+        {annotating && (
+          <div data-local-keys className="contents">
+            <AnnotationBar
+              tools={["region", "draw"]}
+              tool={tool}
+              count={annotations.length}
+              sending={sending}
+              onTool={setTool}
+              onUndo={() => {
+                setAnnotations((as) => as.slice(0, -1));
+                setEditingNote(null);
+              }}
+              onCancel={stopAnnotating}
+              onSend={() => void sendAnnotations()}
+            />
+          </div>
+        )}
+        {notice && (
+          <div className="pointer-events-none absolute bottom-2 left-1/2 z-30 -translate-x-1/2 rounded-md bg-background/90 px-3 py-1.5 text-xs shadow">
+            {notice}
           </div>
         )}
         {touchMode === "trackpad" && status.kind === "live" && <TrackpadHelp />}
@@ -842,6 +1064,20 @@ function TrackpadHelp() {
       </button>
     </div>
   );
+}
+
+/** The rectangle a picture of size pic takes in stage with object-contain. */
+function containBox(stage: { width: number; height: number }, pic: { width: number; height: number }) {
+  const scale = Math.min(stage.width / pic.width, stage.height / pic.height);
+  const width = pic.width * scale;
+  const height = pic.height * scale;
+  return { left: (stage.width - width) / 2, top: (stage.height - height) / 2, width, height };
+}
+
+function agentLabel(a: AgentAction): string {
+  if (a.action === "type") return `typed “${a.label}”`;
+  if (a.action === "key") return `pressed ${a.label}`;
+  return a.label || a.action;
 }
 
 function formatStats(s: DesktopStats, inputRtt: number | null): string {

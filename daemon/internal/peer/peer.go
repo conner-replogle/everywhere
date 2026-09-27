@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -125,10 +126,6 @@ func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string) *Serve
 		}
 		return nil
 	}
-	s.mcp = mcp.NewServer("everywhere", version.Version, browser.Tools(s.browsers))
-	s.mcpDir = filepath.Join(dataDir, "mcp")
-	clearMCPConfigs(s.mcpDir)
-	s.agents.ThreadArgs = s.claudeArgs
 	if d, err := desktop.NewManager(se); err != nil {
 		slog.Error("remote desktop unavailable", "err", err)
 	} else {
@@ -139,8 +136,17 @@ func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string) *Serve
 			return nil
 		}
 		d.Enabled = func() bool { return s.DesktopEnabled != nil && s.DesktopEnabled() }
+		d.ArtifactsDir = filepath.Join(dataDir, "desktop", "artifacts")
 		s.desktop = d
 	}
+	tools := browser.Tools(s.browsers)
+	if s.desktop != nil && runtime.GOOS == "linux" {
+		tools = append(tools, desktop.Tools(s.desktop)...)
+	}
+	s.mcp = mcp.NewServer("everywhere", version.Version, tools)
+	s.mcpDir = filepath.Join(dataDir, "mcp")
+	clearMCPConfigs(s.mcpDir)
+	s.agents.ThreadArgs = s.claudeArgs
 	return s
 }
 

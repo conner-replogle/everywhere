@@ -3,6 +3,7 @@ package desktop
 import (
 	"bufio"
 	"context"
+	"errors"
 	"log/slog"
 	"os/exec"
 	"strings"
@@ -68,15 +69,36 @@ func (s *session) watchClipboard() {
 }
 
 func (s *session) readClipboard(ctx context.Context) (string, bool) {
+	return readClipboard(ctx, s.hypr)
+}
+
+func readClipboard(ctx context.Context, h *hyprInstance) (string, bool) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "wl-paste", "--no-newline", "--type", "text")
-	cmd.Env = s.hypr.env()
+	cmd.Env = h.env()
 	out, err := cmd.Output() // fails when the clipboard holds no text (an image)
 	if err != nil || len(out) > wire.MaxClipboard || !utf8.Valid(out) {
 		return "", false
 	}
 	return string(out), true
+}
+
+func readClipboardText(h *hyprInstance) (string, bool) {
+	return readClipboard(context.Background(), h)
+}
+
+// writeClipboardText puts text on the host's clipboard.
+func writeClipboardText(h *hyprInstance, text string) error {
+	if !utf8.ValidString(text) || len(text) > wire.MaxClipboard {
+		return errors.New("the text must be valid UTF-8 and at most 200 KiB")
+	}
+	// wl-copy forks a server that holds the selection until it's replaced. It
+	// inherits stdout and stderr, so those must not be pipes Run waits on.
+	cmd := exec.Command("wl-copy", "--type", textType)
+	cmd.Env = h.env()
+	cmd.Stdin = strings.NewReader(text)
+	return cmd.Run()
 }
 
 // setClipboard puts the viewer's clipboard text on the host.
@@ -90,12 +112,7 @@ func (s *session) setClipboard(text string) {
 	if skip {
 		return
 	}
-	// wl-copy forks a server that holds the selection until it's replaced. It
-	// inherits stdout and stderr, so those must not be pipes Run waits on.
-	cmd := exec.Command("wl-copy", "--type", textType)
-	cmd.Env = s.hypr.env()
-	cmd.Stdin = strings.NewReader(text)
-	if err := cmd.Run(); err != nil {
+	if err := writeClipboardText(s.hypr, text); err != nil {
 		slog.Warn("setting the clipboard failed", "session", s.id, "err", err)
 	}
 }

@@ -17,6 +17,9 @@ int oi_motion(oi_input *in, uint32_t x, uint32_t y); /* 0..65535 across the outp
 int oi_button(oi_input *in, uint32_t button, int pressed); /* linux BTN_* code */
 int oi_axis(oi_input *in, int continuous, double dx, double dy);
 int oi_key(oi_input *in, uint32_t key, int pressed); /* linux KEY_* code */
+/* Types one character with the keymap's keys (and Shift/AltGr): 0 = typed,
+ * 1 = no key on the layout types it, -1 = connection unusable. */
+int oi_type(oi_input *in, uint32_t codepoint);
 int oi_release_all(oi_input *in);
 void oi_close(oi_input *in);
 

@@ -33,6 +33,7 @@ export const Type = {
   Workspaces: 0x88,
   Windows: 0x89,
   HostClipboard: 0x8a,
+  Agent: 0x8b,
 } as const;
 
 /** Clipboard text is capped both ways; bigger SCTP messages aren't portable. */
@@ -164,6 +165,16 @@ export interface HostClipboard {
   text: string;
 }
 
+/** An AI agent acted on the desktop: where (when inside, 0..1 across the video), what, and a label (text typed, keys pressed). */
+export interface AgentAction {
+  type: typeof Type.Agent;
+  inside: boolean;
+  x: number;
+  y: number;
+  action: string;
+  label: string;
+}
+
 export type HostMessage =
   | Hello
   | Pong
@@ -175,7 +186,8 @@ export type HostMessage =
   | PeerInfo
   | Workspaces
   | Windows
-  | HostClipboard;
+  | HostClipboard
+  | AgentAction;
 
 /** Reads a u8-length-prefixed UTF-8 string; returns it and the offset after it. */
 function shortString(data: ArrayBuffer, off: number): [string, number] {
@@ -325,6 +337,19 @@ export function parseHost(data: ArrayBuffer): HostMessage | null {
         windows.push({ id, class: cls, title, workspace, monitor, focused: (flags & 1) !== 0 });
       }
       return { type: Type.Windows, windows };
+    }
+    case Type.Agent: {
+      if (b.byteLength < 7) return null;
+      const [action, o1] = shortString(data, 6);
+      const [label] = shortString(data, o1);
+      return {
+        type: Type.Agent,
+        inside: b.getUint8(1) !== 0,
+        x: b.getUint16(2, true) / 65535,
+        y: b.getUint16(4, true) / 65535,
+        action,
+        label,
+      };
     }
     case Type.HostClipboard: {
       if (b.byteLength < 5) return null;
