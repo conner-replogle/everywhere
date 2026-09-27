@@ -18,6 +18,8 @@ import (
 	"syscall"
 	"time"
 	"unicode/utf8"
+
+	"github.com/conner-replogle/everywhere/daemon/internal/proc"
 )
 
 const (
@@ -68,20 +70,19 @@ func Exec(ctx context.Context, dir, command, stdin string, timeout time.Duration
 	cmd.Stdin = strings.NewReader(stdin)
 	stdout, stderr := &tailBuffer{max: MaxStreamBytes}, &tailBuffer{max: MaxStreamBytes}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
-	// Its own process group, so a timeout takes its children down too.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
 	start := time.Now()
-	if err := cmd.Start(); err != nil {
+	// Its own process group, so a timeout takes its children down too.
+	group, err := proc.Start(cmd)
+	if err != nil {
 		return res, err
 	}
+	defer group.Release()
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	var err error
 	select {
 	case err = <-done:
 	case <-ctx.Done():
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		_ = group.Signal(syscall.SIGKILL)
 		err = <-done
 		res.TimedOut = true
 	}

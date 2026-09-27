@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/desktop/ipc"
@@ -67,7 +66,7 @@ func findHyprland() (*hyprInstance, error) {
 		}
 		lines := strings.Split(strings.TrimSpace(string(lock)), "\n")
 		pid, err := strconv.Atoi(strings.TrimSpace(lines[0]))
-		if err != nil || syscall.Kill(pid, 0) != nil {
+		if err != nil || !alive(pid) {
 			continue
 		}
 		inst := &hyprInstance{Signature: e.Name(), Dir: dir, Runtime: rt}

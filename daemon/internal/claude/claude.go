@@ -25,6 +25,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/conner-replogle/everywhere/daemon/internal/proc"
 )
 
 // ErrExited is returned by calls made after the CLI process has exited.
@@ -66,6 +68,7 @@ type Options struct {
 // Session is one running CLI process.
 type Session struct {
 	cmd    *exec.Cmd
+	group  *proc.Group
 	stdin  io.WriteCloser
 	stderr *tailBuffer
 	init   InitResponse
@@ -107,9 +110,6 @@ func Start(ctx context.Context, o Options) (*Session, error) {
 	if o.FileCheckpointing {
 		cmd.Env = append(cmd.Env, "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING=true")
 	}
-	// Own process group, so Close can take down tool subprocesses too.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-
 	s := &Session{
 		cmd:     cmd,
 		stderr:  &tailBuffer{max: stderrTail},
@@ -128,9 +128,12 @@ func Start(ctx context.Context, o Options) (*Session, error) {
 		return nil, err
 	}
 	s.stdin = stdin
-	if err := cmd.Start(); err != nil {
+	// Own process group, so Close can take down tool subprocesses too.
+	group, err := proc.Start(cmd)
+	if err != nil {
 		return nil, fmt.Errorf("claude: start %s: %w", bin, err)
 	}
+	s.group = group
 
 	readerDone := make(chan struct{})
 	go func() {
@@ -140,6 +143,7 @@ func Start(ctx context.Context, o Options) (*Session, error) {
 	go func() {
 		<-readerDone
 		err := cmd.Wait()
+		group.Release()
 		s.mu.Lock()
 		s.err = s.exitError(err)
 		s.mu.Unlock()
@@ -348,14 +352,13 @@ func (s *Session) Close() {
 		s.writeMu.Lock()
 		_ = s.stdin.Close()
 		s.writeMu.Unlock()
-		pid := s.cmd.Process.Pid
 		for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL} {
 			select {
 			case <-s.done:
 				return
 			case <-time.After(closeTimeout):
 			}
-			_ = syscall.Kill(-pid, sig)
+			_ = s.group.Signal(sig)
 		}
 	})
 	<-s.done

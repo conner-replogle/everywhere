@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+
+	"github.com/conner-replogle/everywhere/daemon/internal/proc"
 )
 
 const (
@@ -52,6 +54,7 @@ type Manager struct {
 type session struct {
 	threadID string
 	cmd      *exec.Cmd
+	group    *proc.Group
 	ptmx     *os.File
 	done     chan struct{}
 
@@ -289,6 +292,7 @@ func (m *Manager) pump(s *session) {
 			code = -1
 		}
 	}
+	s.group.Release()
 	_ = s.ptmx.Close()
 	close(s.done)
 
@@ -327,12 +331,11 @@ func (s *session) resize(cols, rows uint16) {
 }
 
 func (s *session) kill() {
-	pid := s.cmd.Process.Pid
-	_ = syscall.Kill(-pid, syscall.SIGHUP)
+	_ = s.group.Signal(syscall.SIGHUP)
 	select {
 	case <-s.done:
 	case <-time.After(3 * time.Second):
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
+		_ = s.group.Signal(syscall.SIGKILL)
 	}
 }
 
@@ -349,7 +352,15 @@ func spawn(threadID, dir string, cols, rows uint16) (*session, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &session{threadID: threadID, cmd: cmd, ptmx: ptmx, done: make(chan struct{})}, nil
+	// The PTY made the shell a session leader, so its process group is the Group.
+	group, err := proc.Attach(cmd)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = ptmx.Close()
+		_ = cmd.Wait()
+		return nil, err
+	}
+	return &session{threadID: threadID, cmd: cmd, group: group, ptmx: ptmx, done: make(chan struct{})}, nil
 }
 
 // loginShell returns the current user's shell from /etc/passwd, then $SHELL,

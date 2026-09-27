@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"golang.org/x/sys/unix"
 )
 
 // Package is Claude Code's npm package, whose latest version is the newest
@@ -93,7 +91,7 @@ func UpdateCommand(bin string, env []string) []string {
 		prefix = "/"
 	}
 	// A system prefix needs root; that's for the user to run.
-	if unix.Access(filepath.Join(prefix, "lib", "node_modules"), unix.W_OK) != nil {
+	if !writable(filepath.Join(prefix, "lib", "node_modules")) {
 		return nil
 	}
 	npm := filepath.Join(prefix, "bin", "npm")
