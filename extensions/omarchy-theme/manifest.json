@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "everywhere: Omarchy theme",
+  "version": "1.1",
+  "description": "Gives everywhere (ai.replogle.dev) the current Omarchy theme to follow, and its changes.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtLKwL7LHdXrpWNVz6n3Mxg2JEbN7r3lvV/SnAuZdtQEn8ITgHGwA2BNI5Hth+E0djANHuRRS5CmjztAIIJ+/7AKOrmohFbjxHzr6+2oybxeWqkPhIQ0Lmp513sj6TGyNK2Q4pp8lGbJbI9qVymDzAnu1p6y5FaTQRlpqB4ngQHLxXH6gOEFqYi6VhDcolitbGBf/b/uJJKtn60BO7VnBSU7shlGAS4OBAg17yeH7QbYTMz7Yto0quUn8jV99jm9VwiEc9YHOQMG3z8Ha2HIzx0UEMyV8PBAfRKMivoajZmVMkDHKihclLmcNzzp/Bf+JK8lFxvyVK2Pi9z90qcCm8QIDAQAB",
+  "permissions": ["nativeMessaging", "storage"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://ai.replogle.dev/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
+    }
+  ]
+}

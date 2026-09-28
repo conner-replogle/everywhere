@@ -10,7 +10,7 @@ import { errorMessage } from "@/lib/utils";
 
 const FONT_FAMILY = '"JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, monospace';
 
-const THEME: ITheme = {
+const THEME = {
   background: "#0e1014",
   foreground: "#d7dbe3",
   cursor: "#8fa8ff",
@@ -32,7 +32,21 @@ const THEME: ITheme = {
   brightMagenta: "#dbb5ff",
   brightCyan: "#8fe6ea",
   brightWhite: "#f2f4f8",
-};
+} satisfies ITheme;
+
+/**
+ * THEME, with any color set as --term-<name> on <html> in its place (the
+ * Omarchy theme extension sets them, see extensions/omarchy-theme).
+ */
+function currentTheme(): ITheme {
+  const style = getComputedStyle(document.documentElement);
+  const theme = { ...THEME };
+  for (const key of Object.keys(THEME) as (keyof typeof THEME)[]) {
+    const value = style.getPropertyValue(`--term-${key.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`).trim();
+    if (value) theme[key] = value;
+  }
+  return theme;
+}
 
 const NO_MODS: Modifiers = { ctrl: false, alt: false };
 
@@ -117,7 +131,7 @@ export function TerminalView({
         lineHeight: 1.15,
         cursorBlink: true,
         scrollback: 10_000,
-        theme: THEME,
+        theme: currentTheme(),
         allowTransparency: false,
         macOptionIsMeta: true,
       });
@@ -154,6 +168,16 @@ export function TerminalView({
       });
       ro.observe(el);
       const stopTouchScroll = touchScroll(term, el);
+      // <html>'s style changes for other reasons too (--app-height).
+      let themeKey = JSON.stringify(term.options.theme);
+      const themes = new MutationObserver(() => {
+        const theme = currentTheme();
+        const key = JSON.stringify(theme);
+        if (key === themeKey) return;
+        themeKey = key;
+        term.options.theme = theme;
+      });
+      themes.observe(document.documentElement, { attributes: true, attributeFilter: ["style"] });
 
       termRef.current = term;
       setReady(true);
@@ -162,6 +186,7 @@ export function TerminalView({
       cleanup = () => {
         cancelAnimationFrame(raf);
         ro.disconnect();
+        themes.disconnect();
         stopTouchScroll();
         onData.dispose();
         onResize.dispose();

@@ -7,36 +7,36 @@
 @custom-variant dark (&:is(.dark *));
 
 /*
- * Palette: cool graphite ground with a periwinkle "interactive" hue and a
- * separate mint reserved for one meaning only: a device/shell is live.
+ * The default theme, Miasma, for the first paint. The theme picked in
+ * settings replaces these on <html> (src/lib/theme.ts).
  */
 :root {
   --radius: 0.375rem;
 
-  --background: #111318;
-  --foreground: #d7dbe3;
-  --card: #15181e;
-  --card-foreground: #d7dbe3;
-  --popover: #1a1d24;
-  --popover-foreground: #d7dbe3;
-  --primary: #8fa8ff;
-  --primary-foreground: #0d1020;
-  --secondary: #1f232b;
-  --secondary-foreground: #d7dbe3;
-  --muted: #1a1d24;
-  --muted-foreground: #8a91a0;
-  --accent: #222731;
-  --accent-foreground: #e6e9ef;
-  --destructive: #f06a6a;
-  --destructive-foreground: #1a0b0b;
-  --border: #262b35;
-  --input: #2d3340;
-  --ring: #8fa8ff;
+  --background: #222222;
+  --foreground: #c2c2b0;
+  --card: #272726;
+  --card-foreground: #c2c2b0;
+  --popover: #2c2c2b;
+  --popover-foreground: #c2c2b0;
+  --primary: #78824b;
+  --primary-foreground: #222222;
+  --secondary: #30302f;
+  --secondary-foreground: #c2c2b0;
+  --muted: #2c2c2b;
+  --muted-foreground: #85857a;
+  --accent: #323230;
+  --accent-foreground: #c2c2b0;
+  --destructive: #7f725e;
+  --destructive-foreground: #222222;
+  --border: #353533;
+  --input: #3c3c39;
+  --ring: #78824b;
 
-  --live: #5fd4a3;
-  --warn: #e8b45a;
-  --sidebar: #14171c;
-  --terminal: #0e1014;
+  --live: #5f875f;
+  --warn: #b36d43;
+  --sidebar: #191919;
+  --terminal: #222222;
 }
 
 @theme inline {
@@ -101,7 +101,7 @@
   }
   * {
     scrollbar-width: thin;
-    scrollbar-color: #2d3340 transparent;
+    scrollbar-color: var(--input) transparent;
   }
 }
 

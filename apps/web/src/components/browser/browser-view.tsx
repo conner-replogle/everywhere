@@ -1067,13 +1067,13 @@ export function BrowserView({
         ref={stageRef}
         className={cn(
           "relative min-h-0 flex-1 overflow-hidden",
-          fixed ? "bg-muted/40" : "bg-[#0e1014]",
+          fixed ? "bg-muted/40" : "bg-terminal",
           focused && "after:pointer-events-none after:absolute after:inset-0 after:ring-1 after:ring-primary/40 after:ring-inset",
         )}
       >
         {page.loading && <div className="absolute inset-x-0 top-0 z-10 h-0.5 animate-pulse bg-primary" />}
         <div
-          className={cn("absolute", fixed && "bg-[#0e1014] shadow-2xl ring-1 ring-border")}
+          className={cn("absolute", fixed && "bg-terminal shadow-2xl ring-1 ring-border")}
           style={frameSize ? box : { left: 0, top: 0, width: 0, height: 0 }}
         >
           <div

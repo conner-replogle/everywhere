@@ -1,0 +1,7 @@
+{
+  "name": "dev.replogle.everywhere.omarchy_theme",
+  "description": "Omarchy theme for everywhere",
+  "path": "__HOST_PATH__",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://pgdgeabppphlnmhpkgjchpfjfiepejpi/"]
+}
