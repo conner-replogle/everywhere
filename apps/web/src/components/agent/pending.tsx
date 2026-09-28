@@ -1,5 +1,5 @@
 import type { AgentClientMsg, AgentRequest } from "@everywhere/protocol";
-import { ShieldCheckIcon } from "lucide-react";
+import { CheckIcon, MessageCircleQuestionIcon, ShieldCheckIcon } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -20,14 +20,35 @@ export function PendingRequest({ request, cwd, respond }: { request: AgentReques
   }
 }
 
-function Card({ title, icon, children }: { title: React.ReactNode; icon: React.ReactNode; children: React.ReactNode }) {
+function Card({
+  title,
+  icon,
+  tone = "warn",
+  children,
+}: {
+  title: React.ReactNode;
+  icon: React.ReactNode;
+  /** warn for permission prompts; neutral for questions, which aren't a risk. */
+  tone?: "warn" | "neutral";
+  children: React.ReactNode;
+}) {
   return (
-    <div className="rounded-lg border border-warn/40 bg-card shadow-lg shadow-black/20">
-      <div className="flex items-center gap-2 border-b border-warn/20 px-3 py-2 text-warn">
+    <div
+      className={cn(
+        "flex max-h-[70dvh] flex-col rounded-lg border bg-card shadow-lg shadow-black/20",
+        tone === "warn" ? "border-warn/40" : "border-border",
+      )}
+    >
+      <div
+        className={cn(
+          "flex shrink-0 items-center gap-2 border-b px-3 py-2",
+          tone === "warn" ? "border-warn/20 text-warn" : "border-border text-foreground",
+        )}
+      >
         {icon}
         <span className="min-w-0 truncate font-medium">{title}</span>
       </div>
-      <div className="grid gap-2.5 px-3 py-2.5">{children}</div>
+      <div className="grid min-h-0 gap-2.5 overflow-y-auto px-3 py-2.5">{children}</div>
     </div>
   );
 }
@@ -124,73 +145,129 @@ function QuestionCard({ request, respond }: { request: AgentRequest; respond: Re
   // Selected option labels and free-text "other" answers, per question.
   const [picked, setPicked] = useState<Record<string, string[]>>({});
   const [other, setOther] = useState<Record<string, string>>({});
+  // One question at a time; Back and the steps above go to earlier ones.
+  const [step, setStep] = useState(0);
 
   const answerFor = (q: Question) => [...(picked[q.question] ?? []), other[q.question]?.trim()].filter(Boolean).join(", ");
   const complete = questions.every((q) => answerFor(q) !== "");
+  const q = questions[Math.min(step, questions.length - 1)];
+  const last = step >= questions.length - 1;
 
-  const toggle = (q: Question, label: string) =>
-    setPicked((prev) => {
-      const cur = prev[q.question] ?? [];
-      const next = q.multiSelect ? (cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label]) : [label];
-      return { ...prev, [q.question]: next };
+  const submit = () =>
+    respond({
+      t: "respond",
+      requestId: request.id,
+      decision: "allow",
+      answers: Object.fromEntries(questions.map((q) => [q.question, answerFor(q)])),
     });
+  const next = () => {
+    if (!q || answerFor(q) === "") return;
+    if (!last) setStep(step + 1);
+    else if (complete) submit();
+  };
 
+  const toggle = (q: Question, label: string) => {
+    const cur = picked[q.question] ?? [];
+    const on = q.multiSelect ? (cur.includes(label) ? cur.filter((l) => l !== label) : [...cur, label]) : [label];
+    setPicked((prev) => ({ ...prev, [q.question]: on }));
+    // A single choice moves on by itself, except on the last, which waits for Submit.
+    if (!q.multiSelect && !last) setStep(step + 1);
+  };
+
+  if (!q) return null;
   return (
-    <Card icon={<ShieldCheckIcon className="size-3.5 shrink-0" />} title="Claude has a question">
-      {questions.map((q) => (
-        <fieldset key={q.question} className="grid gap-1.5">
-          <legend className="mb-1.5">
-            {q.header && (
-              <span className="mr-2 rounded-sm bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">{q.header}</span>
-            )}
-            {q.question}
-          </legend>
-          <div className="grid gap-1">
-            {q.options.map((o) => {
-              const on = picked[q.question]?.includes(o.label) ?? false;
-              return (
-                <button
-                  key={o.label}
-                  type="button"
-                  aria-pressed={on}
-                  onClick={() => toggle(q, o.label)}
-                  className={cn(
-                    "rounded-md border px-2.5 py-1.5 text-left hover:bg-accent/60",
-                    on && "border-primary bg-primary/10",
-                  )}
-                >
-                  <div className="font-medium">{o.label}</div>
-                  {o.description && <div className="text-xs text-muted-foreground">{o.description}</div>}
-                </button>
-              );
-            })}
-            <input
-              value={other[q.question] ?? ""}
-              onChange={(e) => setOther((prev) => ({ ...prev, [q.question]: e.target.value }))}
-              placeholder="Other…"
-              className="h-7 rounded-md border border-input bg-transparent px-2 text-xs outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
-            />
-          </div>
-        </fieldset>
-      ))}
+    <Card
+      tone="neutral"
+      icon={<MessageCircleQuestionIcon className="size-3.5 shrink-0 text-muted-foreground" />}
+      title={
+        questions.length > 1 ? (
+          <>
+            Claude has {questions.length} questions
+            <span className="ml-2 font-normal text-muted-foreground">
+              {step + 1} of {questions.length}
+            </span>
+          </>
+        ) : (
+          "Claude has a question"
+        )
+      }
+    >
+      {questions.length > 1 && (
+        <div className="flex flex-wrap gap-1">
+          {questions.map((x, i) => (
+            <button
+              key={x.question}
+              type="button"
+              onClick={() => setStep(i)}
+              className={cn(
+                "flex items-center gap-1 rounded-sm px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground",
+                i === step ? "bg-secondary text-foreground" : "bg-transparent",
+              )}
+            >
+              {answerFor(x) !== "" && <CheckIcon className="size-3" />}
+              {x.header || `Question ${i + 1}`}
+            </button>
+          ))}
+        </div>
+      )}
+      <fieldset key={q.question} className="grid min-h-0 gap-1.5">
+        <legend className="mb-1.5">
+          {q.header && questions.length === 1 && (
+            <span className="mr-2 rounded-sm bg-secondary px-1.5 py-0.5 text-xs text-muted-foreground">{q.header}</span>
+          )}
+          {q.question}
+        </legend>
+        <div className="-mx-1 grid max-h-[min(22rem,45dvh)] gap-1 overflow-y-auto px-1 py-0.5">
+          {q.options.map((o) => {
+            const on = picked[q.question]?.includes(o.label) ?? false;
+            return (
+              <button
+                key={o.label}
+                type="button"
+                aria-pressed={on}
+                onClick={() => toggle(q, o.label)}
+                className={cn(
+                  "rounded-md border px-2.5 py-1.5 text-left hover:bg-accent/60",
+                  on && "border-primary/60 bg-primary/10",
+                )}
+              >
+                <div className="font-medium">{o.label}</div>
+                {o.description && <div className="text-xs text-muted-foreground">{o.description}</div>}
+              </button>
+            );
+          })}
+          <input
+            value={other[q.question] ?? ""}
+            onChange={(e) => setOther((prev) => ({ ...prev, [q.question]: e.target.value }))}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter") return;
+              e.preventDefault();
+              next();
+            }}
+            placeholder="Other…"
+            className="h-7 shrink-0 rounded-md border border-input bg-transparent px-2 text-xs outline-none placeholder:text-muted-foreground focus-visible:ring-2 focus-visible:ring-ring/60"
+          />
+        </div>
+      </fieldset>
       <div className="flex items-center gap-2">
-        <Button
-          size="sm"
-          disabled={!complete}
-          onClick={() =>
-            respond({
-              t: "respond",
-              requestId: request.id,
-              decision: "allow",
-              answers: Object.fromEntries(questions.map((q) => [q.question, answerFor(q)])),
-            })
-          }
-        >
-          Answer
-        </Button>
+        {step > 0 && (
+          <Button size="sm" variant="secondary" onClick={() => setStep(step - 1)}>
+            Back
+          </Button>
+        )}
+        {last ? (
+          <Button size="sm" disabled={!complete} onClick={submit}>
+            Submit
+          </Button>
+        ) : (
+          <Button size="sm" disabled={answerFor(q) === ""} onClick={next}>
+            Next
+          </Button>
+        )}
         <Button
           size="sm"
           variant="ghost"
+          className="ml-auto"
           onClick={() => respond({ t: "respond", requestId: request.id, decision: "deny", message: "The user skipped the question." })}
         >
           Skip
