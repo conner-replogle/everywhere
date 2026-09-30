@@ -150,10 +150,10 @@ const EventDesktopCandidate = "desktop.candidate"
 // is Claude's own desktop, beside the user's; empty is the user's.
 type DesktopSource struct {
 	Desktop string `json:"desktop,omitempty"`
-	Output string `json:"output,omitempty"`
-	Window string `json:"window,omitempty"`
-	Class  string `json:"class,omitempty"`
-	Title  string `json:"title,omitempty"`
+	Output  string `json:"output,omitempty"`
+	Window  string `json:"window,omitempty"`
+	Class   string `json:"class,omitempty"`
+	Title   string `json:"title,omitempty"`
 }
 
 // DesktopStarted is the result of desktop.start {sdp, mode, viewer}: the
