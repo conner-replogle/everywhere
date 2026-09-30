@@ -724,7 +724,11 @@ func (s *session) onConnected() {
 	}
 	s.connected = true
 	s.uninhibit = inhibitSleep("Remote desktop session from " + s.viewer.Name)
-	notify(s.hypr, "Remote desktop started", s.viewer.Name+" is viewing and controlling this computer")
+	if s.hypr.Claude {
+		notify(s.hypr, "Remote desktop started", s.viewer.Name+" is viewing and controlling Claude's desktop on this computer")
+	} else {
+		notify(s.hypr, "Remote desktop started", s.viewer.Name+" is viewing and controlling this computer")
+	}
 }
 
 // endWith tells the viewer why, then closes the session.

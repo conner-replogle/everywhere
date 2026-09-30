@@ -37,6 +37,7 @@ type hyprClient struct {
 	Class    string `json:"class"`
 	Title    string `json:"title"`
 	StableID string `json:"stableId"`
+	Pid      int    `json:"pid"`
 }
 
 func (h *hyprInstance) clients() ([]hyprClient, error) {

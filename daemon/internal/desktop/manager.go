@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/pion/interceptor"
@@ -46,6 +47,7 @@ type Manager struct {
 	mu     sync.Mutex
 	sess   *session
 	agents map[string]*Agent // by thread
+	claude claudeDesktop
 }
 
 // NewManager builds the media stack for desktop sessions. se is the daemon's
@@ -141,7 +143,16 @@ func (m *Manager) Start(offer string, mode wire.Mode, v Viewer, src protocol.Des
 	if !m.enabled() {
 		return protocol.DesktopStarted{}, ErrDisabled
 	}
-	h, err := findHyprland()
+	var h *hyprInstance
+	var err error
+	switch src.Desktop {
+	case "":
+		h, err = findHyprland()
+	case deskClaude:
+		h, err = m.claude.instance()
+	default:
+		err = fmt.Errorf("unknown desktop %q", src.Desktop)
+	}
 	if err != nil {
 		return protocol.DesktopStarted{}, err
 	}
@@ -213,12 +224,12 @@ func (m *Manager) CloseTab(tabID string) {
 	m.sess = nil
 }
 
-// agentActed shows the viewer, if any, what an agent did.
-func (m *Manager) agentActed(action string, lx, ly float64, label string) {
+// agentActed shows the viewer, if any, what an agent did on desktop h.
+func (m *Manager) agentActed(h *hyprInstance, action string, lx, ly float64, label string) {
 	m.mu.Lock()
 	s := m.sess
 	m.mu.Unlock()
-	if s != nil {
+	if s != nil && s.hypr.Signature == h.Signature {
 		go s.showAgent(action, lx, ly, label)
 	}
 }
@@ -233,15 +244,17 @@ func (m *Manager) sessionEnded(s *session) {
 	}
 }
 
-// Shutdown ends the session, telling the viewer why, and stops the agents.
+// Shutdown ends the session, telling the viewer why, stops the agents, and
+// closes Claude's desktop.
 func (m *Manager) Shutdown() {
 	m.closeAgents()
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.sess != nil {
 		m.sess.endWith(wire.SessionEnded{Reason: wire.EndHostShutdown})
 		m.sess = nil
 	}
+	m.mu.Unlock()
+	m.claude.stop()
 }
 
 func newID() string {

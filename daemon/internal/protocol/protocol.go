@@ -146,8 +146,10 @@ const EventDesktopCandidate = "desktop.candidate"
 
 // DesktopSource is what desktop.start captures: a monitor by name, or a
 // window by id (Hyprland's stableId). Class and title find a tab's window
-// again after its app restarted. Empty: the focused monitor.
+// again after its app restarted. Empty: the focused monitor. Desktop "claude"
+// is Claude's own desktop, beside the user's; empty is the user's.
 type DesktopSource struct {
+	Desktop string `json:"desktop,omitempty"`
 	Output string `json:"output,omitempty"`
 	Window string `json:"window,omitempty"`
 	Class  string `json:"class,omitempty"`

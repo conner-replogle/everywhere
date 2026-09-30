@@ -183,7 +183,8 @@ function ThreadPage() {
   };
 
   const creatingDesktop = useRef(false);
-  const onDesktopUse = (source?: DesktopSource) => {
+  // source: what claude opened, if it did; fallback: what a new tab shows otherwise.
+  const onDesktopUse = (source: DesktopSource | undefined, fallback: DesktopSource) => {
     // Show the desktop as a tab, but not right after the user closed it.
     if (!canTab || Date.now() - desktopClosedAt.current < 120_000) return;
     const existing = tabs.data?.find((t) => t.kind === "desktop");
@@ -199,7 +200,7 @@ function ThreadPage() {
     void (async () => {
       try {
         const t = await peer.call("tabs.create", { threadId, kind: "desktop" });
-        if (source) await peer.call("tabs.setState", { id: t.id, state: JSON.stringify({ source }) });
+        await peer.call("tabs.setState", { id: t.id, state: JSON.stringify({ source: source ?? fallback }) });
         tabs.refetch();
       } catch (e) {
         setError(errorMessage(e));

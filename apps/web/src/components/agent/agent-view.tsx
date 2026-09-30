@@ -52,13 +52,29 @@ import { buildItems, RECAP_PROMPT, Timeline, type UserEvent } from "./timeline";
 const BROWSER_TOOL = /^mcp__everywhere__browser_/;
 const DESKTOP_TOOL = /^mcp__everywhere__desktop_/;
 
-/** What a desktop_open call pointed claude at; undefined for other desktop tools. */
-function openedSource(name: string, input: unknown): DesktopSource | undefined {
+/** Which desktop claude works on: its own (the default) or the user's. */
+type Desk = "claude" | "yours";
+
+/** The desktop a desktop tool call moved claude to, if it did. */
+function deskOf(name: string, input: unknown): Desk | undefined {
+  if (name === "mcp__everywhere__desktop_launch") return "claude";
+  if (name !== "mcp__everywhere__desktop_open") return undefined;
+  const d = (input as { desktop?: unknown } | undefined)?.desktop;
+  return d === "claude" || d === "yours" ? d : undefined;
+}
+
+/**
+ * What a desktop_open or desktop_launch call pointed claude at, on desk (the
+ * desktop claude is on after it); undefined for other desktop tools.
+ */
+function openedSource(name: string, input: unknown, desk: Desk): DesktopSource | undefined {
+  if (name === "mcp__everywhere__desktop_launch") return { desktop: "claude" };
   if (name !== "mcp__everywhere__desktop_open") return undefined;
   const i = (input ?? {}) as { window?: unknown; output?: unknown };
-  if (typeof i.window === "string" && i.window) return { window: i.window };
-  if (typeof i.output === "string" && i.output) return { output: i.output };
-  return undefined;
+  const on: DesktopSource = desk === "yours" ? {} : { desktop: "claude" };
+  if (typeof i.window === "string" && i.window) return { ...on, window: i.window };
+  if (typeof i.output === "string" && i.output) return { ...on, output: i.output };
+  return on;
 }
 
 /** Timeline items drawn at first; earlier ones load on request. */
@@ -83,7 +99,7 @@ export function AgentView({
   /** Called when claude starts driving the project's browser. */
   onBrowserUse?: () => void;
   /** Called when claude uses the desktop, with what it opened there, if it opened something. */
-  onDesktopUse?: (source?: DesktopSource) => void;
+  onDesktopUse?: (source: DesktopSource | undefined, fallback: DesktopSource) => void;
   /** Set while the thread is archived: its history shows, with a way back instead of the composer. */
   archived?: { onRestore: () => void; error: string | null };
 }) {
@@ -96,17 +112,28 @@ export function AgentView({
   onBrowserUseRef.current = onBrowserUse;
   const onDesktopUseRef = useRef(onDesktopUse);
   onDesktopUseRef.current = onDesktopUse;
+  // The desktop claude is on, as its desktop_open and desktop_launch calls left it.
+  const desk = useRef<Desk>("claude");
   useEffect(() => {
     const fresh = agent.events.filter((e) => e.seq > seenSeq.current);
     if (!fresh.length) return;
     seenSeq.current = fresh[fresh.length - 1]!.seq;
-    const tools = fresh.flatMap((e) => (e.event.type === "tool" && Date.now() - e.at < 30_000 ? [e.event] : []));
-    if (tools.some((t) => BROWSER_TOOL.test(t.name))) onBrowserUseRef.current?.();
-    const desktop = tools.filter((t) => DESKTOP_TOOL.test(t.name));
-    if (desktop.length) {
-      const opened = desktop.map((t) => openedSource(t.name, t.input)).filter(Boolean);
-      onDesktopUseRef.current?.(opened[opened.length - 1]);
+    let opened: DesktopSource | undefined;
+    let usedDesktop = false;
+    let usedBrowser = false;
+    for (const e of fresh) {
+      if (e.event.type !== "tool" || !DESKTOP_TOOL.test(e.event.name)) {
+        if (e.event.type === "tool" && BROWSER_TOOL.test(e.event.name) && Date.now() - e.at < 30_000) usedBrowser = true;
+        continue;
+      }
+      desk.current = deskOf(e.event.name, e.event.input) ?? desk.current;
+      if (Date.now() - e.at >= 30_000) continue;
+      usedDesktop = true;
+      opened = openedSource(e.event.name, e.event.input, desk.current) ?? opened;
     }
+    if (usedBrowser) onBrowserUseRef.current?.();
+    // A new tab shows the desktop claude is on.
+    if (usedDesktop) onDesktopUseRef.current?.(opened, desk.current === "claude" ? { desktop: "claude" } : {});
   }, [agent.events]);
   const { info } = useDevice();
   const features = info.data?.features ?? [];

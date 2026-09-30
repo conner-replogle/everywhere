@@ -122,8 +122,10 @@ function parseTabState(raw: string | undefined): TabState | null {
   }
 }
 
-function sourceOf(h: Hello): DesktopSource {
-  return h.window ? { window: h.window, class: h.class, title: h.title } : { output: h.output };
+/** What a session shows, from its Hello, on desktop (which Hello doesn't say). */
+function sourceOf(h: Hello, desktop: DesktopSource["desktop"]): DesktopSource {
+  const on: DesktopSource = desktop ? { desktop } : {};
+  return h.window ? { ...on, window: h.window, class: h.class, title: h.title } : { ...on, output: h.output };
 }
 
 const documentVisible = {
@@ -320,7 +322,7 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
           case Type.Hello: {
             setHello(msg);
             const t = connectRef.current.tab;
-            const src = sourceOf(msg);
+            const src = sourceOf(msg, tabSource.current?.desktop);
             if (t && JSON.stringify(src) !== JSON.stringify(tabSource.current)) {
               tabSource.current = src;
               t.onStateChange(JSON.stringify({ source: src } satisfies TabState));
@@ -425,10 +427,13 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
   const showAt = show?.at;
   useEffect(() => {
     if (!show) return;
+    const otherDesktop = show.source.desktop !== tabSource.current?.desktop;
     tabSource.current = show.source;
-    if (show.source.window) sendControl(selectWindow(show.source.window));
+    // A session shows one desktop: another needs a new one.
+    if (otherDesktop) reconnect();
+    else if (show.source.window) sendControl(selectWindow(show.source.window));
     else if (show.source.output) sendControl(selectOutput(show.source.output));
-  }, [showAt, sendControl]);
+  }, [showAt, sendControl, reconnect]);
 
   useEffect(() => {
     if (!agentMark) return;

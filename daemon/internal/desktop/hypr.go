@@ -28,6 +28,7 @@ type hyprInstance struct {
 	Dir       string // $XDG_RUNTIME_DIR/hypr/<signature>
 	Wayland   string // wayland socket name, e.g. wayland-1
 	Runtime   string // $XDG_RUNTIME_DIR
+	Claude    bool   // it's Claude's desktop (claudedesk.go)
 
 	lua atomic.Bool // dispatches take Lua (the config is Lua, as Omarchy's is)
 }
@@ -42,19 +43,44 @@ func runtimeDir() string {
 // findHyprland locates the live Hyprland instance. The daemon is a lingering
 // user service that may have started before (or outlived) the desktop session,
 // so its own environment can't be trusted: each instance directory holds a
-// hyprland.lock with the compositor's PID and Wayland socket.
+// hyprland.lock with the compositor's PID and Wayland socket. Claude's desktop
+// (see claudedesk.go) is another instance, never this one.
 func findHyprland() (*hyprInstance, error) {
+	var cands []hyprCandidate
+	for _, c := range hyprInstances() {
+		if !c.inst.Claude {
+			cands = append(cands, c)
+		}
+	}
+	if len(cands) == 0 {
+		return nil, errNoSession
+	}
+	// Prefer the instance our environment names, then the newest.
+	sig := os.Getenv("HYPRLAND_INSTANCE_SIGNATURE")
+	sort.Slice(cands, func(i, j int) bool {
+		if (cands[i].inst.Signature == sig) != (cands[j].inst.Signature == sig) {
+			return cands[i].inst.Signature == sig
+		}
+		return cands[i].mod.After(cands[j].mod)
+	})
+	return cands[0].inst, nil
+}
+
+type hyprCandidate struct {
+	inst *hyprInstance
+	pid  int
+	mod  time.Time
+}
+
+// hyprInstances lists this user's live Hyprland instances.
+func hyprInstances() []hyprCandidate {
 	rt := runtimeDir()
 	base := filepath.Join(rt, "hypr")
 	entries, err := os.ReadDir(base)
 	if err != nil {
-		return nil, errNoSession
+		return nil
 	}
-	type cand struct {
-		inst *hyprInstance
-		mod  time.Time
-	}
-	var cands []cand
+	var cands []hyprCandidate
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -69,7 +95,7 @@ func findHyprland() (*hyprInstance, error) {
 		if err != nil || !alive(pid) {
 			continue
 		}
-		inst := &hyprInstance{Signature: e.Name(), Dir: dir, Runtime: rt}
+		inst := &hyprInstance{Signature: e.Name(), Dir: dir, Runtime: rt, Claude: isClaudeDesktop(pid)}
 		if len(lines) > 1 {
 			inst.Wayland = strings.TrimSpace(lines[1])
 		}
@@ -77,20 +103,9 @@ func findHyprland() (*hyprInstance, error) {
 		if err != nil {
 			continue
 		}
-		cands = append(cands, cand{inst, st.ModTime()})
+		cands = append(cands, hyprCandidate{inst, pid, st.ModTime()})
 	}
-	if len(cands) == 0 {
-		return nil, errNoSession
-	}
-	// Prefer the instance our environment names, then the newest.
-	sig := os.Getenv("HYPRLAND_INSTANCE_SIGNATURE")
-	sort.Slice(cands, func(i, j int) bool {
-		if (cands[i].inst.Signature == sig) != (cands[j].inst.Signature == sig) {
-			return cands[i].inst.Signature == sig
-		}
-		return cands[i].mod.After(cands[j].mod)
-	})
-	return cands[0].inst, nil
+	return cands
 }
 
 // request sends one command over Hyprland's IPC socket and returns the reply.
@@ -237,14 +252,23 @@ func (h *hyprInstance) events(done <-chan struct{}) (<-chan string, error) {
 // keymap reads the host's XKB settings so the virtual keyboard types exactly
 // like the physical one.
 func (h *hyprInstance) keymap() ipc.Keymap {
-	get := func(opt string) string {
+	kb := h.keymapValues()
+	return ipc.Keymap{Rules: kb["kb_rules"], Model: kb["kb_model"], Layout: kb["kb_layout"], Variant: kb["kb_variant"], Options: kb["kb_options"]}
+}
+
+// keymapValues are the input:kb_* options, by name.
+func (h *hyprInstance) keymapValues() map[string]string {
+	kb := map[string]string{}
+	for _, k := range []string{"kb_rules", "kb_model", "kb_layout", "kb_variant", "kb_options"} {
 		var v struct {
 			Str string `json:"str"`
 		}
-		_ = h.requestJSON("getoption input:"+opt, &v)
-		return v.Str
+		_ = h.requestJSON("getoption input:"+k, &v)
+		if v.Str != "[[EMPTY]]" { // how Hyprland shows an unset string
+			kb[k] = v.Str
+		}
 	}
-	return ipc.Keymap{Rules: get("kb_rules"), Model: get("kb_model"), Layout: get("kb_layout"), Variant: get("kb_variant"), Options: get("kb_options")}
+	return kb
 }
 
 // env is the environment for a worker in this session: Wayland needs

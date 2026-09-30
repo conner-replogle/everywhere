@@ -95,7 +95,8 @@ func TestShrink(t *testing.T) {
 //	EW_DESKTOP_LIVE=1 EVERYWHERE_DESKTOP_HELPER=$PWD/bin/everywhere-desktop go test ./internal/desktop -run AgentLive -v
 //
 // EW_DESKTOP_WINDOW=<stableId> screenshots that window instead of the
-// focused monitor. It only looks: no input.
+// focused monitor; EW_DESKTOP=claude looks at Claude's desktop instead of
+// yours. It only looks: no input.
 func TestAgentLive(t *testing.T) {
 	if os.Getenv("EW_DESKTOP_LIVE") == "" {
 		t.Skip("EW_DESKTOP_LIVE not set")
@@ -106,7 +107,11 @@ func TestAgentLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Open(os.Getenv("EW_DESKTOP_WINDOW"), ""); err != nil {
+	desk := os.Getenv("EW_DESKTOP")
+	if desk == "" {
+		desk = deskYours
+	}
+	if _, err := a.Open(desk, os.Getenv("EW_DESKTOP_WINDOW"), ""); err != nil {
 		t.Fatal(err)
 	}
 	d, err := a.List()
@@ -147,7 +152,7 @@ func TestAgentInputLive(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	v, err := a.Open(win, "")
+	v, err := a.Open(deskYours, win, "")
 	if err != nil {
 		t.Fatal(err)
 	}

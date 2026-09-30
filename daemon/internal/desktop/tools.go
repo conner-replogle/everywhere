@@ -65,6 +65,9 @@ var (
 // How long an action gets to take effect before the screenshot that follows it.
 const settle = 300 * time.Millisecond
 
+// desks explains the two desktops, for the tools that pick one.
+const desks = "There are two desktops. Claude's desktop (\"claude\", the default) is a separate one beside the user's, with its own mouse pointer, keyboard focus and clipboard, and apps you start there with desktop_launch: the user keeps working while you use it, and can watch it in the thread's Desktop tab. The user's desktop (\"yours\") is their real screen and apps: acting there moves their mouse pointer and takes their keyboard focus, so use it only when the task needs their own windows."
+
 const coords = "x and y are pixels in the screenshots of the thread's target (desktop_screenshot), whose size every screenshot result reports."
 
 const screenshotProp = `"screenshot": {"type": "boolean", "description": "Return a screenshot after the action. Default true."}`
@@ -72,7 +75,7 @@ const screenshotProp = `"screenshot": {"type": "boolean", "description": "Return
 var toolDefs = []toolDef{
 	{
 		name: "desktop_list", title: "List desktop windows", annotations: readOnly,
-		description: "List this computer's desktop: monitors (name, size, focused, shown workspace), workspaces (and whether they're shown), and windows (id, app class, title, workspace, monitor, size). Also says what this thread's target is: the window or monitor that desktop_screenshot shows and the input tools act on.",
+		description: "List the desktop this thread works on (see desktop_open): monitors (name, size, focused, shown workspace), workspaces (and whether they're shown), and windows (id, app class, title, workspace, monitor, size). Also says what this thread's target is: the desktop, and the window or monitor there that desktop_screenshot shows and the input tools act on.",
 		schema:      `{"type": "object", "properties": {}}`,
 		run: func(ctx context.Context, a *Agent, _ json.RawMessage) (*mcp.Result, error) {
 			d, err := a.List()
@@ -91,15 +94,17 @@ var toolDefs = []toolDef{
 	},
 	{
 		name: "desktop_open", title: "Open desktop window", annotations: safe,
-		description: "Point this thread at one window (by id from desktop_list) or one monitor (by name; neither means the focused monitor). desktop_screenshot then shows it and the input tools act on it; the user sees it in the thread's Desktop tab. A window stays the target when it moves; acting on it focuses it, switching to its workspace. Returns a screenshot.",
+		description: "Point this thread at a desktop, and there at one window (by id from desktop_list) or one monitor (by name; neither means the focused monitor). desktop_screenshot then shows it and the input tools act on it; the user sees it in the thread's Desktop tab. A window stays the target when it moves; acting on it focuses it, switching to its workspace. " + desks + " Returns a screenshot.",
 		schema: `{"type": "object", "properties": {
+    "desktop": {"type": "string", "enum": ["claude", "yours"], "description": "Which desktop. Default: the one this thread is on (at first, Claude's)."},
     "window": {"type": "string", "description": "Window id from desktop_list."},
     "output": {"type": "string", "description": "Monitor name from desktop_list, e.g. DP-1."}
   }}`,
 		run: func(ctx context.Context, a *Agent, args json.RawMessage) (*mcp.Result, error) {
 			var p struct {
-				Window string `json:"window"`
-				Output string `json:"output"`
+				Desktop string `json:"desktop"`
+				Window  string `json:"window"`
+				Output  string `json:"output"`
 			}
 			if err := decode(args, &p); err != nil {
 				return nil, err
@@ -107,15 +112,41 @@ var toolDefs = []toolDef{
 			if p.Window != "" && p.Output != "" {
 				return nil, errors.New("give window or output, not both")
 			}
-			if _, err := a.Open(p.Window, p.Output); err != nil {
+			if _, err := a.Open(p.Desktop, p.Window, p.Output); err != nil {
 				return nil, err
 			}
 			return shotResult(a, map[string]any{"result": "opened"}, false)
 		},
 	},
 	{
+		name: "desktop_launch", title: "Launch app on Claude's desktop", annotations: acting,
+		description: "Start an app on Claude's desktop, e.g. \"foot\", \"gnome-calculator\" or \"chromium --user-data-dir=/tmp/claude-chromium\", and make that desktop this thread's target. The command runs through the shell. It waits a few seconds for the app's window and returns it with a screenshot. An app that's already running on the user's desktop may open its window there instead (browsers do unless given their own profile directory, as do apps started through D-Bus): check the result. For web pages, the browser_* tools are usually better. " + desks,
+		schema: `{"type": "object", "required": ["command"], "properties": {
+    "command": {"type": "string", "description": "The command line to run."}
+  }}`,
+		run: func(ctx context.Context, a *Agent, args json.RawMessage) (*mcp.Result, error) {
+			var p struct {
+				Command string `json:"command"`
+			}
+			if err := decode(args, &p); err != nil {
+				return nil, err
+			}
+			win, err := a.Launch(p.Command)
+			if err != nil {
+				return nil, err
+			}
+			out := map[string]any{"result": "launched"}
+			if win != nil {
+				out["window"] = win
+			} else {
+				out["warning"] = "no window appeared on Claude's desktop yet: the app may still be starting, may have failed, or may have opened on the user's desktop"
+			}
+			return actionResult(ctx, a, out, nil)
+		},
+	},
+	{
 		name: "desktop_screenshot", title: "Screenshot desktop", annotations: readOnly,
-		description: "Take a screenshot of this thread's target window or monitor (see desktop_open; by default the monitor that had focus when the thread first used the desktop), scaled to at most 1280px. Its pixels are the coordinates for desktop_click and the other input tools. A window is captured even when it's hidden behind others or on another workspace. Set save=true to also save a full-resolution PNG and get its path; to show the user, put ![description](path) in your reply. The image in the tool result itself is not shown to the user.",
+		description: "Take a screenshot of this thread's target window or monitor (see desktop_open; by default Claude's desktop, empty until you start apps there with desktop_launch), scaled to at most 1280px. Its pixels are the coordinates for desktop_click and the other input tools. A window is captured even when it's hidden behind others or on another workspace. Set save=true to also save a full-resolution PNG and get its path; to show the user, put ![description](path) in your reply. The image in the tool result itself is not shown to the user.",
 		schema: `{"type": "object", "properties": {
     "save": {"type": "boolean", "description": "Save a full-resolution PNG and return its path. Default false."}
   }}`,
@@ -131,7 +162,7 @@ var toolDefs = []toolDef{
 	},
 	{
 		name: "desktop_click", title: "Click on desktop", annotations: acting,
-		description: "Click at a point of this thread's target, with the real mouse pointer. " + coords + " Returns a screenshot of the result.",
+		description: "Click at a point of this thread's target, with its desktop's mouse pointer (on the user's desktop, their own). " + coords + " Returns a screenshot of the result.",
 		schema: `{"type": "object", "required": ["x", "y"], "properties": {
     "x": {"type": "number"},
     "y": {"type": "number"},
@@ -311,7 +342,7 @@ var toolDefs = []toolDef{
 	},
 	{
 		name: "desktop_clipboard", title: "Desktop clipboard", annotations: acting,
-		description: "Read the desktop's clipboard text, or with text, replace it (then paste with desktop_press, e.g. ctrl+v, or ctrl+shift+v in a terminal). Use it for text desktop_type can't type, or long text.",
+		description: "Read the clipboard text of the desktop this thread works on, or with text, replace it (then paste with desktop_press, e.g. ctrl+v, or ctrl+shift+v in a terminal). Use it for text desktop_type can't type, or long text.",
 		schema: `{"type": "object", "properties": {
     "text": {"type": "string", "description": "Put this on the clipboard. Leave it out to read the clipboard."}
   }}`,

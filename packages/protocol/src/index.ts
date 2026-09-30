@@ -162,9 +162,11 @@ export type DeviceFeature =
 /**
  * What desktop.start captures: a monitor by name, or a window by id
  * (Hyprland's stableId). class and title find a desktop tab's window again
- * after its app restarted. Empty: the focused monitor.
+ * after its app restarted. Empty: the focused monitor. desktop "claude" is
+ * Claude's own desktop, beside the user's; unset is the user's.
  */
 export interface DesktopSource {
+  desktop?: "claude";
   output?: string;
   window?: string;
   class?: string;

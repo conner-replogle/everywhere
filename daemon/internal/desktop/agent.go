@@ -25,20 +25,30 @@ const agentIdle = 2 * time.Minute
 // context; its coordinates are pixels of such a screenshot.
 const ScreenshotMaxSide = 1280
 
-// Agent is one thread's hands on the desktop, for its AI tools: a target (a
+// Agent is one thread's hands on a desktop, for its AI tools: a target (a
 // monitor or one window) and a worker that takes screenshots of it and
 // injects input there. It runs beside a viewer's session, with its own
 // virtual pointer and keyboard, so someone can watch it work.
+//
+// It works on Claude's desktop (claudedesk.go) unless told to use the user's:
+// there, its pointer and keyboard focus are the user's own.
 type Agent struct {
 	m   *Manager
 	key string
 
-	mu         sync.Mutex // one tool call at a time
-	src        source     // Output "" until first used: then the focused monitor
-	w          *worker
-	wOut, wWin string // what w was started for
-	idle       *time.Timer
+	mu               sync.Mutex // one tool call at a time
+	desk             string     // deskClaude or deskYours
+	src              source     // Output "" until first used: then the focused monitor
+	w                *worker
+	wSig, wOut, wWin string // what w was started for
+	idle             *time.Timer
 }
+
+// The desktops an agent can work on.
+const (
+	deskClaude = "claude" // Claude's own, beside the user's
+	deskYours  = "yours"  // the user's, with their pointer and focus
+)
 
 // Agent returns the desktop agent of a thread (key), making it if needed.
 func (m *Manager) Agent(key string) (*Agent, error) {
@@ -52,7 +62,7 @@ func (m *Manager) Agent(key string) (*Agent, error) {
 	}
 	a := m.agents[key]
 	if a == nil {
-		a = &Agent{m: m, key: key}
+		a = &Agent{m: m, key: key, desk: deskClaude}
 		m.agents[key] = a
 	}
 	return a, nil
@@ -97,7 +107,8 @@ type View struct {
 
 // Target describes what an agent sees and acts on.
 type Target struct {
-	Kind    string `json:"kind"` // monitor | window
+	Desktop string `json:"desktop"` // claude | yours
+	Kind    string `json:"kind"`    // monitor | window
 	Monitor string `json:"monitor"`
 	Window  string `json:"window,omitempty"` // stableId
 	Class   string `json:"class,omitempty"`
@@ -107,9 +118,26 @@ type Target struct {
 	NativeHeight int `json:"nativeHeight"`
 }
 
+// hypr is the desktop the agent works on, starting Claude's if needed. Must
+// hold a.mu.
+func (a *Agent) hypr() (*hyprInstance, error) {
+	if a.desk == deskYours {
+		return findHyprland()
+	}
+	return a.m.claude.instance()
+}
+
+// desktop is the desktop the agent works on, for tools that act on it rather
+// than its target.
+func (a *Agent) desktop() (*hyprInstance, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.hypr()
+}
+
 // resolve finds the target on the desktop as it is now. Must hold a.mu.
 func (a *Agent) resolve() (*View, error) {
-	h, err := findHyprland()
+	h, err := a.hypr()
 	if err != nil {
 		return nil, err
 	}
@@ -156,6 +184,7 @@ func (a *Agent) resolve() (*View, error) {
 		v.Target = Target{Kind: "monitor", Monitor: mon.Name}
 	}
 	v.src = a.src
+	v.Target.Desktop = a.desk
 	v.Target.NativeWidth, v.Target.NativeHeight = nw, nh
 	v.Width, v.Height = fit(nw, nh, ScreenshotMaxSide)
 	return v, nil
@@ -175,7 +204,7 @@ func fit(w, h, limit int) (int, int) {
 // worker returns a worker for v's target, starting it if needed. Must hold a.mu.
 func (a *Agent) worker(v *View) (*worker, error) {
 	win := v.src.Window
-	if a.w != nil && (a.wOut != v.mon.Name || a.wWin != win || !a.w.alive()) {
+	if a.w != nil && (a.wSig != v.h.Signature || a.wOut != v.mon.Name || a.wWin != win || !a.w.alive()) {
 		a.stopWorker()
 	}
 	if a.w == nil {
@@ -186,7 +215,7 @@ func (a *Agent) worker(v *View) (*worker, error) {
 		if msg := w.InputError(); msg != "" {
 			slog.Warn("desktop agent input unavailable; screenshots only", "thread", a.key, "err", msg)
 		}
-		a.w, a.wOut, a.wWin = w, v.mon.Name, win
+		a.w, a.wSig, a.wOut, a.wWin = w, v.h.Signature, v.mon.Name, win
 	}
 	if a.idle == nil {
 		a.idle = time.AfterFunc(agentIdle, a.expire)
@@ -224,12 +253,20 @@ func (w *worker) alive() bool {
 	}
 }
 
-// Open points the agent at a window (by stableId) or a monitor ("" for the
-// focused one).
-func (a *Agent) Open(window, output string) (*View, error) {
+// Open points the agent at a desktop ("" for the one it's on), and there at a
+// window (by stableId) or a monitor ("" for the focused one).
+func (a *Agent) Open(desk, window, output string) (*View, error) {
+	switch desk {
+	case "", deskClaude, deskYours:
+	default:
+		return nil, fmt.Errorf("unknown desktop %q: use %q or %q", desk, deskClaude, deskYours)
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	prev := a.src
+	prev, prevDesk := a.src, a.desk
+	if desk != "" {
+		a.desk = desk
+	}
 	if window != "" {
 		a.src = source{Window: window}
 	} else {
@@ -237,7 +274,7 @@ func (a *Agent) Open(window, output string) (*View, error) {
 	}
 	v, err := a.resolve()
 	if err != nil {
-		a.src = prev
+		a.src, a.desk = prev, prevDesk
 		return nil, err
 	}
 	return v, nil
@@ -425,7 +462,7 @@ func (a *Agent) Click(p Point, button string, count int) error {
 	if count == 2 {
 		action = "double-click"
 	}
-	a.m.agentActed(action, lx, ly, "")
+	a.m.agentActed(v.h, action, lx, ly, "")
 	return nil
 }
 
@@ -442,7 +479,7 @@ func (a *Agent) Move(p Point) error {
 		return err
 	}
 	w.Motion(px, py)
-	a.m.agentActed("move", lx, ly, "")
+	a.m.agentActed(v.h, "move", lx, ly, "")
 	return nil
 }
 
@@ -477,7 +514,7 @@ func (a *Agent) Drag(from, to Point, button string) error {
 	}
 	tx, ty, _, _, _ := v.pointer(to)
 	w.Button(code, false, tx, ty)
-	a.m.agentActed("drag", lx, ly, "")
+	a.m.agentActed(v.h, "drag", lx, ly, "")
 	return nil
 }
 
@@ -496,7 +533,7 @@ func (a *Agent) Scroll(p Point, dx, dy float64) error {
 	}
 	w.Motion(px, py)
 	w.Scroll(false, dx, dy)
-	a.m.agentActed("scroll", lx, ly, "")
+	a.m.agentActed(v.h, "scroll", lx, ly, "")
 	return nil
 }
 
@@ -505,7 +542,7 @@ func (a *Agent) Scroll(p Point, dx, dy float64) error {
 func (a *Agent) Type(text string) (int, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	w, _, err := a.input()
+	w, v, err := a.input()
 	if err != nil {
 		return 0, err
 	}
@@ -520,7 +557,7 @@ func (a *Agent) Type(text string) (int, error) {
 		}
 		n++
 	}
-	a.m.agentActed("type", math.NaN(), math.NaN(), truncate(text, 40))
+	a.m.agentActed(v.h, "type", math.NaN(), math.NaN(), truncate(text, 40))
 	return n, nil
 }
 
@@ -533,7 +570,7 @@ func (a *Agent) Press(combo string, times int) error {
 	times = min(max(times, 1), 50)
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	w, _, err := a.input()
+	w, v, err := a.input()
 	if err != nil {
 		return err
 	}
@@ -546,7 +583,7 @@ func (a *Agent) Press(combo string, times int) error {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	a.m.agentActed("key", math.NaN(), math.NaN(), combo)
+	a.m.agentActed(v.h, "key", math.NaN(), math.NaN(), combo)
 	return nil
 }
 
@@ -555,7 +592,7 @@ func (a *Agent) FocusWorkspace(id int) error {
 	if id < 1 || id > 9999 {
 		return fmt.Errorf("workspace %d is out of range", id)
 	}
-	h, err := findHyprland()
+	h, err := a.desktop()
 	if err != nil {
 		return err
 	}
@@ -564,7 +601,7 @@ func (a *Agent) FocusWorkspace(id int) error {
 
 // FocusWindow focuses a window (by stableId), showing its workspace.
 func (a *Agent) FocusWindow(id string) error {
-	h, err := findHyprland()
+	h, err := a.desktop()
 	if err != nil {
 		return err
 	}
@@ -625,7 +662,7 @@ type WindowInfo struct {
 
 // List describes the desktop.
 func (a *Agent) List() (*Desktop, error) {
-	h, err := findHyprland()
+	h, err := a.desktop()
 	if err != nil {
 		return nil, err
 	}
@@ -672,7 +709,7 @@ func (a *Agent) List() (*Desktop, error) {
 
 // Clipboard reads the desktop's clipboard text.
 func (a *Agent) Clipboard() (string, error) {
-	h, err := findHyprland()
+	h, err := a.desktop()
 	if err != nil {
 		return "", err
 	}
@@ -685,7 +722,7 @@ func (a *Agent) Clipboard() (string, error) {
 
 // SetClipboard puts text on the desktop's clipboard.
 func (a *Agent) SetClipboard(text string) error {
-	h, err := findHyprland()
+	h, err := a.desktop()
 	if err != nil {
 		return err
 	}
@@ -751,4 +788,50 @@ func parseCombo(combo string) ([]uint32, error) {
 		keys = append(keys, code)
 	}
 	return keys, nil
+}
+
+// How long desktop_launch waits for the app's window.
+const launchWait = 8 * time.Second
+
+// Launch starts command on Claude's desktop, which becomes the target, and
+// waits a little for a new window. The window is nil if none appeared.
+func (a *Agent) Launch(command string) (*WindowInfo, error) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return nil, errors.New("no command given")
+	}
+	if strings.ContainsAny(command, "\r\n\x00") {
+		return nil, errors.New("give the command on one line")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	h, err := a.m.claude.instance()
+	if err != nil {
+		return nil, err
+	}
+	before, err := h.clients()
+	if err != nil {
+		return nil, err
+	}
+	if err := h.dispatch(execCmd(command)); err != nil {
+		return nil, err
+	}
+	a.desk, a.src = deskClaude, source{Output: claudeOutput}
+	known := map[string]bool{}
+	for _, c := range before {
+		known[c.Address] = true
+	}
+	for deadline := time.Now().Add(launchWait); time.Now().Before(deadline); time.Sleep(100 * time.Millisecond) {
+		clients, err := h.clients()
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range clients {
+			if c.Mapped && !known[c.Address] {
+				return &WindowInfo{ID: c.StableID, Class: c.Class, Title: c.Title, Workspace: c.Workspace.Name,
+					Monitor: claudeOutput, Width: c.Size[0], Height: c.Size[1], Floating: c.Floating}, nil
+			}
+		}
+	}
+	return nil, nil
 }
