@@ -257,8 +257,8 @@ func serviceCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := service.Install(exe); errors.Is(err, service.ErrNoSystemd) {
-			fmt.Printf("systemd not found. Run the daemon yourself, e.g.:\n  nohup %s daemon >/tmp/everywhere.log 2>&1 &\n", exe)
+		if err := service.Install(exe); errors.Is(err, service.ErrNoServiceManager) {
+			fmt.Printf("No systemd or launchd found. Run the daemon yourself, e.g.:\n  nohup %s daemon >/tmp/everywhere.log 2>&1 &\n", exe)
 			return nil
 		} else if err != nil {
 			return err

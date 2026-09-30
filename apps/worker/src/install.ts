@@ -1,7 +1,7 @@
 const TEMPLATE = `#!/bin/sh
 # everywhere installer. Generated for one device enrollment; the token is single-use.
 # Optional env: EVERYWHERE_BIN_DIR (install location), EVERYWHERE_NO_SERVICE=1
-# (skip systemd), EVERYWHERE_BINARY (use a local binary instead of downloading).
+# (skip the systemd/launchd service), EVERYWHERE_BINARY (use a local binary instead of downloading).
 set -eu
 
 SERVER='__SERVER__'
@@ -10,15 +10,23 @@ REPO='__REPO__'
 
 die() { printf 'everywhere: %s\\n' "$*" >&2; exit 1; }
 
-[ "$(uname -s)" = Linux ] || die "only Linux is supported for now"
+case "$(uname -s)" in
+  Linux) OS=linux ;;
+  Darwin) OS=darwin ;;
+  *) die "unsupported OS: $(uname -s); only Linux and macOS are supported" ;;
+esac
 case "$(uname -m)" in
   x86_64 | amd64) ARCH=amd64 ;;
   aarch64 | arm64) ARCH=arm64 ;;
   *) die "unsupported architecture: $(uname -m)" ;;
 esac
-for cmd in curl tar sha256sum; do
+for cmd in curl tar; do
   command -v "$cmd" >/dev/null 2>&1 || die "$cmd is required"
 done
+# macOS has shasum rather than sha256sum.
+if command -v sha256sum >/dev/null 2>&1; then SHA256SUM=sha256sum
+elif command -v shasum >/dev/null 2>&1; then SHA256SUM="shasum -a 256"
+else die "sha256sum or shasum is required"; fi
 
 if [ -n "\${EVERYWHERE_BIN_DIR:-}" ]; then BIN_DIR="$EVERYWHERE_BIN_DIR"
 elif [ "$(id -u)" = 0 ]; then BIN_DIR=/usr/local/bin
@@ -33,12 +41,12 @@ if [ -n "\${EVERYWHERE_BINARY:-}" ]; then
   WORKER="$(dirname "$EVERYWHERE_BINARY")/everywhere-desktop"
   if [ -f "$WORKER" ]; then cp "$WORKER" "$TMP/everywhere-desktop"; fi
 else
-  ASSET="everywhere_linux_$ARCH.tar.gz"
+  ASSET="everywhere_\${OS}_$ARCH.tar.gz"
   BASE="https://github.com/$REPO/releases/latest/download"
   echo "Downloading $ASSET..."
   curl -fsSL "$BASE/$ASSET" -o "$TMP/$ASSET"
   curl -fsSL "$BASE/checksums.txt" -o "$TMP/checksums.txt"
-  (cd "$TMP" && grep " $ASSET\\$" checksums.txt | sha256sum -c - >/dev/null) || die "checksum mismatch"
+  (cd "$TMP" && grep " $ASSET\\$" checksums.txt | $SHA256SUM -c - >/dev/null) || die "checksum mismatch"
   tar -xzf "$TMP/$ASSET" -C "$TMP"
 fi
 
