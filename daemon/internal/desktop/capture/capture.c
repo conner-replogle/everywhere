@@ -335,10 +335,11 @@ static const struct ext_image_copy_capture_session_v1_listener session_listener 
 
 /* ---- format negotiation ---- */
 
-/* drm formats vapostproc can import, from its caps once it has probed the driver. */
+/* drm formats vapostproc can import, from its caps once it has probed the driver;
+ * -1 when the element isn't installed. */
 static int va_import_formats(uint32_t *fourccs, uint64_t *mods, int max) {
 	GstElement *pp = gst_element_factory_make("vapostproc", NULL);
-	if (!pp) return 0;
+	if (!pp) return -1;
 	int n = 0;
 	if (gst_element_set_state(pp, GST_STATE_READY) != GST_STATE_CHANGE_FAILURE) {
 		GstPad *pad = gst_element_get_static_pad(pp, "sink");
@@ -373,6 +374,7 @@ static int choose_format(struct oc_capture *c, uint64_t *mods, size_t *nmods, ch
 	uint32_t va_fcc[128];
 	uint64_t va_mod[128];
 	int nva = va_import_formats(va_fcc, va_mod, 128);
+	if (nva < 0) { set_err(err, errlen, "GStreamer vapostproc element not found (install gst-plugin-va)"); return -1; }
 	if (nva == 0) { set_err(err, errlen, "vapostproc reports no importable dmabuf formats"); return -1; }
 
 	for (size_t p = 0; p < sizeof prefs / sizeof *prefs; p++) {
