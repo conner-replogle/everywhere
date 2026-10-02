@@ -118,6 +118,7 @@ function ThreadPage() {
   const [closing, setClosing] = useState<Tab | null>(null);
   const browserClosedAt = useRef(0);
   const desktopClosedAt = useRef(0);
+  const creatingDesktop = useRef(false);
   // What the thread's claude opened on the desktop, for its Desktop tab to show.
   const [desktopShow, setDesktopShow] = useState<{ tabId: string; source: DesktopSource; at: number } | null>(null);
 
@@ -182,7 +183,6 @@ function ThreadPage() {
     void openTab("browser", false);
   };
 
-  const creatingDesktop = useRef(false);
   // source: what claude opened, if it did; fallback: what a new tab shows otherwise.
   const onDesktopUse = (source: DesktopSource | undefined, fallback: DesktopSource) => {
     // Show the desktop as a tab, but not right after the user closed it.
