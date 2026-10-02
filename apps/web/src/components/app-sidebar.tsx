@@ -642,6 +642,7 @@ export function AppSidebar({
           deviceId={newProjectFor.deviceId}
           home={newProjectFor.info.data?.home}
           canClone={hasFeature(newProjectFor, "clone")}
+          canMkdir={hasFeature(newProjectFor, "mkdir")}
           open
           onOpenChange={(o) => !o && setNewProjectFor(null)}
           onCreated={(p) => {

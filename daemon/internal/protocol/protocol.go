@@ -118,6 +118,7 @@ const (
 	FeatureClone        = "clone"        // projects.clone, clones.list and clones.changed
 	FeatureGitStatus    = "gitStatus"    // git.status, git.fetch, git.pull, git.updateDefault and git.changed
 	FeatureClaudeUpdate = "claudeUpdate" // agent.claudeVersion and agent.updateClaude
+	FeatureMkdir        = "mkdir"        // fs.mkdir
 )
 
 // DesktopInfo is the result of desktop.info.

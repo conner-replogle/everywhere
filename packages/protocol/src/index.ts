@@ -142,7 +142,7 @@ export interface DeviceInfo {
  * agent channel's rewind request. icons: projects.icon. clone: projects.clone,
  * clones.list and clones.changed. gitStatus: git.status, git.fetch, git.pull,
  * git.updateDefault and git.changed. claudeUpdate: agent.claudeVersion and
- * agent.updateClaude.
+ * agent.updateClaude. mkdir: fs.mkdir.
  */
 export type DeviceFeature =
   | "claude"
@@ -157,7 +157,8 @@ export type DeviceFeature =
   | "icons"
   | "clone"
   | "gitStatus"
-  | "claudeUpdate";
+  | "claudeUpdate"
+  | "mkdir";
 
 /**
  * What desktop.start captures: a monitor by name, or a window by id
@@ -369,6 +370,8 @@ export interface RpcMethods {
   "tabs.setState": [{ id: string; state: string }, Record<string, never>];
   "fs.listDirs": [{ path: string }, DirListing];
   "fs.list": [{ path: string }, FsListing];
+  /** Creates the folder name in the directory path, and lists the new folder. */
+  "fs.mkdir": [{ path: string; name: string }, DirListing];
   "git.info": [{ projectId: string }, GitInfo];
   /**
    * Where a thread's checkout (its worktree, if any) or a project's stands.

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -257,6 +258,8 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		return listDirs(params.Path)
 	case "fs.list":
 		return listDir(params.Path)
+	case "fs.mkdir":
+		return makeDir(params.Path, params.Name)
 
 	case "git.status":
 		dir, err := s.gitDir(params.ThreadID, params.ProjectID)
@@ -464,6 +467,26 @@ func listDirs(path string) (protocol.DirListing, error) {
 		return strings.ToLower(a) < strings.ToLower(b)
 	})
 	return out, nil
+}
+
+// makeDir creates the folder name in the directory path and lists it.
+func makeDir(path, name string) (protocol.DirListing, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+		return protocol.DirListing{}, fmt.Errorf("%q isn't a folder name", name)
+	}
+	dir, err := store.ResolveDir(path)
+	if err != nil {
+		return protocol.DirListing{}, err
+	}
+	created := filepath.Join(dir, name)
+	if err := os.Mkdir(created, 0o755); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return protocol.DirListing{}, fmt.Errorf("%s already exists", created)
+		}
+		return protocol.DirListing{}, err
+	}
+	return listDirs(created)
 }
 
 // listDir lists a directory's entries, directories first.

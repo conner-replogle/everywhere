@@ -1,6 +1,6 @@
 import type { DirListing, Project } from "@everywhere/protocol";
 import { Link } from "@tanstack/react-router";
-import { CornerLeftUpIcon, FolderIcon, GitForkIcon, HomeIcon, LinkIcon, LoaderIcon, LockIcon } from "lucide-react";
+import { CornerLeftUpIcon, FolderIcon, FolderPlusIcon, GitForkIcon, HomeIcon, LinkIcon, LoaderIcon, LockIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GithubMark } from "@/components/github-mark";
 import { Button } from "@/components/ui/button";
@@ -46,6 +46,7 @@ export function NewProjectDialog({
   deviceId,
   home,
   canClone,
+  canMkdir,
   open,
   onOpenChange,
   onCreated,
@@ -56,12 +57,14 @@ export function NewProjectDialog({
   home: string | undefined;
   /** The daemon can clone (projects.clone). */
   canClone: boolean;
+  /** The daemon can create folders (fs.mkdir). */
+  canMkdir: boolean;
   open: boolean;
   onOpenChange: (o: boolean) => void;
   onCreated: (p: Project) => void;
 }) {
   const [source, setSource] = useState<Source>("folder");
-  const dirs = useDirBrowser(peer, home, open);
+  const dirs = useDirBrowser(peer, home, open, canMkdir);
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -116,7 +119,13 @@ export function NewProjectDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent
+        className="max-w-lg"
+        // Escape in the new folder's name closes that, not the dialog.
+        onEscapeKeyDown={(e) => {
+          if (document.activeElement instanceof HTMLElement && document.activeElement.dataset.ownEscape !== undefined) e.preventDefault();
+        }}
+      >
         <form onSubmit={submit} className="grid min-w-0 gap-4">
           <DialogHeader>
             <DialogTitle>New project</DialogTitle>
@@ -407,9 +416,11 @@ interface DirBrowser {
   listError: string | null;
   loading: boolean;
   browse: (target: string) => Promise<void>;
+  /** Creates a folder in the listed directory and opens it; absent if the daemon can't. */
+  mkdir?: (name: string) => Promise<void>;
 }
 
-function useDirBrowser(peer: DevicePeer, home: string | undefined, open: boolean): DirBrowser {
+function useDirBrowser(peer: DevicePeer, home: string | undefined, open: boolean, canMkdir: boolean): DirBrowser {
   const [path, setPath] = useState("");
   const [listing, setListing] = useState<DirListing | null>(null);
   const [listError, setListError] = useState<string | null>(null);
@@ -446,11 +457,26 @@ function useDirBrowser(peer: DevicePeer, home: string | undefined, open: boolean
     })();
   }, [open, home, peer, browse]);
 
-  return { path, setPath, listing, listError, loading, browse };
+  const mkdir = useCallback(
+    async (name: string) => {
+      if (!listing) return;
+      const id = ++req.current;
+      // Thrown errors stay with the name being typed.
+      const res = await peer.call("fs.mkdir", { path: listing.path, name });
+      if (id !== req.current) return;
+      setListing(res);
+      setPath(res.path);
+      setListError(null);
+      setLoading(false);
+    },
+    [peer, listing],
+  );
+
+  return { path, setPath, listing, listError, loading, browse, mkdir: canMkdir ? mkdir : undefined };
 }
 
 function DirPicker({
-  dirs: { path, setPath, listing, listError, loading, browse },
+  dirs: { path, setPath, listing, listError, loading, browse, mkdir },
   home,
   label,
   compact,
@@ -460,9 +486,48 @@ function DirPicker({
   label: string;
   compact?: boolean;
 }) {
+  // The new folder's name while one is being typed.
+  const [naming, setNaming] = useState<string | null>(null);
+  const [mkdirError, setMkdirError] = useState<string | null>(null);
+  const [making, setMaking] = useState(false);
+  const listed = listing?.path;
+  useEffect(() => {
+    setNaming(null);
+    setMkdirError(null);
+  }, [listed]);
+
+  const create = async () => {
+    const name = naming?.trim();
+    if (!mkdir || !name) return;
+    setMaking(true);
+    setMkdirError(null);
+    try {
+      await mkdir(name);
+      setNaming(null);
+    } catch (e) {
+      setMkdirError(errorMessage(e));
+    } finally {
+      setMaking(false);
+    }
+  };
+
   return (
     <div className="grid gap-1.5">
-      <Label htmlFor="project-path">{label}</Label>
+      <div className="flex items-center justify-between">
+        <Label htmlFor="project-path">{label}</Label>
+        {mkdir && listing && naming === null && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="-my-1 h-6 px-1.5 text-xs text-muted-foreground"
+            onClick={() => setNaming("")}
+          >
+            <FolderPlusIcon />
+            New folder
+          </Button>
+        )}
+      </div>
       <Input
         id="project-path"
         className="font-mono text-xs"
@@ -498,10 +563,44 @@ function DirPicker({
             {listing.parent !== null && (
               <DirRow icon={<CornerLeftUpIcon />} label=".." onClick={() => browse(listing.parent!)} muted />
             )}
+            {naming !== null && (
+              <div className="px-1 py-0.5">
+                <div className="flex items-center gap-2 [&_svg]:size-3.5 [&_svg]:shrink-0 [&_svg]:text-muted-foreground">
+                  {making ? <LoaderIcon className="animate-spin" /> : <FolderPlusIcon />}
+                  <Input
+                    autoFocus
+                    aria-label="New folder name"
+                    data-own-escape
+                    className="h-6 font-mono text-xs"
+                    value={naming}
+                    placeholder="Folder name"
+                    spellCheck={false}
+                    autoComplete="off"
+                    disabled={making}
+                    onChange={(e) => {
+                      setNaming(e.target.value);
+                      setMkdirError(null);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void create();
+                      } else if (e.key === "Escape") {
+                        setNaming(null);
+                      }
+                    }}
+                    onBlur={() => {
+                      if (!naming.trim() && !making) setNaming(null);
+                    }}
+                  />
+                </div>
+                {mkdirError && <p className="px-5 pt-1 text-xs text-destructive">{mkdirError}</p>}
+              </div>
+            )}
             {listing.dirs.map((d) => (
               <DirRow key={d} icon={<FolderIcon />} label={d} onClick={() => browse(joinPath(listing.path, d))} />
             ))}
-            {listing.dirs.length === 0 && <p className="px-2 py-1.5 text-xs text-muted-foreground">No subdirectories.</p>}
+            {listing.dirs.length === 0 && naming === null && <p className="px-2 py-1.5 text-xs text-muted-foreground">No subdirectories.</p>}
           </>
         )}
       </div>
