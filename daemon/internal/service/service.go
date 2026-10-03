@@ -1,5 +1,5 @@
 // Package service installs the daemon as a background service: a systemd
-// unit on Linux, a launchd job on macOS.
+// unit on Linux, a launchd job on macOS, a scheduled task on Windows.
 package service
 
 import (

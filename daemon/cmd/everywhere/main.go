@@ -37,7 +37,7 @@ Usage:
   everywhere daemon [--server URL]               run the daemon (systemd runs this)
   everywhere add [PATH] [--name NAME]            add a project (default: current directory)
   everywhere status                              show enrollment and service status
-  everywhere service install|uninstall           manage the systemd unit
+  everywhere service install|uninstall           manage the background service
   everywhere update                              install the latest release
   everywhere desktop enable|disable|status       allow remote desktop of this machine's screen
   everywhere uninstall [--purge]                 remove the service and binary (--purge: config and data too)
@@ -181,6 +181,9 @@ func daemon(args []string) error {
 		restart.Store(true)
 		stop()
 	}
+	if exe, err := executable(); err == nil {
+		update.Cleanup(exe)
+	}
 	slog.Info("everywhere daemon starting", "version", version.Version, "device", cfg.DeviceID)
 	if err := hc.Run(ctx); err != nil {
 		return err
@@ -195,16 +198,6 @@ func daemon(args []string) error {
 
 // errRestart asks main to replace the process with the (updated) binary.
 var errRestart = errors.New("restart requested")
-
-// reexec replaces this process with the binary on disk, keeping the PID so
-// systemd (or whatever started us) sees one continuous run.
-func reexec() error {
-	exe, err := executable()
-	if err != nil {
-		return err
-	}
-	return syscall.Exec(exe, os.Args, os.Environ())
-}
 
 func add(args []string) error {
 	fs := flag.NewFlagSet("add", flag.ExitOnError)
@@ -252,6 +245,12 @@ func serviceCmd(args []string) error {
 		return errors.New("usage: everywhere service install|uninstall")
 	}
 	switch args[0] {
+	case "run": // what the Windows scheduled task runs
+		exe, err := executable()
+		if err != nil {
+			return err
+		}
+		return service.Run(exe)
 	case "install":
 		exe, err := executable()
 		if err != nil {
@@ -300,7 +299,7 @@ func uninstall(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(exe); err != nil {
+	if err := removeSelf(exe); err != nil {
 		return err
 	}
 	// The remote desktop worker lives next to the daemon.

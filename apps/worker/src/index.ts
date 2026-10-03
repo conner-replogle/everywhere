@@ -1,8 +1,8 @@
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { bearerDevice } from "./auth";
 import { randomId, randomToken, sha256 } from "./crypto";
 import { HUB_ID_HEADER, HUB_KIND_HEADER, HUB_SESSION_HEADER } from "./hub";
-import { failingScript, installScript } from "./install";
+import { failingScript, type InstallPlatform, installScript } from "./install";
 import { mcp } from "./mcp";
 import { oauth } from "./oauth";
 import { auth, requireUser } from "./routes/auth";
@@ -123,28 +123,36 @@ app.post("/api/enroll-tokens", requireUser, async (c) => {
   await c.env.DB.prepare("INSERT INTO enroll_tokens (token_hash, account_id, expires_at) VALUES (?, ?, ?)")
     .bind(await sha256(token), c.var.user.id, expiresAt)
     .run();
-  return c.json({ command: `curl -fsSL ${c.env.PUBLIC_URL}/i/${token} | sh`, expiresAt });
+  return c.json({
+    command: `curl -fsSL ${c.env.PUBLIC_URL}/i/${token} | sh`,
+    windowsCommand: `irm ${c.env.PUBLIC_URL}/i/${token}/windows | iex`,
+    expiresAt,
+  });
 });
 
-app.get("/i/:token", async (c) => {
+// The install script for Linux and macOS (sh), or Windows (PowerShell).
+async function serveInstall(c: Context<App>, platform: InstallPlatform) {
   if (await rateLimited(c, `install:${clientIp(c)}`)) {
-    return c.text(failingScript("too many requests; wait a minute"), 429);
+    return c.text(failingScript("too many requests; wait a minute", platform), 429);
   }
-  const token = c.req.param("token");
+  const token = c.req.param("token") ?? "";
   const row = await c.env.DB.prepare(
     "SELECT 1 FROM enroll_tokens WHERE token_hash = ? AND used_at IS NULL AND expires_at > ?",
   )
     .bind(await sha256(token), Date.now())
     .first();
   const script = row
-    ? installScript({ server: c.env.PUBLIC_URL, token, repo: c.env.GITHUB_REPO })
-    : failingScript("this install link is invalid, used, or expired; generate a new one in the web UI");
+    ? installScript({ server: c.env.PUBLIC_URL, token, repo: c.env.GITHUB_REPO, platform })
+    : failingScript("this install link is invalid, used, or expired; generate a new one in the web UI", platform);
   return c.text(script, 200, {
-    "content-type": "text/x-shellscript; charset=utf-8",
+    "content-type": `${platform === "windows" ? "text/plain" : "text/x-shellscript"}; charset=utf-8`,
     "cache-control": "no-store",
     "x-content-type-options": "nosniff",
   });
-});
+}
+
+app.get("/i/:token", (c) => serveInstall(c, "unix"));
+app.get("/i/:token/windows", (c) => serveInstall(c, "windows"));
 
 app.post("/api/daemon/enroll", async (c) => {
   if (await rateLimited(c, `enroll:${clientIp(c)}`)) return tooMany(c);

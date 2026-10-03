@@ -13,7 +13,8 @@ die() { printf 'everywhere: %s\\n' "$*" >&2; exit 1; }
 case "$(uname -s)" in
   Linux) OS=linux ;;
   Darwin) OS=darwin ;;
-  *) die "unsupported OS: $(uname -s); only Linux and macOS are supported" ;;
+  MINGW* | MSYS* | CYGWIN*) die "on Windows, run the PowerShell install command from the web UI instead" ;;
+  *) die "unsupported OS: $(uname -s); only Linux, macOS and Windows are supported" ;;
 esac
 case "$(uname -m)" in
   x86_64 | amd64) ARCH=amd64 ;;
@@ -68,12 +69,94 @@ case ":$PATH:" in
 esac
 `;
 
-export function installScript(opts: { server: string; token: string; repo: string }): string {
-  return TEMPLATE.replace("__SERVER__", opts.server)
+// The Windows installer, piped from irm into iex in PowerShell 5.1 or later. It
+// throws rather than exits: exit would close the user's PowerShell window.
+const WINDOWS_TEMPLATE = `# everywhere installer for Windows. Generated for one device enrollment; the token is single-use.
+# Optional env: EVERYWHERE_BIN_DIR (install location), EVERYWHERE_NO_SERVICE=1
+# (skip the scheduled task), EVERYWHERE_BINARY (use a local binary instead of downloading).
+& {
+$ErrorActionPreference = 'Stop'
+# Invoke-WebRequest's progress bar slows downloads to a crawl.
+$ProgressPreference = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+
+$Server = '__SERVER__'
+$Token = '__TOKEN__'
+$Repo = '__REPO__'
+
+function Die($msg) { throw "everywhere: $msg" }
+
+# 32-bit PowerShell on 64-bit Windows reports the real architecture separately.
+$Machine = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+$Arch = switch ($Machine) { 'AMD64' { 'amd64' } 'ARM64' { 'arm64' } default { Die "unsupported architecture: $Machine" } }
+
+$BinDir = if ($env:EVERYWHERE_BIN_DIR) { $env:EVERYWHERE_BIN_DIR } else { Join-Path (Join-Path $env:LOCALAPPDATA 'Programs') 'everywhere' }
+New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+$Tmp = Join-Path ([IO.Path]::GetTempPath()) ('everywhere-' + [guid]::NewGuid())
+New-Item -ItemType Directory -Force -Path $Tmp | Out-Null
+try {
+  if ($env:EVERYWHERE_BINARY) {
+    Copy-Item $env:EVERYWHERE_BINARY (Join-Path $Tmp 'everywhere.exe')
+  } else {
+    $Asset = "everywhere_windows_$Arch.tar.gz"
+    $Base = "https://github.com/$Repo/releases/latest/download"
+    $Archive = Join-Path $Tmp $Asset
+    $Sums = Join-Path $Tmp 'checksums.txt'
+    Write-Host "Downloading $Asset..."
+    Invoke-WebRequest -UseBasicParsing -Uri "$Base/$Asset" -OutFile $Archive
+    Invoke-WebRequest -UseBasicParsing -Uri "$Base/checksums.txt" -OutFile $Sums
+    $Want = Get-Content $Sums | Where-Object { $_.EndsWith(" $Asset") } | ForEach-Object { ($_ -split ' ')[0] } | Select-Object -First 1
+    $Got = (Get-FileHash -Algorithm SHA256 $Archive).Hash.ToLower()
+    if (-not $Want -or $Got -ne $Want) { Die 'checksum mismatch' }
+    tar.exe -xzf $Archive -C $Tmp
+    if ($LASTEXITCODE -ne 0) { Die "couldn't extract $Asset" }
+  }
+
+  $Exe = Join-Path $BinDir 'everywhere.exe'
+  # A running daemon's binary can't be overwritten but can be renamed; the
+  # daemon deletes it once it restarts.
+  if (Test-Path $Exe) { Move-Item $Exe (Join-Path $BinDir ('.everywhere.exe.' + [DateTime]::UtcNow.Ticks + '.old')) }
+  Copy-Item (Join-Path $Tmp 'everywhere.exe') $Exe
+} finally {
+  Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
+}
+
+& $Exe enroll --server $Server --token $Token
+if ($LASTEXITCODE -ne 0) { Die 'enrollment failed' }
+if ($env:EVERYWHERE_NO_SERVICE) {
+  Write-Host "Skipping service install. Start the daemon with: $Exe daemon"
+} else {
+  & $Exe service install
+  if ($LASTEXITCODE -ne 0) { Die "couldn't install the service" }
+}
+
+# Add the install directory to the user's PATH, keeping the value's type so
+# entries like %USERPROFILE% keep expanding.
+$EnvKey = Get-Item 'HKCU:\\Environment'
+$UserPath = $EnvKey.GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+if (($UserPath -split ';') -notcontains $BinDir) {
+  $NewPath = if ($UserPath) { $UserPath.TrimEnd(';') + ';' + $BinDir } else { $BinDir }
+  Set-ItemProperty 'HKCU:\\Environment' -Name Path -Value $NewPath -Type ExpandString
+  # Setting a variable tells running programs the environment changed.
+  [Environment]::SetEnvironmentVariable('EVERYWHERE_INSTALL', '1', 'User')
+  [Environment]::SetEnvironmentVariable('EVERYWHERE_INSTALL', $null, 'User')
+  $env:Path += ";$BinDir"
+  Write-Host "Added $BinDir to your PATH; open a new terminal to use everywhere."
+}
+}
+`;
+
+export type InstallPlatform = "unix" | "windows";
+
+export function installScript(opts: { server: string; token: string; repo: string; platform?: InstallPlatform }): string {
+  return (opts.platform === "windows" ? WINDOWS_TEMPLATE : TEMPLATE)
+    .replace("__SERVER__", opts.server)
     .replace("__TOKEN__", opts.token)
     .replace("__REPO__", opts.repo);
 }
 
-export function failingScript(message: string): string {
-  return `#!/bin/sh\necho 'everywhere: ${message.replaceAll("'", "")}' >&2\nexit 1\n`;
+export function failingScript(message: string, platform: InstallPlatform = "unix"): string {
+  const clean = message.replaceAll("'", "");
+  if (platform === "windows") return `throw 'everywhere: ${clean}'\n`;
+  return `#!/bin/sh\necho 'everywhere: ${clean}' >&2\nexit 1\n`;
 }

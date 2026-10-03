@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -29,6 +30,7 @@ func FindBinary(ctx context.Context) (string, error) {
 	if home, err := os.UserHomeDir(); err == nil {
 		for _, p := range []string{
 			filepath.Join(home, ".local", "bin", "claude"),
+			filepath.Join(home, ".local", "bin", "claude.exe"), // the native installer on Windows
 			filepath.Join(home, ".claude", "local", "claude"),
 		} {
 			if isExecutable(p) {
@@ -51,5 +53,9 @@ func Version(ctx context.Context, bin string) (string, error) {
 
 func isExecutable(p string) bool {
 	info, err := os.Stat(p)
+	if runtime.GOOS == "windows" {
+		// Windows has no execute bit; executables are known by extension.
+		return err == nil && !info.IsDir() && strings.EqualFold(filepath.Ext(p), ".exe")
+	}
 	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
 }

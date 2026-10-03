@@ -72,3 +72,20 @@ func TestInstallWithWorker(t *testing.T) {
 		t.Errorf("worker installed from an archive without one: %v", err)
 	}
 }
+
+func TestReplaceMovesOldAside(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "everywhere")
+	os.WriteFile(exe, []byte("old"), 0o755)
+	if err := replace(exe, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(exe); string(got) != "new" {
+		t.Fatalf("binary = %q, want new", got)
+	}
+	Cleanup(exe)
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Fatalf("left behind %v", entries)
+	}
+}

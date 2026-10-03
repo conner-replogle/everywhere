@@ -80,7 +80,7 @@ func download(base string) ([]byte, error) {
 
 // install puts the release archive's binaries in place of exe.
 func install(exe string, archive []byte) error {
-	bin, err := extract(archive, "everywhere")
+	bin, err := extract(archive, binaryName)
 	if err != nil {
 		return err
 	}
@@ -98,13 +98,40 @@ func install(exe string, archive []byte) error {
 // WorkerName is the remote desktop worker in Linux release archives.
 const WorkerName = "everywhere-desktop"
 
+// binaryName is the daemon's name in this platform's release archive.
+var binaryName = "everywhere"
+
+func init() {
+	if runtime.GOOS == "windows" {
+		binaryName = "everywhere.exe"
+	}
+}
+
 // replace atomically writes an executable at path.
 func replace(path string, data []byte) error {
 	tmp := filepath.Join(filepath.Dir(path), "."+filepath.Base(path)+".new")
 	if err := os.WriteFile(tmp, data, 0o755); err != nil {
 		return err
 	}
+	// Windows won't replace a running executable but will rename it, so the
+	// old one moves aside until Cleanup removes it.
+	if runtime.GOOS == "windows" {
+		old := fmt.Sprintf("%s.%d.old", filepath.Join(filepath.Dir(path), "."+filepath.Base(path)), time.Now().UnixNano())
+		if err := os.Rename(path, old); err != nil && !os.IsNotExist(err) {
+			os.Remove(tmp)
+			return err
+		}
+	}
 	return os.Rename(tmp, path)
+}
+
+// Cleanup removes binaries that replace moved aside next to exe, once
+// nothing runs them any more.
+func Cleanup(exe string) {
+	old, _ := filepath.Glob(filepath.Join(filepath.Dir(exe), ".*.old"))
+	for _, p := range old {
+		_ = os.Remove(p)
+	}
 }
 
 // LatestVersion returns the newest release's version, e.g. "0.1.2", without

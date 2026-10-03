@@ -22,6 +22,8 @@ jobs:
       - run: CGO_ENABLED=0 go vet ./...
       - run: CGO_ENABLED=0 go test ./...
       - run: CGO_ENABLED=0 go build ./cmd/everywhere
+      - run: CGO_ENABLED=0 GOOS=windows go vet ./cmd/everywhere ./internal/service ./internal/update ./internal/term ./internal/proc
+      - run: CGO_ENABLED=0 GOOS=darwin go vet ./cmd/everywhere ./internal/service ./internal/update
 
   desktop-worker:
     runs-on: ubuntu-latest

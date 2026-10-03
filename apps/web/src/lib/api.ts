@@ -60,6 +60,8 @@ export interface Connection {
 
 export interface EnrollToken {
   command: string;
+  /** The PowerShell command for Windows. */
+  windowsCommand: string;
   expiresAt: number;
 }
 

@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/dialog";
 import { api, type EnrollToken } from "@/lib/api";
 import { useDevices } from "@/lib/devices";
-import { errorMessage } from "@/lib/utils";
+import { cn, errorMessage } from "@/lib/utils";
 
 export function AddDeviceButton({ size = "sm" }: { size?: "sm" | "default" }) {
   const [open, setOpen] = useState(false);
@@ -29,6 +29,8 @@ export function AddDeviceButton({ size = "sm" }: { size?: "sm" | "default" }) {
   );
 }
 
+type Platform = "unix" | "windows";
+
 function formatRemaining(ms: number): string {
   const s = Math.max(0, Math.ceil(ms / 1000));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
@@ -39,6 +41,10 @@ export function AddDeviceDialog({ open, onOpenChange }: { open: boolean; onOpenC
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  // Usually the device being added is the one this browser runs on.
+  const [platform, setPlatform] = useState<Platform>(() =>
+    /Windows/.test(navigator.userAgent) ? "windows" : "unix",
+  );
   const { devices } = useDevices();
   // Devices that existed when the link was generated; anything new was just enrolled.
   const known = useRef<Set<string> | null>(null);
@@ -76,6 +82,7 @@ export function AddDeviceDialog({ open, onOpenChange }: { open: boolean; onOpenC
   const remaining = token ? token.expiresAt - now : 0;
   const expired = token !== null && remaining <= 0;
   const enrolled = known.current && devices?.find((d) => !known.current!.has(d.id));
+  const command = token ? (platform === "windows" ? token.windowsCommand : token.command) : "";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -84,7 +91,7 @@ export function AddDeviceDialog({ open, onOpenChange }: { open: boolean; onOpenC
           <DialogTitle>Add a device</DialogTitle>
           <DialogDescription>
             Run this on the machine you want to reach. It installs the daemon, enrolls it to your account, and starts
-            it as a service. Linux, amd64 or arm64.
+            it as a service. amd64 or arm64.
           </DialogDescription>
         </DialogHeader>
 
@@ -102,6 +109,10 @@ export function AddDeviceDialog({ open, onOpenChange }: { open: boolean; onOpenC
           </div>
         ) : (
           <div className="flex flex-col gap-2">
+            <div role="tablist" aria-label="Platform" className="grid grid-cols-2 gap-1 rounded-md border bg-background/60 p-0.5">
+              <PlatformTab active={platform === "unix"} onClick={() => setPlatform("unix")} label="Linux & macOS" />
+              <PlatformTab active={platform === "windows"} onClick={() => setPlatform("windows")} label="Windows" />
+            </div>
             <div
               className={
                 "relative rounded-md border bg-terminal px-3 py-2.5 font-mono text-[12px] leading-relaxed break-all " +
@@ -110,8 +121,8 @@ export function AddDeviceDialog({ open, onOpenChange }: { open: boolean; onOpenC
             >
               {token ? (
                 <>
-                  <span className="text-muted-foreground select-none">$ </span>
-                  {token.command}
+                  <span className="text-muted-foreground select-none">{platform === "windows" ? "PS> " : "$ "}</span>
+                  {command}
                 </>
               ) : error ? (
                 <span className="text-destructive">{error}</span>
@@ -133,7 +144,7 @@ export function AddDeviceDialog({ open, onOpenChange }: { open: boolean; onOpenC
                     New link
                   </Button>
                 )}
-                {token && !expired && <CopyButton text={token.command} />}
+                {token && !expired && <CopyButton text={command} />}
               </div>
             </div>
           </div>
@@ -149,5 +160,22 @@ export function AddDeviceDialog({ open, onOpenChange }: { open: boolean; onOpenC
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function PlatformTab({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      className={cn(
+        "flex h-7 items-center justify-center rounded-sm text-xs focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none",
+        active ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {label}
+    </button>
   );
 }

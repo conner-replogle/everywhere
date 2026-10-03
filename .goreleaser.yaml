@@ -2,8 +2,8 @@ version: 2
 project_name: everywhere
 
 builds:
-  # The daemon is CGO-free, so one runner cross-builds every target. Linux and
-  # macOS are separate builds only so their archives can differ.
+  # The daemon is CGO-free, so one runner cross-builds every target. Each OS
+  # is a separate build only so its archives can differ.
   - id: linux
     dir: daemon
     main: ./cmd/everywhere
@@ -24,6 +24,16 @@ builds:
     flags: [-trimpath]
     ldflags:
       - -s -w -X github.com/conner-replogle/everywhere/daemon/internal/version.Version={{ .Version }}
+  - id: windows
+    dir: daemon
+    main: ./cmd/everywhere
+    binary: everywhere
+    env: [CGO_ENABLED=0]
+    goos: [windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X github.com/conner-replogle/everywhere/daemon/internal/version.Version={{ .Version }}
 
 archives:
   # The installer and `everywhere update` rely on these exact names.
@@ -40,6 +50,12 @@ archives:
           mode: 0755
   - id: darwin
     ids: [darwin]
+    formats: [tar.gz]
+    name_template: "everywhere_{{ .Os }}_{{ .Arch }}"
+  # tar.gz on Windows too, so one updater reads every archive; Windows ships
+  # tar.exe for the installer.
+  - id: windows
+    ids: [windows]
     formats: [tar.gz]
     name_template: "everywhere_{{ .Os }}_{{ .Arch }}"
 
