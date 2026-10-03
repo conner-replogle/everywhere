@@ -1,22 +1,15 @@
-// Package term runs thread shells as PTY child processes of the daemon and
+// Package term runs thread shells as PTY child processes (a ConPTY on Windows) of the daemon and
 // fans their output out to attached clients. Only one client (the writer) may
 // type into or resize a thread at a time.
 package term
 
 import (
-	"bufio"
 	"errors"
 	"log/slog"
 	"os"
-	"os/exec"
-	"os/user"
-	"path/filepath"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
-
-	"github.com/creack/pty"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/proc"
 )
@@ -51,11 +44,23 @@ type Manager struct {
 	sessions map[string]*session
 }
 
+// tty is a shell on a pseudo-terminal: a PTY on Unix, a ConPTY on Windows.
+type tty interface {
+	// Read returns the terminal's output, and an error once the shell has
+	// exited and its output is drained.
+	Read(p []byte) (int, error)
+	// Write types into the terminal.
+	Write(p []byte) (int, error)
+	Resize(cols, rows uint16) error
+	// Wait waits for the shell to exit and returns its exit status.
+	Wait() int
+	Close() error
+}
+
 type session struct {
 	threadID string
-	cmd      *exec.Cmd
+	tty      tty
 	group    *proc.Group
-	ptmx     *os.File
 	done     chan struct{}
 
 	mu         sync.Mutex
@@ -139,7 +144,7 @@ func (m *Manager) Input(threadID string, c Client, p []byte) {
 	}
 	s.mu.Unlock()
 	if isWriter {
-		_, _ = s.ptmx.Write(p)
+		_, _ = s.tty.Write(p)
 	}
 	if touch {
 		if err := m.resolver.TouchThread(threadID); err != nil {
@@ -207,7 +212,7 @@ func (m *Manager) Type(threadID string, p []byte, cols, rows uint16) error {
 	if spawned && m.onChange != nil {
 		m.onChange()
 	}
-	_, err = s.ptmx.Write(p)
+	_, err = s.tty.Write(p)
 	return err
 }
 
@@ -250,10 +255,14 @@ func (m *Manager) getOrSpawn(threadID string, cols, rows uint16) (*session, bool
 	if _, err := os.Stat(dir); err != nil {
 		return nil, false, errors.New("project directory is missing: " + dir)
 	}
-	s, err := spawn(threadID, dir, cols, rows)
+	if cols == 0 || rows == 0 {
+		cols, rows = 80, 24
+	}
+	t, group, err := spawn(threadID, dir, cols, rows)
 	if err != nil {
 		return nil, false, err
 	}
+	s := &session{threadID: threadID, tty: t, group: group, done: make(chan struct{})}
 	if hadSession {
 		s.scrollback = append(s.scrollback, restartNotice...)
 	}
@@ -269,7 +278,7 @@ func (m *Manager) getOrSpawn(threadID string, cols, rows uint16) (*session, bool
 func (m *Manager) pump(s *session) {
 	buf := make([]byte, 32*1024)
 	for {
-		n, err := s.ptmx.Read(buf)
+		n, err := s.tty.Read(buf)
 		if n > 0 {
 			chunk := append([]byte(nil), buf[:n]...)
 			s.mu.Lock()
@@ -283,17 +292,9 @@ func (m *Manager) pump(s *session) {
 			break
 		}
 	}
-	code := 0
-	if err := s.cmd.Wait(); err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			code = exit.ExitCode()
-		} else {
-			code = -1
-		}
-	}
+	code := s.tty.Wait()
 	s.group.Release()
-	_ = s.ptmx.Close()
+	_ = s.tty.Close()
 	close(s.done)
 
 	m.mu.Lock()
@@ -327,7 +328,7 @@ func (s *session) resize(cols, rows uint16) {
 	if cols == 0 || rows == 0 {
 		return
 	}
-	_ = pty.Setsize(s.ptmx, &pty.Winsize{Cols: cols, Rows: rows})
+	_ = s.tty.Resize(cols, rows)
 }
 
 func (s *session) kill() {
@@ -337,90 +338,4 @@ func (s *session) kill() {
 	case <-time.After(3 * time.Second):
 		_ = s.group.Signal(syscall.SIGKILL)
 	}
-}
-
-func spawn(threadID, dir string, cols, rows uint16) (*session, error) {
-	shell := loginShell()
-	cmd := exec.Command(shell)
-	cmd.Args = []string{"-" + filepath.Base(shell)} // login shell
-	cmd.Dir = dir
-	cmd.Env = shellEnv(shell, threadID)
-	if cols == 0 || rows == 0 {
-		cols, rows = 80, 24
-	}
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: cols, Rows: rows})
-	if err != nil {
-		return nil, err
-	}
-	// The PTY made the shell a session leader, so its process group is the Group.
-	group, err := proc.Attach(cmd)
-	if err != nil {
-		_ = cmd.Process.Kill()
-		_ = ptmx.Close()
-		_ = cmd.Wait()
-		return nil, err
-	}
-	return &session{threadID: threadID, cmd: cmd, group: group, ptmx: ptmx, done: make(chan struct{})}, nil
-}
-
-// loginShell returns the current user's shell from /etc/passwd, then $SHELL,
-// then /bin/sh.
-func loginShell() string {
-	if u, err := user.Current(); err == nil {
-		if f, err := os.Open("/etc/passwd"); err == nil {
-			defer f.Close()
-			sc := bufio.NewScanner(f)
-			for sc.Scan() {
-				fields := strings.Split(sc.Text(), ":")
-				if len(fields) >= 7 && fields[0] == u.Username && fields[6] != "" {
-					if _, err := os.Stat(fields[6]); err == nil {
-						return fields[6]
-					}
-				}
-			}
-		}
-	}
-	if sh := os.Getenv("SHELL"); sh != "" {
-		return sh
-	}
-	return "/bin/sh"
-}
-
-// Environment variables from the daemon's service manager that shouldn't leak
-// into user shells.
-var dropEnv = map[string]bool{
-	"INVOCATION_ID": true, "JOURNAL_STREAM": true, "NOTIFY_SOCKET": true,
-	"MANAGERPID": true, "SYSTEMD_EXEC_PID": true, "LISTEN_FDS": true, "LISTEN_PID": true,
-}
-
-func shellEnv(shell, threadID string) []string {
-	env := []string{}
-	have := map[string]bool{}
-	for _, kv := range os.Environ() {
-		k, _, _ := strings.Cut(kv, "=")
-		if dropEnv[k] || k == "TERM" || k == "COLORTERM" || k == "SHELL" {
-			continue
-		}
-		have[k] = true
-		env = append(env, kv)
-	}
-	if u, err := user.Current(); err == nil {
-		for k, v := range map[string]string{"HOME": u.HomeDir, "USER": u.Username, "LOGNAME": u.Username} {
-			if !have[k] {
-				env = append(env, k+"="+v)
-			}
-		}
-	}
-	if !have["PATH"] {
-		env = append(env, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
-	}
-	if !have["LANG"] {
-		env = append(env, "LANG=C.UTF-8")
-	}
-	return append(env,
-		"SHELL="+shell,
-		"TERM=xterm-256color",
-		"COLORTERM=truecolor",
-		"EVERYWHERE_THREAD="+threadID,
-	)
 }

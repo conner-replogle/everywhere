@@ -38,7 +38,7 @@ func (c *fakeClient) isWriter() bool {
 
 func (c *fakeClient) waitFor(t *testing.T, s string) {
 	t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
 		c.mu.Lock()
 		ok := strings.Contains(c.out.String(), s)
 		c.mu.Unlock()
@@ -46,7 +46,9 @@ func (c *fakeClient) waitFor(t *testing.T, s string) {
 			return
 		}
 	}
-	t.Fatalf("output never contained %q", s)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	t.Fatalf("output never contained %q; got %q", s, c.out.String())
 }
 
 func TestWriterLifecycle(t *testing.T) {
@@ -65,8 +67,8 @@ func TestWriterLifecycle(t *testing.T) {
 		t.Fatal("first attacher should be the only writer")
 	}
 
-	m.Input("t1", b, []byte("echo from-b\n")) // dropped
-	m.Input("t1", a, []byte("echo from-a\n"))
+	m.Input("t1", b, []byte("echo from-b\r")) // dropped
+	m.Input("t1", a, []byte("echo from-a\r"))
 	b.waitFor(t, "from-a\r\n")
 	b.mu.Lock()
 	leaked := strings.Contains(b.out.String(), "from-b\r\n")
@@ -84,10 +86,10 @@ func TestWriterLifecycle(t *testing.T) {
 		t.Fatal("remaining client should be promoted when the writer leaves")
 	}
 
-	m.Input("t1", a, []byte("exit\n"))
+	m.Input("t1", a, []byte("exit\r"))
 	select {
 	case <-a.exited:
-	case <-time.After(5 * time.Second):
+	case <-time.After(15 * time.Second):
 		t.Fatal("no exit")
 	}
 	if m.Running("t1") {

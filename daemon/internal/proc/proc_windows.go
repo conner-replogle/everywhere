@@ -21,16 +21,21 @@ func isolate(cmd *exec.Cmd) {}
 // Attach puts a started cmd in a new job object. Anything it starts before
 // that stays outside the job; that's only its first instants.
 func Attach(cmd *exec.Cmd) (*Group, error) {
+	p, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(cmd.Process.Pid))
+	if err != nil {
+		return nil, err
+	}
+	defer windows.CloseHandle(p)
+	return AttachHandle(p)
+}
+
+// AttachHandle puts the process p in a new job object. A process created
+// suspended can join before it starts anything.
+func AttachHandle(p windows.Handle) (*Group, error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return nil, err
 	}
-	p, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(cmd.Process.Pid))
-	if err != nil {
-		windows.CloseHandle(job)
-		return nil, err
-	}
-	defer windows.CloseHandle(p)
 	if err := windows.AssignProcessToJobObject(job, p); err != nil {
 		windows.CloseHandle(job)
 		return nil, err
