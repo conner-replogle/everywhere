@@ -97,7 +97,7 @@ func TestClaudeDesktopLive(t *testing.T) {
 	if after := cursor(user); cursorDistance(before, after) > 20 {
 		t.Errorf("the user's pointer jumped during the click: %s -> %s", before, after)
 	}
-	if got := cursor(v.h); got != "960, 540" {
+	if got := cursor(v.h.(*hyprInstance)); got != "960, 540" {
 		t.Errorf("Claude's pointer is at %s; want 960, 540", got)
 	}
 	const text = "Hello from Claude's desktop! ~/{}[]|\\\"'\n"

@@ -34,6 +34,17 @@ builds:
     flags: [-trimpath]
     ldflags:
       - -s -w -X github.com/conner-replogle/everywhere/daemon/internal/version.Version={{ .Version }}
+  # The remote desktop worker; on Windows it needs no cgo.
+  - id: windows-desktop
+    dir: daemon
+    main: ./cmd/everywhere-desktop
+    binary: everywhere-desktop
+    env: [CGO_ENABLED=0]
+    goos: [windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w -X github.com/conner-replogle/everywhere/daemon/internal/version.Version={{ .Version }}
 
 archives:
   # The installer and `everywhere update` rely on these exact names.
@@ -55,7 +66,7 @@ archives:
   # tar.gz on Windows too, so one updater reads every archive; Windows ships
   # tar.exe for the installer.
   - id: windows
-    ids: [windows]
+    ids: [windows, windows-desktop]
     formats: [tar.gz]
     name_template: "everywhere_{{ .Os }}_{{ .Arch }}"
 

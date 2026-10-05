@@ -8,27 +8,17 @@ import (
 	"github.com/conner-replogle/everywhere/daemon/internal/desktop/wire"
 )
 
-// Hyprland events that change the workspaces or which monitor has focus.
-var wmEvents = map[string]bool{
-	"workspace": true, "workspacev2": true, "focusedmon": true, "focusedmonv2": true,
-	"createworkspace": true, "createworkspacev2": true, "destroyworkspace": true, "destroyworkspacev2": true,
-	"moveworkspace": true, "moveworkspacev2": true, "renameworkspace": true, "activespecial": true, "activespecialv2": true,
-	"openwindow": true, "closewindow": true, "movewindow": true, "movewindowv2": true,
-	"monitoradded": true, "monitoraddedv2": true, "monitorremoved": true, "monitorremovedv2": true,
-	"activewindowv2": true, "windowtitlev2": true, "changefloatingmode": true, "fullscreen": true,
-}
-
 // watchWM keeps the viewer's workspace bar and window list current, keeps a
 // captured window's geometry current (floating windows move without events,
 // hence the tick), and while following, moves the capture to the monitor
-// Hyprland focuses.
+// the desktop focuses.
 func (s *session) watchWM() {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for {
-		events, err := s.hypr.events(s.done)
+		events, err := s.host.changes(s.done)
 		if err != nil {
-			slog.Debug("hyprland events", "err", err)
+			slog.Debug("desktop events", "err", err)
 		} else {
 			s.refreshWM()
 			var debounce <-chan time.Time
@@ -37,11 +27,11 @@ func (s *session) watchWM() {
 				select {
 				case <-s.done:
 					return
-				case name, ok := <-events:
+				case _, ok := <-events:
 					if !ok {
 						break loop
 					}
-					if wmEvents[name] && debounce == nil {
+					if debounce == nil {
 						debounce = time.After(40 * time.Millisecond)
 					}
 				case <-debounce:
@@ -61,11 +51,11 @@ func (s *session) watchWM() {
 }
 
 func (s *session) refreshWM() {
-	mons, err := s.hypr.monitors()
+	mons, err := s.host.monitors()
 	if err != nil {
 		return
 	}
-	wss, err := s.hypr.workspaces()
+	wss, err := s.host.workspaces()
 	if err != nil {
 		return
 	}
@@ -86,11 +76,11 @@ func (s *session) refreshWM() {
 	}
 	slices.SortFunc(infos, func(a, b wire.WorkspaceInfo) int { return int(a.ID - b.ID) })
 	msg := wire.MarshalWorkspaces(infos)
-	clients, err := s.hypr.clients()
+	clients, err := s.host.clients()
 	if err != nil {
 		return
 	}
-	activeWin := s.hypr.activeWindow()
+	activeWin := s.host.activeWindow()
 	windows := wire.MarshalWindows(windowInfos(clients, mons, activeWin))
 
 	s.mu.Lock()
@@ -146,13 +136,13 @@ func (s *session) setFollow(on bool) {
 	}
 }
 
-// showWorkspace switches to a workspace; Hyprland focuses its monitor, which
+// showWorkspace switches to a workspace; the desktop focuses its monitor, which
 // a following session then captures.
 func (s *session) showWorkspace(id int32) {
 	if id < 1 || id > 9999 {
 		return
 	}
-	if err := s.hypr.dispatch(focusWorkspace(id)); err != nil {
+	if err := s.host.showWorkspace(id); err != nil {
 		slog.Warn("desktop workspace switch", "session", s.id, "err", err)
 	}
 }
@@ -160,7 +150,7 @@ func (s *session) showWorkspace(id int32) {
 // focusWindow focuses a window the viewer picked, showing its workspace; a
 // following session then captures its monitor.
 func (s *session) focusWindow(id string) {
-	clients, err := s.hypr.clients()
+	clients, err := s.host.clients()
 	if err != nil {
 		return
 	}
@@ -181,7 +171,7 @@ func (s *session) focusCaptured(win *windowGeom) {
 }
 
 func (s *session) dispatchFocus(address string) {
-	if err := s.hypr.focusAddress(address); err != nil {
+	if err := s.host.focusAddress(address); err != nil {
 		slog.Warn("desktop focus window", "session", s.id, "err", err)
 		return
 	}
@@ -193,14 +183,14 @@ func (s *session) dispatchFocus(address string) {
 // selectOutput captures a monitor the viewer picked and gives it focus, so
 // keys go where the viewer is looking.
 func (s *session) selectOutput(name string) {
-	mons, err := s.hypr.monitors()
+	mons, err := s.host.monitors()
 	if err != nil {
 		return
 	}
-	if !slices.ContainsFunc(mons, func(m hyprMonitor) bool { return m.Name == name && !m.Disabled }) {
+	if !slices.ContainsFunc(mons, func(m deskMonitor) bool { return m.Name == name && !m.Disabled }) {
 		return
 	}
-	if err := s.hypr.dispatch(focusMonitor(name)); err != nil {
+	if err := s.host.focusOutput(name); err != nil {
 		slog.Warn("desktop focus monitor", "session", s.id, "err", err)
 	}
 	s.switchOutput(name)

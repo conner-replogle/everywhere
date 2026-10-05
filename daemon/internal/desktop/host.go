@@ -8,29 +8,14 @@ import (
 )
 
 // notify shows a desktop notification in the session.
-func notify(h *hyprInstance, summary, body string) {
+func (h *hyprInstance) notify(summary, body string) {
 	go func() {
 		cmd := exec.Command("notify-send", "--app-name=Everywhere", "--icon=preferences-desktop-remote-desktop", summary, body)
-		if h != nil {
-			cmd.Env = h.env()
-		}
+		cmd.Env = h.env()
 		if err := cmd.Run(); err != nil {
 			slog.Debug("notify-send", "err", err)
 		}
 	}()
-}
-
-// inhibitSleep blocks system suspend until the returned func is called. Screen
-// locking still works: injected input resets hypridle, and an idle remote
-// viewer should lock (and can type the password).
-func inhibitSleep(why string) func() {
-	cmd := exec.Command("systemd-inhibit", "--what=sleep", "--who=everywhere", "--why="+why, "--mode=block", "sleep", "infinity")
-	if err := cmd.Start(); err != nil {
-		slog.Warn("cannot inhibit sleep", "err", err)
-		return func() {}
-	}
-	go func() { _ = cmd.Wait() }()
-	return func() { _ = cmd.Process.Kill() }
 }
 
 // tailnetPath reports whether Tailscale is relaying traffic to ip through DERP.

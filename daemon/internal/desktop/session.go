@@ -43,7 +43,7 @@ type session struct {
 	pc     *webrtc.PeerConnection
 	ctl    *controller
 	est    cc.BandwidthEstimator // nil if the congestion controller didn't attach
-	hypr   *hyprInstance
+	host   desktopHost
 
 	sender *webrtc.RTPSender
 	// One track per negotiated codec; the sender switches between them with ReplaceTrack.
@@ -89,13 +89,13 @@ type media struct {
 
 // startSession answers offer at once; the daemon's ICE candidates follow
 // through onCandidate as they are gathered (trickle ICE).
-func startSession(m *Manager, id, offer string, mode wire.Mode, v Viewer, src source, h *hyprInstance, servers []webrtc.ICEServer, onCandidate func(webrtc.ICECandidateInit)) (*session, string, error) {
+func startSession(m *Manager, id, offer string, mode wire.Mode, v Viewer, src source, h desktopHost, servers []webrtc.ICEServer, onCandidate func(webrtc.ICECandidateInit)) (*session, string, error) {
 	pc, err := m.api.NewPeerConnection(webrtc.Configuration{ICEServers: servers})
 	if err != nil {
 		return nil, "", err
 	}
 	s := &session{
-		m: m, id: id, viewer: v, pc: pc, mode: mode, hypr: h, seq: rtp.NewRandomSequencer(), follow: true,
+		m: m, id: id, viewer: v, pc: pc, mode: mode, host: h, seq: rtp.NewRandomSequencer(), follow: true,
 		tracks: map[ipc.Codec]*webrtc.TrackLocalStaticRTP{}, done: make(chan struct{}),
 	}
 	select {
@@ -218,14 +218,14 @@ func (s *session) startMedia(src source) error {
 		}
 	}
 	md := &media{codec: codec, scale: 1, pumpDone: make(chan struct{}), cursorDone: make(chan struct{})}
-	mons, err := s.hypr.monitors()
+	mons, err := s.host.monitors()
 	if err != nil {
 		return err
 	}
-	var mon hyprMonitor
+	var mon deskMonitor
 	nativeW, nativeH := 0, 0
 	if src.Window != "" {
-		clients, err := s.hypr.clients()
+		clients, err := s.host.clients()
 		if err != nil {
 			return err
 		}
@@ -261,8 +261,8 @@ func (s *session) startMedia(src source) error {
 	c, err := startWorker(ipc.Config{
 		Output: md.output, Window: src.Window, BitrateKbps: md.kbps, TargetUsage: prof.targetUsage,
 		Codec: codec, Width: encW, Height: encH, MaxFPS: prof.maxFPS,
-		Input: true, Keymap: s.hypr.keymap(),
-	}, s.hypr.env())
+		Input: true, Keymap: s.host.keymap(),
+	}, s.host.env())
 	if err != nil {
 		return err
 	}
@@ -468,9 +468,9 @@ func (s *session) setControl(dc *webrtc.DataChannel) {
 // showAgent tells the viewer an agent acted at layout position lx, ly (NaN
 // for keyboard actions), marking it if it's inside the capture.
 func (s *session) showAgent(action string, lx, ly float64, label string) {
-	var mons []hyprMonitor
+	var mons []deskMonitor
 	if !math.IsNaN(lx) {
-		mons, _ = s.hypr.monitors()
+		mons, _ = s.host.monitors()
 	}
 	msg := wire.Agent{Action: action, Label: label}
 	s.mu.Lock()
@@ -525,7 +525,7 @@ func (s *session) sendHostInfoLocked() {
 	}
 	_ = s.control.Send(hello.Marshal())
 	_ = s.control.Send(s.modeInfoLocked().Marshal())
-	mons, err := s.hypr.monitors()
+	mons, err := s.host.monitors()
 	if err != nil {
 		slog.Warn("listing monitors", "err", err)
 		return
@@ -724,10 +724,10 @@ func (s *session) onConnected() {
 	}
 	s.connected = true
 	s.uninhibit = inhibitSleep("Remote desktop session from " + s.viewer.Name)
-	if s.hypr.Claude {
-		notify(s.hypr, "Remote desktop started", s.viewer.Name+" is viewing and controlling Claude's desktop on this computer")
+	if s.host.isClaude() {
+		s.host.notify("Remote desktop started", s.viewer.Name+" is viewing and controlling Claude's desktop on this computer")
 	} else {
-		notify(s.hypr, "Remote desktop started", s.viewer.Name+" is viewing and controlling this computer")
+		s.host.notify("Remote desktop started", s.viewer.Name+" is viewing and controlling this computer")
 	}
 }
 
@@ -770,7 +770,7 @@ func (s *session) close(reason string) {
 			uninhibit()
 		}
 		if wasConnected {
-			notify(s.hypr, "Remote desktop ended", s.viewer.Name+" disconnected")
+			s.host.notify("Remote desktop ended", s.viewer.Name+" disconnected")
 		}
 	})
 }

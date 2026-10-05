@@ -151,7 +151,7 @@ func daemon(args []string) error {
 	hostname, _ := os.Hostname()
 	home, _ := os.UserHomeDir()
 	features := []string{protocol.FeatureClaude, protocol.FeatureUpdate, protocol.FeatureWorktrees, protocol.FeatureAttachments, protocol.FeatureHistory, protocol.FeatureArchive, protocol.FeatureTabs, protocol.FeatureRewind, protocol.FeatureIcons, protocol.FeatureClone, protocol.FeatureGitStatus, protocol.FeatureClaudeUpdate, protocol.FeatureMkdir}
-	if runtime.GOOS == "linux" {
+	if runtime.GOOS == "linux" || runtime.GOOS == "windows" {
 		features = append(features, protocol.FeatureDesktop)
 	}
 	srv := peer.NewServer(st, protocol.DeviceInfo{

@@ -26,8 +26,12 @@ func Tools(m *Manager) []mcp.Tool {
 	tools := make([]mcp.Tool, 0, len(toolDefs))
 	for _, d := range toolDefs {
 		run := d.run
+		description := d.description
+		if o, ok := descriptionOverrides[d.name]; ok {
+			description = o
+		}
 		tools = append(tools, mcp.Tool{
-			Name: d.name, Title: d.title, Description: d.description,
+			Name: d.name, Title: d.title, Description: description,
 			InputSchema: json.RawMessage(d.schema),
 			Annotations: d.annotations,
 			Listed:      listed,

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"time"
 
@@ -19,7 +20,13 @@ import (
 )
 
 // HelperName is the worker binary, installed next to the daemon.
-const HelperName = "everywhere-desktop"
+var HelperName = "everywhere-desktop"
+
+func init() {
+	if runtime.GOOS == "windows" {
+		HelperName += ".exe"
+	}
+}
 
 var errClosed = errors.New("capture closed")
 

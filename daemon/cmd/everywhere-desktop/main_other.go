@@ -1,7 +1,8 @@
-//go:build !linux || !cgo
+//go:build !(linux && cgo) && !windows
 
 // Command everywhere-desktop is the daemon's remote desktop worker. It needs
-// Linux and cgo (Wayland, libgbm, GStreamer); this build has neither.
+// Windows, or Linux with cgo (Wayland, libgbm, GStreamer); this build is
+// neither.
 package main
 
 import (
@@ -10,6 +11,6 @@ import (
 )
 
 func main() {
-	fmt.Fprintln(os.Stderr, "everywhere-desktop: remote desktop needs a Linux build with cgo")
+	fmt.Fprintln(os.Stderr, "everywhere-desktop: remote desktop needs Windows, or a Linux build with cgo")
 	os.Exit(1)
 }

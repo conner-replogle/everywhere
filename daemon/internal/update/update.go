@@ -84,8 +84,8 @@ func install(exe string, archive []byte) error {
 	if err != nil {
 		return err
 	}
-	// Linux releases also carry the remote desktop worker, which must match
-	// the daemon; it goes next to it.
+	// Linux and Windows releases also carry the remote desktop worker, which
+	// must match the daemon; it goes next to it.
 	worker, err := extract(archive, WorkerName)
 	if err == nil {
 		if err := replace(filepath.Join(filepath.Dir(exe), WorkerName), worker); err != nil {
@@ -95,15 +95,13 @@ func install(exe string, archive []byte) error {
 	return replace(exe, bin)
 }
 
-// WorkerName is the remote desktop worker in Linux release archives.
-const WorkerName = "everywhere-desktop"
-
-// binaryName is the daemon's name in this platform's release archive.
-var binaryName = "everywhere"
+// WorkerName is the remote desktop worker in Linux and Windows release
+// archives; binaryName is the daemon.
+var WorkerName, binaryName = "everywhere-desktop", "everywhere"
 
 func init() {
 	if runtime.GOOS == "windows" {
-		binaryName = "everywhere.exe"
+		WorkerName, binaryName = "everywhere-desktop.exe", "everywhere.exe"
 	}
 }
 

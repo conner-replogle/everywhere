@@ -20,8 +20,8 @@ func desktopCmd(args []string) error {
 	}
 	switch args[0] {
 	case "enable":
-		if runtime.GOOS != "linux" {
-			return errors.New("remote desktop is only supported on Linux (Hyprland) for now")
+		if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
+			return errors.New("remote desktop is only supported on Linux (Hyprland) and Windows for now")
 		}
 		if err := config.SetDesktop(true); err != nil {
 			return err

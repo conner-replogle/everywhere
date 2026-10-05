@@ -1,5 +1,5 @@
-// Package desktop serves remote desktop sessions of the logged-in Hyprland
-// session: each viewer gets its own PeerConnection (signaled over the device
+// Package desktop serves remote desktop sessions of the logged-in desktop
+// (Hyprland on Linux, the interactive desktop on Windows): each viewer gets its own PeerConnection (signaled over the device
 // connection's control channel) carrying a low-latency video track plus input
 // and control data channels. Capture, encoding and input injection run in an
 // everywhere-desktop worker process (see ipc); this package stays CGO-free.
@@ -127,7 +127,7 @@ func (m *Manager) Info() protocol.DesktopInfo {
 	case err != nil:
 		info.Reason = err.Error()
 	default:
-		if _, err := findHyprland(); err != nil {
+		if _, err := findDesktop(); err != nil {
 			info.Reason = err.Error()
 		} else {
 			info.Available = true
@@ -143,11 +143,11 @@ func (m *Manager) Start(offer string, mode wire.Mode, v Viewer, src protocol.Des
 	if !m.enabled() {
 		return protocol.DesktopStarted{}, ErrDisabled
 	}
-	var h *hyprInstance
+	var h desktopHost
 	var err error
 	switch src.Desktop {
 	case "":
-		h, err = findHyprland()
+		h, err = findDesktop()
 	case deskClaude:
 		h, err = m.claude.instance()
 	default:
@@ -225,11 +225,11 @@ func (m *Manager) CloseTab(tabID string) {
 }
 
 // agentActed shows the viewer, if any, what an agent did on desktop h.
-func (m *Manager) agentActed(h *hyprInstance, action string, lx, ly float64, label string) {
+func (m *Manager) agentActed(h desktopHost, action string, lx, ly float64, label string) {
 	m.mu.Lock()
 	s := m.sess
 	m.mu.Unlock()
-	if s != nil && s.hypr.Signature == h.Signature {
+	if s != nil && s.host.key() == h.key() {
 		go s.showAgent(action, lx, ly, label)
 	}
 }

@@ -22,7 +22,7 @@ type source struct {
 	Class, Title string
 }
 
-type hyprClient struct {
+type deskWindow struct {
 	Address   string `json:"address"`
 	Mapped    bool   `json:"mapped"`
 	Hidden    bool   `json:"hidden"`
@@ -40,8 +40,8 @@ type hyprClient struct {
 	Pid      int    `json:"pid"`
 }
 
-func (h *hyprInstance) clients() ([]hyprClient, error) {
-	var cs []hyprClient
+func (h *hyprInstance) clients() ([]deskWindow, error) {
+	var cs []deskWindow
 	return cs, h.requestJSON("clients", &cs)
 }
 
@@ -56,12 +56,12 @@ func (h *hyprInstance) activeWindow() string {
 
 // resolveWindow finds want's window: by stableId, else the same app and
 // title, else the same app. Nil if there is none.
-func resolveWindow(clients []hyprClient, want source) *hyprClient {
-	live := slices.DeleteFunc(slices.Clone(clients), func(c hyprClient) bool { return !c.Mapped })
-	for _, match := range []func(c hyprClient) bool{
-		func(c hyprClient) bool { return want.Window != "" && c.StableID == want.Window },
-		func(c hyprClient) bool { return want.Class != "" && c.Class == want.Class && c.Title == want.Title },
-		func(c hyprClient) bool { return want.Class != "" && c.Class == want.Class },
+func resolveWindow(clients []deskWindow, want source) *deskWindow {
+	live := slices.DeleteFunc(slices.Clone(clients), func(c deskWindow) bool { return !c.Mapped })
+	for _, match := range []func(c deskWindow) bool{
+		func(c deskWindow) bool { return want.Window != "" && c.StableID == want.Window },
+		func(c deskWindow) bool { return want.Class != "" && c.Class == want.Class && c.Title == want.Title },
+		func(c deskWindow) bool { return want.Class != "" && c.Class == want.Class },
 	} {
 		if i := slices.IndexFunc(live, match); i >= 0 {
 			return &live[i]
@@ -70,10 +70,10 @@ func resolveWindow(clients []hyprClient, want source) *hyprClient {
 	return nil
 }
 
-func monitorByID(mons []hyprMonitor, id int) (hyprMonitor, bool) {
-	i := slices.IndexFunc(mons, func(m hyprMonitor) bool { return m.ID == id && !m.Disabled })
+func monitorByID(mons []deskMonitor, id int) (deskMonitor, bool) {
+	i := slices.IndexFunc(mons, func(m deskMonitor) bool { return m.ID == id && !m.Disabled })
 	if i < 0 {
-		return hyprMonitor{}, false
+		return deskMonitor{}, false
 	}
 	return mons[i], true
 }
@@ -90,7 +90,7 @@ type windowGeom struct {
 	Monitor      string
 }
 
-func newWindowGeom(c *hyprClient, mon hyprMonitor) *windowGeom {
+func newWindowGeom(c *deskWindow, mon deskMonitor) *windowGeom {
 	scale := mon.Scale
 	if scale <= 0 {
 		scale = 1
@@ -115,7 +115,7 @@ func (g *windowGeom) toMonitor(x, y uint16) (uint16, uint16) {
 const keyLeftMeta, keyRightMeta = 125, 126
 
 // windowInfos lists mapped windows for the viewer's pickers, by workspace.
-func windowInfos(clients []hyprClient, mons []hyprMonitor, active string) []wire.WindowInfo {
+func windowInfos(clients []deskWindow, mons []deskMonitor, active string) []wire.WindowInfo {
 	var out []wire.WindowInfo
 	for _, c := range clients {
 		if !c.Mapped || c.StableID == "" {

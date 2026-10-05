@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"image"
@@ -50,6 +51,9 @@ const (
 	deskYours  = "yours"  // the user's, with their pointer and focus
 )
 
+// defaultDesk is where agents start: Claude's desktop where there is one.
+var defaultDesk = deskClaude
+
 // Agent returns the desktop agent of a thread (key), making it if needed.
 func (m *Manager) Agent(key string) (*Agent, error) {
 	if !m.enabled() {
@@ -62,7 +66,7 @@ func (m *Manager) Agent(key string) (*Agent, error) {
 	}
 	a := m.agents[key]
 	if a == nil {
-		a = &Agent{m: m, key: key, desk: deskClaude}
+		a = &Agent{m: m, key: key, desk: defaultDesk}
 		m.agents[key] = a
 	}
 	return a, nil
@@ -95,8 +99,8 @@ func (m *Manager) closeAgents() {
 
 // View is where an agent's target is now, and the size of its screenshots.
 type View struct {
-	h      *hyprInstance
-	mon    hyprMonitor
+	h      desktopHost
+	mon    deskMonitor
 	win    *windowGeom // nil for a monitor
 	src    source
 	Target Target
@@ -118,26 +122,26 @@ type Target struct {
 	NativeHeight int `json:"nativeHeight"`
 }
 
-// hypr is the desktop the agent works on, starting Claude's if needed. Must
+// host is the desktop the agent works on, starting Claude's if needed. Must
 // hold a.mu.
-func (a *Agent) hypr() (*hyprInstance, error) {
+func (a *Agent) host() (desktopHost, error) {
 	if a.desk == deskYours {
-		return findHyprland()
+		return findDesktop()
 	}
 	return a.m.claude.instance()
 }
 
 // desktop is the desktop the agent works on, for tools that act on it rather
 // than its target.
-func (a *Agent) desktop() (*hyprInstance, error) {
+func (a *Agent) desktop() (desktopHost, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.hypr()
+	return a.host()
 }
 
 // resolve finds the target on the desktop as it is now. Must hold a.mu.
 func (a *Agent) resolve() (*View, error) {
-	h, err := a.hypr()
+	h, err := a.host()
 	if err != nil {
 		return nil, err
 	}
@@ -204,7 +208,7 @@ func fit(w, h, limit int) (int, int) {
 // worker returns a worker for v's target, starting it if needed. Must hold a.mu.
 func (a *Agent) worker(v *View) (*worker, error) {
 	win := v.src.Window
-	if a.w != nil && (a.wSig != v.h.Signature || a.wOut != v.mon.Name || a.wWin != win || !a.w.alive()) {
+	if a.w != nil && (a.wSig != v.h.key() || a.wOut != v.mon.Name || a.wWin != win || !a.w.alive()) {
 		a.stopWorker()
 	}
 	if a.w == nil {
@@ -215,7 +219,7 @@ func (a *Agent) worker(v *View) (*worker, error) {
 		if msg := w.InputError(); msg != "" {
 			slog.Warn("desktop agent input unavailable; screenshots only", "thread", a.key, "err", msg)
 		}
-		a.w, a.wSig, a.wOut, a.wWin = w, v.h.Signature, v.mon.Name, win
+		a.w, a.wSig, a.wOut, a.wWin = w, v.h.key(), v.mon.Name, win
 	}
 	if a.idle == nil {
 		a.idle = time.AfterFunc(agentIdle, a.expire)
@@ -401,7 +405,7 @@ func (v *View) pointer(p Point) (px, py uint16, lx, ly float64, err error) {
 	return uint16(nx * 65535), uint16(ny * 65535), lx, ly, nil
 }
 
-func monScale(m hyprMonitor) float64 {
+func monScale(m deskMonitor) float64 {
 	if m.Scale <= 0 {
 		return 1
 	}
@@ -596,7 +600,7 @@ func (a *Agent) FocusWorkspace(id int) error {
 	if err != nil {
 		return err
 	}
-	return h.dispatch(focusWorkspace(int32(id)))
+	return h.showWorkspace(int32(id))
 }
 
 // FocusWindow focuses a window (by stableId), showing its workspace.
@@ -713,7 +717,7 @@ func (a *Agent) Clipboard() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	text, ok := readClipboardText(h)
+	text, ok := h.readClipboard(context.Background())
 	if !ok {
 		return "", errors.New("the clipboard holds no text")
 	}
@@ -793,8 +797,9 @@ func parseCombo(combo string) ([]uint32, error) {
 // How long desktop_launch waits for the app's window.
 const launchWait = 8 * time.Second
 
-// Launch starts command on Claude's desktop, which becomes the target, and
-// waits a little for a new window. The window is nil if none appeared.
+// Launch starts command on Claude's desktop (the user's where there's no
+// Claude's desktop), which becomes the target, and waits a little for a new
+// window. The window is nil if none appeared.
 func (a *Agent) Launch(command string) (*WindowInfo, error) {
 	command = strings.TrimSpace(command)
 	if command == "" {
@@ -805,7 +810,17 @@ func (a *Agent) Launch(command string) (*WindowInfo, error) {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	h, err := a.m.claude.instance()
+	desk, src := deskClaude, source{Output: claudeOutput}
+	if defaultDesk == deskYours {
+		desk, src = deskYours, source{}
+	}
+	var h desktopHost
+	var err error
+	if desk == deskClaude {
+		h, err = a.m.claude.instance()
+	} else {
+		h, err = findDesktop()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -813,10 +828,10 @@ func (a *Agent) Launch(command string) (*WindowInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := h.dispatch(execCmd(command)); err != nil {
+	if err := h.launch(command); err != nil {
 		return nil, err
 	}
-	a.desk, a.src = deskClaude, source{Output: claudeOutput}
+	a.desk, a.src = desk, src
 	known := map[string]bool{}
 	for _, c := range before {
 		known[c.Address] = true
@@ -828,8 +843,10 @@ func (a *Agent) Launch(command string) (*WindowInfo, error) {
 		}
 		for _, c := range clients {
 			if c.Mapped && !known[c.Address] {
+				mons, _ := h.monitors()
+				mon, _ := monitorByID(mons, c.Monitor)
 				return &WindowInfo{ID: c.StableID, Class: c.Class, Title: c.Title, Workspace: c.Workspace.Name,
-					Monitor: claudeOutput, Width: c.Size[0], Height: c.Size[1], Floating: c.Floating}, nil
+					Monitor: mon.Name, Width: c.Size[0], Height: c.Size[1], Floating: c.Floating}, nil
 			}
 		}
 	}

@@ -1,7 +1,8 @@
-//go:build linux && cgo
+//go:build (linux && cgo) || windows
 
 // Command everywhere-desktop is the daemon's remote desktop worker: it
-// captures and encodes one Hyprland output and injects the viewer's input. The
+// captures and encodes one display (a Hyprland output, or a Windows display)
+// and injects the viewer's input. The
 // daemon starts it per capture and talks to it over stdin/stdout (see
 // internal/desktop/ipc); it is never run by hand.
 package main

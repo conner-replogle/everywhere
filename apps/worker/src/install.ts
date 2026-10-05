@@ -97,6 +97,9 @@ New-Item -ItemType Directory -Force -Path $Tmp | Out-Null
 try {
   if ($env:EVERYWHERE_BINARY) {
     Copy-Item $env:EVERYWHERE_BINARY (Join-Path $Tmp 'everywhere.exe')
+    # The remote desktop worker, if it was built next to it.
+    $Worker = Join-Path (Split-Path $env:EVERYWHERE_BINARY) 'everywhere-desktop.exe'
+    if (Test-Path $Worker) { Copy-Item $Worker (Join-Path $Tmp 'everywhere-desktop.exe') }
   } else {
     $Asset = "everywhere_windows_$Arch.tar.gz"
     $Base = "https://github.com/$Repo/releases/latest/download"
@@ -113,10 +116,16 @@ try {
   }
 
   $Exe = Join-Path $BinDir 'everywhere.exe'
-  # A running daemon's binary can't be overwritten but can be renamed; the
-  # daemon deletes it once it restarts.
-  if (Test-Path $Exe) { Move-Item $Exe (Join-Path $BinDir ('.everywhere.exe.' + [DateTime]::UtcNow.Ticks + '.old')) }
-  Copy-Item (Join-Path $Tmp 'everywhere.exe') $Exe
+  # A running binary can't be overwritten but can be renamed; the daemon
+  # deletes the old one once it restarts. The remote desktop worker must sit
+  # next to the daemon.
+  foreach ($Name in 'everywhere.exe', 'everywhere-desktop.exe') {
+    $Src = Join-Path $Tmp $Name
+    if (-not (Test-Path $Src)) { continue }
+    $Dst = Join-Path $BinDir $Name
+    if (Test-Path $Dst) { Move-Item $Dst (Join-Path $BinDir ('.' + $Name + '.' + [DateTime]::UtcNow.Ticks + '.old')) }
+    Copy-Item $Src $Dst
+  }
 } finally {
   Remove-Item -Recurse -Force $Tmp -ErrorAction SilentlyContinue
 }

@@ -137,7 +137,7 @@ func (h *hyprInstance) requestJSON(cmd string, v any) error {
 	return nil
 }
 
-type hyprMonitor struct {
+type deskMonitor struct {
 	ID              int     `json:"id"`
 	Name            string  `json:"name"`
 	Width           int     `json:"width"`
@@ -152,20 +152,20 @@ type hyprMonitor struct {
 	} `json:"activeWorkspace"`
 }
 
-func (h *hyprInstance) monitors() ([]hyprMonitor, error) {
-	var mons []hyprMonitor
+func (h *hyprInstance) monitors() ([]deskMonitor, error) {
+	var mons []deskMonitor
 	return mons, h.requestJSON("monitors", &mons)
 }
 
-type hyprWorkspace struct {
+type deskWorkspace struct {
 	ID      int    `json:"id"`
 	Name    string `json:"name"`
 	Monitor string `json:"monitor"`
 	Windows int    `json:"windows"`
 }
 
-func (h *hyprInstance) workspaces() ([]hyprWorkspace, error) {
-	var ws []hyprWorkspace
+func (h *hyprInstance) workspaces() ([]deskWorkspace, error) {
+	var ws []deskWorkspace
 	return ws, h.requestJSON("workspaces", &ws)
 }
 
@@ -218,6 +218,45 @@ func (h *hyprInstance) dispatch(d dispatcher) error {
 		}
 	}
 	return firstErr
+}
+
+func (h *hyprInstance) key() string    { return h.Signature }
+func (h *hyprInstance) isClaude() bool { return h.Claude }
+
+func (h *hyprInstance) showWorkspace(id int32) error  { return h.dispatch(focusWorkspace(id)) }
+func (h *hyprInstance) focusOutput(name string) error { return h.dispatch(focusMonitor(name)) }
+func (h *hyprInstance) launch(command string) error   { return h.dispatch(execCmd(command)) }
+
+// Hyprland events that change the workspaces, the windows, or which monitor
+// has focus.
+var wmEvents = map[string]bool{
+	"workspace": true, "workspacev2": true, "focusedmon": true, "focusedmonv2": true,
+	"createworkspace": true, "createworkspacev2": true, "destroyworkspace": true, "destroyworkspacev2": true,
+	"moveworkspace": true, "moveworkspacev2": true, "renameworkspace": true, "activespecial": true, "activespecialv2": true,
+	"openwindow": true, "closewindow": true, "movewindow": true, "movewindowv2": true,
+	"monitoradded": true, "monitoraddedv2": true, "monitorremoved": true, "monitorremovedv2": true,
+	"activewindowv2": true, "windowtitlev2": true, "changefloatingmode": true, "fullscreen": true,
+}
+
+func (h *hyprInstance) changes(done <-chan struct{}) (<-chan struct{}, error) {
+	events, err := h.events(done)
+	if err != nil {
+		return nil, err
+	}
+	out := make(chan struct{}, 1)
+	go func() {
+		defer close(out)
+		for name := range events {
+			if !wmEvents[name] {
+				continue
+			}
+			select {
+			case out <- struct{}{}:
+			default: // one is pending already
+			}
+		}
+	}()
+	return out, nil
 }
 
 // events streams Hyprland's event names (the part before ">>") until done
@@ -290,7 +329,7 @@ func (h *hyprInstance) env() []string {
 }
 
 // focusedOutput is the monitor Hyprland has focused, or "".
-func focusedOutput(mons []hyprMonitor) string {
+func focusedOutput(mons []deskMonitor) string {
 	for _, m := range mons {
 		if m.Focused && !m.Disabled {
 			return m.Name
@@ -301,8 +340,8 @@ func focusedOutput(mons []hyprMonitor) string {
 
 // resolveOutput picks the monitor for "" the same way capture does: eDP-1,
 // else the first enabled one.
-func resolveOutput(name string, mons []hyprMonitor) (hyprMonitor, bool) {
-	var first *hyprMonitor
+func resolveOutput(name string, mons []deskMonitor) (deskMonitor, bool) {
+	var first *deskMonitor
 	for i, m := range mons {
 		if m.Disabled {
 			continue
@@ -317,5 +356,5 @@ func resolveOutput(name string, mons []hyprMonitor) (hyprMonitor, bool) {
 	if name == "" && first != nil {
 		return *first, true
 	}
-	return hyprMonitor{}, false
+	return deskMonitor{}, false
 }

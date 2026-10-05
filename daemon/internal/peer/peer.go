@@ -140,7 +140,7 @@ func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string) *Serve
 		s.desktop = d
 	}
 	tools := browser.Tools(s.browsers)
-	if s.desktop != nil && runtime.GOOS == "linux" {
+	if s.desktop != nil && (runtime.GOOS == "linux" || runtime.GOOS == "windows") {
 		tools = append(tools, desktop.Tools(s.desktop)...)
 	}
 	s.mcp = mcp.NewServer("everywhere", version.Version, tools)

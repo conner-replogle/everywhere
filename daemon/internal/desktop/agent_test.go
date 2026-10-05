@@ -47,7 +47,7 @@ func TestFit(t *testing.T) {
 }
 
 func TestViewPointer(t *testing.T) {
-	mon := hyprMonitor{Name: "DP-1", X: 1000, Y: 0, Width: 2560, Height: 1440, Scale: 2}
+	mon := deskMonitor{Name: "DP-1", X: 1000, Y: 0, Width: 2560, Height: 1440, Scale: 2}
 	// A monitor: the point's share of the screenshot is its share of the monitor.
 	v := &View{mon: mon, Width: 1280, Height: 720}
 	px, py, lx, ly, err := v.pointer(Point{640, 360})
@@ -62,7 +62,7 @@ func TestViewPointer(t *testing.T) {
 	}
 
 	// A window at logical (1320, 180), 640×360 on that monitor, which is 1280×720 logical.
-	c := &hyprClient{Address: "0x1", At: [2]int{1320, 180}, Size: [2]int{640, 360}}
+	c := &deskWindow{Address: "0x1", At: [2]int{1320, 180}, Size: [2]int{640, 360}}
 	v = &View{mon: mon, win: newWindowGeom(c, mon), Width: 1280, Height: 720}
 	px, py, lx, ly, err = v.pointer(Point{0, 0})
 	if err != nil {

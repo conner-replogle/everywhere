@@ -1,6 +1,8 @@
 package desktop
 
 import (
+	"runtime"
+
 	"github.com/conner-replogle/everywhere/daemon/internal/desktop/ipc"
 	"github.com/conner-replogle/everywhere/daemon/internal/desktop/wire"
 )
@@ -17,6 +19,14 @@ type profile struct {
 }
 
 func profileFor(mode wire.Mode, av1 bool) profile {
+	p := baseProfile(mode, av1)
+	if runtime.GOOS == "windows" {
+		p.codecs = []ipc.Codec{ipc.H264} // its worker encodes H.264 only
+	}
+	return p
+}
+
+func baseProfile(mode wire.Mode, av1 bool) profile {
 	switch mode {
 	case wire.ModeSmooth:
 		// Fewer pixels roughly halves VCN encode time; H.264 has the fastest decoders everywhere.

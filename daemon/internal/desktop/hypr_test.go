@@ -65,7 +65,7 @@ func TestFindHyprland(t *testing.T) {
 }
 
 func TestResolveOutput(t *testing.T) {
-	mons := []hyprMonitor{{Name: "DP-4", Focused: true}, {Name: "eDP-1"}, {Name: "HDMI-A-1", Disabled: true}}
+	mons := []deskMonitor{{Name: "DP-4", Focused: true}, {Name: "eDP-1"}, {Name: "HDMI-A-1", Disabled: true}}
 	if m, _ := resolveOutput("", mons); m.Name != "eDP-1" {
 		t.Errorf(`"" = %s, want eDP-1`, m.Name)
 	}

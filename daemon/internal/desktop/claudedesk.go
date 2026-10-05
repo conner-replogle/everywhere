@@ -34,6 +34,9 @@ const (
 // errClaudeDesktop wraps why Claude's desktop can't run.
 var errClaudeDesktop = errors.New("Claude's desktop can't start")
 
+// errNoClaudeDesktop means this platform has no Claude's desktop.
+var errNoClaudeDesktop = errors.New(`there's no Claude's desktop on this computer; use the user's desktop ("yours")`)
+
 type claudeDesktop struct {
 	mu     sync.Mutex
 	h      *hyprInstance
@@ -57,7 +60,18 @@ func isClaudeDesktop(pid int) bool {
 
 // instance returns Claude's desktop, starting it in the user's session if it
 // isn't running.
-func (d *claudeDesktop) instance() (*hyprInstance, error) {
+func (d *claudeDesktop) instance() (desktopHost, error) {
+	h, err := d.hyprland()
+	if err != nil {
+		return nil, err
+	}
+	return h, nil
+}
+
+func (d *claudeDesktop) hyprland() (*hyprInstance, error) {
+	if defaultDesk == deskYours {
+		return nil, errNoClaudeDesktop
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.h != nil && alive(d.pid) {

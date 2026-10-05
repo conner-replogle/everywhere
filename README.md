@@ -35,7 +35,7 @@ everywhere update
 everywhere uninstall [--purge]
 ```
 
-## Remote desktop (Omarchy / Hyprland)
+## Remote desktop (Omarchy / Hyprland, Windows)
 
 See and control a machine's logged-in desktop from the web app, with low
 latency over WebRTC. Turn it on at the machine itself:
@@ -50,7 +50,14 @@ one monitor or one window next to it. Fullscreen also sends Super, Alt+Tab and
 Esc to the desktop (Chromium), and the clipboard is shared (text). It needs
 Hyprland ≥ 0.56, a VA-API GPU, GStreamer's `va` plugins (`gst-plugins-bad`,
 `gst-plugin-va`) and `wl-clipboard`; the `everywhere-desktop` worker comes in
-the Linux release next to `everywhere`. macOS is planned (see TODO.md).
+the Linux release next to `everywhere`.
+
+On Windows (10 1809 or later) it streams the signed-in user's desktop: Desktop
+Duplication capture, H.264 from the GPU's Media Foundation encoder (or
+Windows' software one), and input through `SendInput`. There are no
+workspaces and no separate Claude's desktop, so agents work on the user's own
+screen. `everywhere-desktop.exe` comes in the Windows release. macOS is
+planned (see TODO.md).
 
 Claude threads on the device get `desktop_*` tools while remote desktop is on:
 list the windows, open one (or a monitor), take screenshots, and click, drag,
@@ -140,6 +147,15 @@ Remote desktop capture against the running Hyprland session (worker built as abo
 ```sh
 cd daemon && EW_DESKTOP_LIVE=1 EVERYWHERE_DESKTOP_HELPER=$PWD/bin/everywhere-desktop \
   go test ./internal/desktop -run Live -v
+```
+
+On Windows, `TestWindowsLive` does the same; it must run in the signed-in
+session (a scheduled task, not SSH), and `EW_DESKTOP_DUMP=file.h264` saves the
+stream to check with ffmpeg:
+
+```sh
+GOOS=windows go test -c -o desktop.test.exe ./internal/desktop
+GOOS=windows go build -o everywhere-desktop.exe ./cmd/everywhere-desktop
 ```
 
 End-to-end test (hub signaling → WebRTC → RPC → PTY), against that stack:
