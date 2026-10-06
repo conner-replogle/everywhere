@@ -287,6 +287,11 @@ export class DevicePeer {
     if (h.presenceKnown && !h.online.has(this.deviceId)) {
       if (state === "offline") return;
       if (state === "idle" && this.viewers === 0) return;
+      // A live connection doesn't need the hub. The daemon's socket to it
+      // drops for a second now and then (Cloudflare ends WebSockets on its
+      // own), which reports the device offline; if the daemon really went
+      // away, the connection fails by itself and onDrop takes over.
+      if (state === "connected") return;
       this.teardown();
       this.set({ state: "offline", error: null });
       return;
