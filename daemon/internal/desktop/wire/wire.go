@@ -31,6 +31,7 @@ const (
 	TypeFocusWindow  byte = 0x0c // focus a window (and show its workspace)
 	TypeClipboard    byte = 0x0d // the viewer's clipboard text
 	TypeSetClipSync  byte = 0x0e // exchange clipboard text or not
+	TypeText         byte = 0x0f // text to type, from a keyboard with no physical keys
 )
 
 // Host → viewer.
@@ -52,6 +53,9 @@ const (
 // MaxClipboard bounds clipboard text in either direction; SCTP messages over
 // 256 KiB aren't portable.
 const MaxClipboard = 200 << 10
+
+// MaxText bounds typed text: each character is a round trip to the worker.
+const MaxText = 4 << 10
 
 // DOM MouseEvent.button values.
 const (
@@ -149,6 +153,11 @@ type Clipboard struct {
 	Text string
 }
 
+// Text is text to type (an on-screen keyboard's): u16 length, then UTF-8.
+type Text struct {
+	Text string
+}
+
 // SetClipSync turns clipboard exchange on or off (off until the viewer asks).
 type SetClipSync struct {
 	On bool
@@ -163,7 +172,7 @@ func Parse(b []byte) (any, error) {
 	need := map[byte]int{
 		TypeMove: 7, TypeButton: 7, TypeScroll: 10, TypeKey: 4, TypeReleaseAll: 1, TypePing: 13, TypeSelectOutput: 2,
 		TypeSetMode: 2, TypeWorkspace: 5, TypeSetFollow: 2, TypeSelectWindow: 2, TypeFocusWindow: 2, TypeClipboard: 5,
-		TypeSetClipSync: 2,
+		TypeSetClipSync: 2, TypeText: 3,
 	}
 	n, known := need[b[0]]
 	if !known {
@@ -212,6 +221,12 @@ func Parse(b []byte) (any, error) {
 		return Clipboard{Text: string(b[5 : 5+n])}, nil
 	case TypeSetClipSync:
 		return SetClipSync{On: b[1] != 0}, nil
+	case TypeText:
+		n := int(le.Uint16(b[1:]))
+		if n > MaxText || len(b) < 3+n {
+			return nil, ErrShort
+		}
+		return Text{Text: string(b[3 : 3+n])}, nil
 	case TypePing:
 		return Ping{Seq: le.Uint32(b[1:]), ClientMs: math.Float64frombits(le.Uint64(b[5:]))}, nil
 	}

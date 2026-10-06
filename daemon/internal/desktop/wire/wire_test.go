@@ -24,6 +24,7 @@ func TestParse(t *testing.T) {
 		{[]byte{TypeFocusWindow, 1, '7'}, FocusWindow{ID: "7"}},
 		{[]byte{TypeClipboard, 2, 0, 0, 0, 'h', 'i'}, Clipboard{Text: "hi"}},
 		{[]byte{TypeSetClipSync, 1}, SetClipSync{On: true}},
+		{[]byte{TypeText, 2, 0, 'h', 'i'}, Text{Text: "hi"}},
 	}
 	for _, c := range cases {
 		got, err := Parse(c.in)

@@ -3,6 +3,7 @@ import {
   ActivityIcon,
   AppWindowIcon,
   CircleHelpIcon,
+  KeyboardIcon,
   LoaderIcon,
   MaximizeIcon,
   MessageSquarePlusIcon,
@@ -25,6 +26,7 @@ import {
   annotationRect,
   composeAnnotations,
 } from "@/components/browser/annotation-layer";
+import { TouchKeyboardBar, TouchKeyboardInput, useTouchKeyboard } from "@/components/desktop/touch-keyboard";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -422,6 +424,7 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
     const c = connRef.current?.control;
     if (c?.readyState === "open") c.send(msg);
   }, []);
+  const kb = useTouchKeyboard(sendControl);
 
   // Show what the thread's agent opened: now, or when the session next connects.
   const showAt = show?.at;
@@ -669,6 +672,20 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
             <Button
               variant="ghost"
               size="icon-sm"
+              className={cn(iconBtn, kb.open && "text-primary")}
+              aria-label="Keyboard"
+              aria-pressed={kb.open}
+              title="Type on the desktop"
+              disabled={status.kind !== "live"}
+              onClick={kb.toggle}
+            >
+              <KeyboardIcon />
+            </Button>
+          )}
+          {hasTouch && (
+            <Button
+              variant="ghost"
+              size="icon-sm"
               className={cn(iconBtn, touchMode === "trackpad" && "text-primary")}
               aria-label="Trackpad"
               aria-pressed={touchMode === "trackpad"}
@@ -779,7 +796,9 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
         tabIndex={-1}
         className="relative min-h-0 flex-1 overflow-hidden bg-black outline-none"
         onPointerDown={() => {
-          if (!annotating && document.activeElement !== stageRef.current) {
+          // While typing, taps on the picture keep the keyboard up.
+          if (kb.open && !annotating) kb.focus();
+          else if (!annotating && document.activeElement !== stageRef.current) {
             focusStage();
             void syncClipboardToHost();
           }
@@ -897,7 +916,9 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
             {notice}
           </div>
         )}
-        {touchMode === "trackpad" && status.kind === "live" && <TrackpadHelp />}
+        {hasTouch && <TouchKeyboardInput kb={kb} />}
+        {status.kind === "live" && !annotating && <TouchKeyboardBar kb={kb} />}
+        {touchMode === "trackpad" && status.kind === "live" && !kb.open && <TrackpadHelp />}
         {prefs.stats && stats && (
           <pre className="pointer-events-none absolute top-2 left-2 rounded bg-black/70 px-2 py-1.5 font-mono text-[11px] leading-snug text-white/90">
             {formatStats(stats, inputRtt)}

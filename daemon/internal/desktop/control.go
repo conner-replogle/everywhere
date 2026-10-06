@@ -159,6 +159,18 @@ func (c *controller) apply(msg any) {
 			delete(c.held, m.Code)
 		}
 		w.Key(uint32(m.Code), m.Pressed)
+	case wire.Text:
+		if win != nil {
+			c.sess.focusCaptured(win)
+		}
+		// Typed here, in order with the keys around it; a character the
+		// layout can't type is skipped.
+		for _, r := range m.Text {
+			if _, err := w.Type(r); err != nil {
+				slog.Debug("desktop type", "err", err)
+				return
+			}
+		}
 	case wire.ReleaseAll:
 		clear(c.held)
 		w.ReleaseAll()

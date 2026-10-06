@@ -21,6 +21,7 @@ export const Type = {
   FocusWindow: 0x0c,
   Clipboard: 0x0d,
   SetClipSync: 0x0e,
+  Text: 0x0f,
   // host → viewer
   Hello: 0x80,
   CursorImage: 0x81,
@@ -284,6 +285,32 @@ export function clipboard(text: string): ArrayBuffer | null {
   new DataView(b.buffer).setUint32(1, bytes.length, true);
   b.set(bytes, 5);
   return b.buffer;
+}
+
+/** Typed text is capped per message; each character is a round trip on the host. */
+const MAX_TEXT = 4096;
+
+/** Text for the host to type, whatever its keyboard layout: an on-screen keyboard's. Split to fit. */
+export function text(s: string): ArrayBuffer[] {
+  const out: ArrayBuffer[] = [];
+  const enc = new TextEncoder();
+  let chunk: number[] = [];
+  const flush = () => {
+    if (chunk.length === 0) return;
+    const b = new Uint8Array(3 + chunk.length);
+    b[0] = Type.Text;
+    new DataView(b.buffer).setUint16(1, chunk.length, true);
+    b.set(chunk, 3);
+    out.push(b.buffer);
+    chunk = [];
+  };
+  for (const ch of s) {
+    const bytes = enc.encode(ch);
+    if (chunk.length + bytes.length > MAX_TEXT) flush();
+    chunk.push(...bytes);
+  }
+  flush();
+  return out;
 }
 
 /** Clipboard exchange is off until the viewer turns it on. */
