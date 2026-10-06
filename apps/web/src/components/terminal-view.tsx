@@ -58,6 +58,7 @@ export function TerminalView({
   threadId,
   generation,
   onWriterChange,
+  onInteract,
   active = true,
   processId,
 }: {
@@ -68,6 +69,8 @@ export function TerminalView({
   /** Peer connection generation; a new one means reopen the channel. */
   generation: number;
   onWriterChange?: (w: WriterState) => void;
+  /** Called when the phone key row sends keys (the keyboard is seen by whoever renders this). */
+  onInteract?: () => void;
   /** False while the terminal sits in a background tab; it takes focus when shown. */
   active?: boolean;
 }) {
@@ -320,7 +323,10 @@ export function TerminalView({
         <TerminalKeys
           mods={mods}
           onToggle={(mod) => setModifiers({ ...modsRef.current, [mod]: !modsRef.current[mod] })}
-          onKeys={sendKeys}
+          onKeys={(data) => {
+            onInteract?.();
+            sendKeys(data);
+          }}
           applicationCursor={() => !!termRef.current?.modes.applicationCursorKeysMode}
         />
       )}

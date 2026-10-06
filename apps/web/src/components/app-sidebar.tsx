@@ -10,6 +10,7 @@ import {
   ChevronsUpDownIcon,
   FolderIcon,
   FolderPlusIcon,
+  HistoryIcon,
   HomeIcon,
   LoaderIcon,
   MonitorDownIcon,
@@ -17,6 +18,7 @@ import {
   MonitorIcon,
   MoreHorizontalIcon,
   PencilIcon,
+  PinIcon,
   PlusIcon,
   RotateCcwIcon,
   RotateCwIcon,
@@ -41,6 +43,7 @@ import { RenameDialog } from "@/components/rename-dialog";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
@@ -51,9 +54,11 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { auth, useAuth } from "@/lib/auth";
 import { useDeviceOnline } from "@/lib/hub";
+import { IDLE_AFTER_MS, isIdle, lastTouched, touchKey, touchThread, useThreadTouches } from "@/lib/idle-threads";
 import { useInstallApp } from "@/lib/pwa";
 import { getPrefs } from "@/lib/prefs";
 import { useProjectIcon } from "@/lib/project-icons";
+import { retainThread, visitThread } from "@/lib/recent-threads";
 import { cn, errorMessage } from "@/lib/utils";
 
 type Entry = DeviceContextValue;
@@ -91,14 +96,21 @@ const ARCHIVED_OPEN_KEY = "ew:archived-open";
 const DEVICES_COLLAPSED_KEY = "ew:devices-collapsed";
 const VIEW_KEY = "ew:sidebar-view";
 
-/** How the sidebar sorts and groups projects and threads, remembered per browser. */
+interface SidebarView {
+  sort: SortBy;
+  group: GroupBy;
+  /** Tuck threads untouched for IDLE_AFTER_MS under an "idle" row (on unless turned off). */
+  hideIdle: boolean;
+}
+
+/** How the sidebar sorts, groups and filters projects and threads, remembered per browser. */
 function useSidebarView() {
-  const [view, setView] = useState<{ sort: SortBy; group: GroupBy }>(() => {
+  const [view, setView] = useState<SidebarView>(() => {
     try {
-      const v = JSON.parse(localStorage.getItem(VIEW_KEY) ?? "{}") as { sort?: SortBy; group?: GroupBy };
-      return { sort: v.sort ?? "name", group: v.group ?? "project" };
+      const v = JSON.parse(localStorage.getItem(VIEW_KEY) ?? "{}") as Partial<SidebarView>;
+      return { sort: v.sort ?? "name", group: v.group ?? "project", hideIdle: v.hideIdle !== false };
     } catch {
-      return { sort: "name", group: "project" };
+      return { sort: "name", group: "project", hideIdle: true };
     }
   });
   useEffect(() => {
@@ -112,8 +124,22 @@ function useSidebarView() {
     ...view,
     setSort: (sort: SortBy) => setView((v) => ({ ...v, sort })),
     setGroup: (group: GroupBy) => setView((v) => ({ ...v, group })),
+    setHideIdle: (hideIdle: boolean) => setView((v) => ({ ...v, hideIdle })),
   };
 }
+
+/** The time, updated every minute, so threads go idle while the page stays open. */
+function useMinute(): number {
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const IDLE_DAYS = Math.round(IDLE_AFTER_MS / DAY_MS);
 
 function useCollapsed() {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => {
@@ -195,6 +221,10 @@ export function AppSidebar({
   const [removeWorktree, setRemoveWorktree] = useState(true);
   const [newProjectFor, setNewProjectFor] = useState<Entry | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // Which "idle" rows are open (by project key, or "all" for the ungrouped list); not remembered.
+  const [idleOpen, setIdleOpen] = useState<ReadonlySet<string>>(() => new Set());
+  const touches = useThreadTouches();
+  const now = useMinute();
 
   const list = useMemo(() => [...entries.values()], [entries]);
   const multiDevice = (devices?.length ?? 0) > 1;
@@ -267,6 +297,8 @@ export function AppSidebar({
       const mode = kind === "claude" ? (await getPrefs()).defaultPermissionMode : undefined;
       const t = await entry.peer.call("threads.create", { projectId, kind, ...(mode ? { permissionMode: mode } : {}) });
       entry.threads.refetch();
+      // A thread made on purpose gets a kept tab, not the preview.
+      visitThread(entry.deviceId, t.id, t, { retain: true });
       const key = projectKey(entry.deviceId, projectId);
       if (collapsed.has(key)) toggle(key);
       await navigate({ to: "/d/$deviceId/t/$threadId", params: { deviceId: entry.deviceId, threadId: t.id } });
@@ -282,8 +314,40 @@ export function AppSidebar({
 
   const isActive = (entry: Entry, t: Thread) => entry.deviceId === activeDeviceId && t.id === activeThreadId;
 
-  const threadActions = (entry: Entry, t: Thread) => (
+  /** Splits threads into those listed and those tucked under the idle row. The open thread is always listed. */
+  const splitIdle = <R,>(rows: R[], of: (r: R) => { entry: Entry; thread: Thread }) => {
+    if (!view.hideIdle) return { listed: rows, idle: [] as R[] };
+    const listed: R[] = [];
+    const idle: R[] = [];
+    for (const r of rows) {
+      const { entry, thread } = of(r);
+      const local = touches[touchKey(entry.deviceId, thread.id)];
+      (!isActive(entry, thread) && isIdle(thread, now, local) ? idle : listed).push(r);
+    }
+    return { listed, idle };
+  };
+  const toggleIdle = (key: string) =>
+    setIdleOpen((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
+  const idleAge = (entry: Entry, t: Thread) => {
+    const at = lastTouched(t, touches[touchKey(entry.deviceId, t.id)]);
+    return at === undefined ? undefined : { days: Math.floor((now - at) / DAY_MS), at };
+  };
+
+  const threadActions = (entry: Entry, t: Thread, idle = false) => (
     <>
+      {idle && (
+        <>
+          <DropdownMenuItem onSelect={() => touchThread(entry.deviceId, t.id)}>
+            <PinIcon />
+            Keep in list
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+        </>
+      )}
       <DropdownMenuItem onSelect={() => setPending({ kind: "rename-thread", entry, thread: t })}>
         <PencilIcon />
         Rename
@@ -309,9 +373,10 @@ export function AppSidebar({
     </>
   );
 
-  function renderProject({ entry, project: p, threads }: ProjectRow, showDevice: boolean) {
+  function renderProject({ entry, project: p, threads: all }: ProjectRow, showDevice: boolean) {
     const key = projectKey(entry.deviceId, p.id);
     const isCollapsed = collapsed.has(key);
+    const { listed: threads, idle } = splitIdle(all, (thread) => ({ entry, thread }));
     const live = connected(entry);
     const claude = hasFeature(entry, "claude");
     return (
@@ -408,7 +473,21 @@ export function AppSidebar({
                 actions={threadActions(entry, t)}
               />
             ))}
-            {threads.length === 0 && live && (
+            {idle.length > 0 && (
+              <IdleThreads count={idle.length} open={idleOpen.has(key)} onToggle={() => toggleIdle(key)} />
+            )}
+            {idleOpen.has(key) &&
+              idle.map((t) => (
+                <ThreadRow
+                  key={t.id}
+                  deviceId={entry.deviceId}
+                  thread={t}
+                  active={isActive(entry, t)}
+                  idle={idleAge(entry, t)}
+                  actions={threadActions(entry, t, true)}
+                />
+              ))}
+            {all.length === 0 && live && (
               <li className="flex gap-1 pl-6">
                 {(claude ? (["terminal", "claude"] as const) : (["terminal"] as const)).map((kind) => (
                   <button
@@ -451,7 +530,7 @@ export function AppSidebar({
               size="icon-sm"
               className={cn(
                 "ml-auto",
-                (view.sort !== "name" || view.group !== "project") && "text-primary hover:text-primary",
+                (view.sort !== "name" || view.group !== "project" || !view.hideIdle) && "text-primary hover:text-primary",
               )}
               aria-label="Sort and group"
               title="Sort and group"
@@ -473,6 +552,14 @@ export function AppSidebar({
               <DropdownMenuRadioItem value="device">Device</DropdownMenuRadioItem>
               <DropdownMenuRadioItem value="none">None</DropdownMenuRadioItem>
             </DropdownMenuRadioGroup>
+            <DropdownMenuSeparator />
+            <DropdownMenuCheckboxItem
+              checked={view.hideIdle}
+              onCheckedChange={(c) => view.setHideIdle(c === true)}
+              title={`Tuck threads untouched for ${IDLE_DAYS} days under an "idle" row. Nothing in them is stopped or deleted.`}
+            >
+              Hide idle threads
+            </DropdownMenuCheckboxItem>
           </DropdownMenuContent>
         </DropdownMenu>
         {connectedEntries.length > 1 ? (
@@ -536,9 +623,10 @@ export function AppSidebar({
               </div>
             );
           })}
-        {shown.group === "none" && (
-          <ul className="flex flex-col gap-px">
-            {shown.threads.map(({ entry, project, thread: t }) => (
+        {shown.group === "none" &&
+          (() => {
+            const { listed, idle } = splitIdle(shown.threads, (r) => r);
+            const row = ({ entry, project, thread: t }: ThreadListRow, isIdleRow: boolean) => (
               <ThreadRow
                 key={`${entry.deviceId}/${t.id}`}
                 deviceId={entry.deviceId}
@@ -546,15 +634,24 @@ export function AppSidebar({
                 active={isActive(entry, t)}
                 flat
                 dimmed={!connected(entry)}
+                idle={isIdleRow ? idleAge(entry, t) : undefined}
                 detail={[project.name, multiDevice ? deviceName(entry) : undefined].filter(Boolean).join(" · ")}
-                actions={threadActions(entry, t)}
+                actions={threadActions(entry, t, isIdleRow)}
               />
-            ))}
-            {!loading && shown.threads.length === 0 && projects.length > 0 && (
-              <li className="px-2 py-1 text-xs text-muted-foreground">No threads yet.</li>
-            )}
-          </ul>
-        )}
+            );
+            return (
+              <ul className="flex flex-col gap-px">
+                {listed.map((r) => row(r, false))}
+                {idle.length > 0 && (
+                  <IdleThreads count={idle.length} open={idleOpen.has("all")} onToggle={() => toggleIdle("all")} flat />
+                )}
+                {idleOpen.has("all") && idle.map((r) => row(r, true))}
+                {!loading && shown.threads.length === 0 && projects.length > 0 && (
+                  <li className="px-2 py-1 text-xs text-muted-foreground">No threads yet.</li>
+                )}
+              </ul>
+            );
+          })()}
 
         {archived.length > 0 && (
           <div className="mt-3">
@@ -902,11 +999,14 @@ function ThreadRow({
   detail,
   flat,
   dimmed,
+  idle,
   actions,
 }: {
   deviceId: string;
   thread: Thread;
   active: boolean;
+  /** Listed under the idle row: how long since it was touched. */
+  idle?: { days: number; at: number };
   /** Shown under the name (archived threads: their project and device). */
   detail?: string;
   /** Not nested under a project, so not indented. */
@@ -927,6 +1027,8 @@ function ThreadRow({
       <Link
         to="/d/$deviceId/t/$threadId"
         params={{ deviceId, threadId: t.id }}
+        // Opening a thread gives it the preview tab; a double-click keeps the tab, as in VS Code.
+        onDoubleClick={() => retainThread(deviceId, t.id, t)}
         className={cn(
           "flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-md focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none",
           flat ? "pl-2" : "pl-7",
@@ -938,10 +1040,24 @@ function ThreadRow({
           <SquareTerminalIcon className={cn("size-3.5 shrink-0", active ? "text-primary" : "text-muted-foreground")} />
         )}
         <span className="grid min-w-0">
-          <span className={cn("truncate", !active && "text-foreground/85")}>{t.name}</span>
+          <span className={cn("truncate", !active && (idle ? "text-muted-foreground" : "text-foreground/85"))}>
+            {t.name}
+          </span>
           {detail && <span className="truncate text-[11px] text-muted-foreground">{detail}</span>}
         </span>
-        <ThreadStatusDot thread={t} />
+        {idle ? (
+          <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-1">
+            <span
+              className="text-[11px] text-muted-foreground tabular-nums"
+              title={`Last touched ${new Date(idle.at).toLocaleString()}`}
+            >
+              {idle.days}d
+            </span>
+            <ThreadStatusDot thread={t} />
+          </span>
+        ) : (
+          <ThreadStatusDot thread={t} />
+        )}
       </Link>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -956,6 +1072,40 @@ function ThreadRow({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start">{actions}</DropdownMenuContent>
       </DropdownMenu>
+    </li>
+  );
+}
+
+/** The row that shows or hides a list's idle threads. */
+function IdleThreads({
+  count,
+  open,
+  onToggle,
+  flat,
+}: {
+  count: number;
+  open: boolean;
+  onToggle: () => void;
+  flat?: boolean;
+}) {
+  return (
+    <li>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={open}
+        title={`Untouched for ${IDLE_DAYS} days or more. Nothing in them is stopped or deleted; opening one puts it back in the list.`}
+        className={cn(
+          "flex h-6 w-full items-center gap-1.5 rounded-md pr-2 text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none pointer-coarse:h-9",
+          flat ? "pl-2" : "pl-7",
+        )}
+      >
+        <HistoryIcon className="size-3.5 shrink-0" />
+        <span className="tabular-nums">
+          {count} idle
+        </span>
+        <ChevronRightIcon className={cn("ml-auto size-3 shrink-0 transition-transform", open && "rotate-90")} />
+      </button>
     </li>
   );
 }

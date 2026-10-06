@@ -552,6 +552,29 @@ TODO.md items come later.
 /settings/security              password, 2FA, sessions, connected apps (MCP URL, revoke grants)
 ```
 
+The thread page's top row holds the threads opened recently in this browser,
+from any device, as tabs (browser-local, at most 12). As in VS Code, just
+opening a thread gives it the one reusable **preview tab** (italic), which the
+next thread opened replaces in place; opening a thread that already has a tab
+just focuses it. The preview becomes a kept tab when the user does something
+in the thread (sends a prompt, answers claude, types or pastes into a
+terminal, uses its browser or desktop tab, opens, renames or closes one of its
+tabs), keeps it explicitly (double-click the tab or the sidebar row, or the
+pin on the tab), or looks at it for 20 s with the page in the foreground
+(visible and focused; background time doesn't count, and the count pauses
+rather than restarting). Threads created from the sidebar open as kept tabs.
+
+The sidebar tucks threads untouched for 3 days under a per-project "N idle"
+row (or one for the whole list when ungrouped). This is display only: nothing
+is archived, stopped or deleted. "Touched" is the latest of the thread's
+`lastOpenedAt` (the daemon bumps it on a prompt or keystroke, in the thread or
+its tabs), its `createdAt`, and when it was last opened or "kept in list" in
+this browser. A thread is never tucked away while it's open, running (live
+shell or claude process), working, starting, waiting on the user, or has
+processes running, or when it has no usable timestamp. Opening an idle thread,
+or its "Keep in list" action, puts it back; "Hide idle threads" in the
+sidebar's sort menu turns the whole thing off (per browser).
+
 On phones (coarse pointer) a terminal gets a key row: Esc, Tab, sticky Ctrl
 and Alt (applied to the next key from the row or the keyboard), arrows and a
 few symbols. When the page returns from the background (10 s or more) or the

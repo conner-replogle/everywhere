@@ -91,6 +91,7 @@ export function AgentView({
   onBrowserUse,
   onDesktopUse,
   onProcessUse,
+  onInteract,
   processes,
   archived,
 }: {
@@ -106,6 +107,8 @@ export function AgentView({
   onDesktopUse?: (source: DesktopSource | undefined, fallback: DesktopSource) => void;
   /** Called when claude starts a background process. */
   onProcessUse?: () => void;
+  /** Called when the user acts in the thread: sends a prompt, answers claude, interrupts, changes a setting. */
+  onInteract?: () => void;
   /** Shows the thread's processes above the composer; absent when the device has none. */
   processes?: { threadId: string; onOpen: (processId?: string) => void };
   /** Set while the thread is archived: its history shows, with a way back instead of the composer. */
@@ -113,6 +116,14 @@ export function AgentView({
 }) {
   const agent = useAgentThread(peer, threadId, generation);
   const { state } = agent;
+  // What the user sends; the automatic recap goes through agent.send instead.
+  const user: AgentThread = {
+    ...agent,
+    send: (msg) => {
+      onInteract?.();
+      agent.send(msg);
+    },
+  };
 
   // Show the browser when claude uses it, but not for history being replayed.
   const seenSeq = useRef(0);
@@ -171,7 +182,7 @@ export function AgentView({
   // /compact is a prompt like any other; offered only when one could be sent.
   const canCompact =
     !archived && !busy && agent.attached && agent.synced && !state?.pending.length && commands.some((c) => c.name === "compact");
-  const compact = () => agent.send({ t: "send", text: "/compact" });
+  const compact = () => user.send({ t: "send", text: "/compact" });
   const prefs = usePrefs();
   useAutoRecap({
     threadId,
@@ -288,7 +299,7 @@ export function AgentView({
         onRewind={(files) => {
           if (!rewindTo) return;
           rewound.current = rewindTo;
-          agent.send({ t: "rewind", id: rewindTo.id, files });
+          user.send({ t: "rewind", id: rewindTo.id, files });
           setRewindTo(null);
         }}
       />
@@ -308,13 +319,13 @@ export function AgentView({
         ) : (
           <div className="mx-auto grid max-w-3xl gap-2 px-4 pt-1 pb-5 md:pb-8">
             {state?.pending.map((r) => (
-              <PendingRequest key={r.id} request={r} cwd={workdir} respond={agent.send} />
+              <PendingRequest key={r.id} request={r} cwd={workdir} respond={user.send} />
             ))}
             <ResumeBanner threadId={threadId} context={state?.context} canCompact={canCompact} onCompact={compact} />
             {processes && <ProcessesOverview peer={peer} threadId={processes.threadId} onOpen={processes.onOpen} />}
             <StatusBar agent={agent} />
             <Composer
-              agent={agent}
+              agent={user}
               busy={busy}
               peer={peer}
               threadId={threadId}

@@ -6,7 +6,8 @@
     "dev": "vite --port 5173",
     "build": "vite build",
     "preview": "vite preview",
-    "typecheck": "tsr generate && tsc -p . --noEmit"
+    "typecheck": "tsr generate && tsc -p . --noEmit",
+    "test": "bun test test/"
   },
   "dependencies": {
     "@everywhere/protocol": "workspace:*",

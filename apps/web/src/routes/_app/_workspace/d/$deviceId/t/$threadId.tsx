@@ -31,7 +31,8 @@ import { sendToComposer } from "@/lib/composer-inbox";
 import { hub } from "@/lib/hub";
 import { useRpc } from "@/lib/peer";
 import { getPrefs } from "@/lib/prefs";
-import { visitThread } from "@/lib/recent-threads";
+import { touchThread } from "@/lib/idle-threads";
+import { isInputKey, retainThread, visitThread } from "@/lib/recent-threads";
 import { cn, errorMessage } from "@/lib/utils";
 
 // Loaded on demand so terminal-only use skips the markdown stack.
@@ -103,12 +104,17 @@ function ThreadPage() {
   const activeId = active?.id;
   // Before the effect below, so a new thread starts empty and then opens.
   useEffect(() => setOpened(new Set()), [threadId]);
-  // Opening a thread gives it a tab along the top.
+  // Opening a thread gives it a tab along the top (the preview tab, unless it
+  // has one already), and counts as touching it, for the sidebar's idle threads.
   const threadName = thread?.name;
   const threadKind = thread?.kind;
   useEffect(() => {
-    if (threadName && threadKind) visitThread(deviceId, threadId, { name: threadName, kind: threadKind });
+    if (!threadName || !threadKind) return;
+    visitThread(deviceId, threadId, { name: threadName, kind: threadKind });
+    touchThread(deviceId, threadId);
   }, [deviceId, threadId, threadName, threadKind]);
+  // Doing something in the thread keeps its tab, so opening another thread doesn't replace it.
+  const keep = () => retainThread(deviceId, threadId);
   // No push notifications about the thread on screen.
   useEffect(() => {
     hub.setThread({ deviceId, threadId });
@@ -244,6 +250,17 @@ function ThreadPage() {
     })();
   };
 
+  // Input to a terminal, or to the page or desktop a tab drives, keeps the
+  // thread's tab. (Claude panes report sends themselves: typing a draft isn't enough.)
+  const inputCapture = (kind: TabKind) => ({
+    onKeyDownCapture: (e: React.KeyboardEvent) => isInputKey(e) && keep(),
+    onPasteCapture: keep,
+    onDropCapture: keep,
+    // Phone keyboards type through input events, without telling keydown the key.
+    onInputCapture: keep,
+    ...(kind !== "terminal" ? { onPointerDownCapture: keep } : {}),
+  });
+
   const renderPane = (p: Pane) => {
     if (!thread) return null;
     switch (p.kind) {
@@ -262,6 +279,7 @@ function ThreadPage() {
               onBrowserUse={onBrowserUse}
               onDesktopUse={features.includes("desktop") ? onDesktopUse : undefined}
               onProcessUse={onProcessUse}
+              onInteract={keep}
               processes={
                 canTab && features.includes("processes") ? { threadId, onOpen: openProcess } : undefined
               }
@@ -286,6 +304,7 @@ function ThreadPage() {
             threadId={p.id}
             generation={conn.generation}
             active={p.id === active?.id}
+            onInteract={keep}
             onWriterChange={(w) => setWriters((ws) => (ws[p.id] === w ? ws : { ...ws, [p.id]: w }))}
           />
         );
@@ -302,6 +321,7 @@ function ThreadPage() {
                 claudeTarget
                   ? (draft) => {
                       if (!sendToComposer(claudeTarget, draft)) return false;
+                      keep();
                       setActive(claudeTarget);
                       return true;
                     }
@@ -334,6 +354,7 @@ function ThreadPage() {
                 claudeTarget
                   ? (draft) => {
                       if (!sendToComposer(claudeTarget, draft)) return false;
+                      keep();
                       setActive(claudeTarget);
                       return true;
                     }
@@ -393,10 +414,11 @@ function ThreadPage() {
                 active={p.id === active?.id}
                 running={p.kind === "processes" ? thread?.processes : undefined}
                 onSelect={() => setActive(p.id)}
-                onRename={p.parentId && canTab ? () => setRenaming(p as Tab) : undefined}
+                onRename={p.parentId && canTab ? () => (keep(), setRenaming(p as Tab)) : undefined}
                 onClose={
                   p.parentId && canTab
                     ? () => {
+                        keep();
                         const t = p as Tab;
                         // Closing a claude tab deletes its conversation.
                         if (t.kind === "claude" && t.lastOpenedAt) setClosing(t);
@@ -420,7 +442,7 @@ function ThreadPage() {
                   .map((k) => {
                     const Icon = KIND_ICON[k];
                     return (
-                      <DropdownMenuItem key={k} onSelect={() => void openTab(k)}>
+                      <DropdownMenuItem key={k} onSelect={() => (keep(), void openTab(k))}>
                         <Icon />
                         {KIND_LABEL[k]}
                       </DropdownMenuItem>
@@ -446,6 +468,7 @@ function ThreadPage() {
               role="tabpanel"
               // Hidden panes keep their size, so terminals don't resize.
               className={cn("absolute inset-0", p.id !== active?.id && "invisible")}
+              {...(p.kind === "terminal" || p.kind === "browser" || p.kind === "desktop" ? inputCapture(p.kind) : {})}
             >
               {renderPane(p)}
             </div>
