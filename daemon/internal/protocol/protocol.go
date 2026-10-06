@@ -91,6 +91,7 @@ const (
 	AgentChannelPrefix  = "agent:"
 	UploadChannelPrefix = "upload:"
 	FileChannelPrefix   = "file:"
+	ProcChannelPrefix   = "proc:" // a process's output; the term channel's protocol
 )
 
 type DeviceInfo struct {
@@ -119,6 +120,7 @@ const (
 	FeatureGitStatus    = "gitStatus"    // git.status, git.fetch, git.pull, git.updateDefault and git.changed
 	FeatureClaudeUpdate = "claudeUpdate" // agent.claudeVersion and agent.updateClaude
 	FeatureMkdir        = "mkdir"        // fs.mkdir
+	FeatureProcesses    = "processes"    // processes.*, the proc channel and the processes tab
 )
 
 // DesktopInfo is the result of desktop.info.
@@ -211,9 +213,10 @@ const (
 	ThreadTerminal = "terminal"
 	ThreadClaude   = "claude"
 	// Tabs only.
-	ThreadBrowser = "browser"
-	ThreadFiles   = "files"
-	ThreadDesktop = "desktop" // a remote desktop view of one monitor or window
+	ThreadBrowser   = "browser"
+	ThreadFiles     = "files"
+	ThreadDesktop   = "desktop" // a remote desktop view of one monitor or window
+	ThreadProcesses = "processes"
 )
 
 // Thread is a thread, or a tab inside one (ParentID set).
@@ -237,6 +240,8 @@ type Thread struct {
 	ArchivedAt *int64 `json:"archivedAt,omitempty"`
 	// TabState is a tab's UI state, as its view saved it.
 	TabState string `json:"tabState,omitempty"`
+	// Processes is how many of a thread's processes are running.
+	Processes int `json:"processes,omitempty"`
 }
 
 // Workdir is where a thread works (threads.workdir): its worktree, the
@@ -342,6 +347,15 @@ const (
 	EventGitChanged      = "git.changed" // a fetch or git action finished; statuses may differ
 	EventThreadsChanged  = "threads.changed"
 )
+
+// ProcessesChanged is sent when a thread's processes start, stop or make
+// progress, at most a few times a second per thread.
+type ProcessesChanged struct {
+	Event    string `json:"event"` // EventProcessesChanged
+	ThreadID string `json:"threadId"`
+}
+
+const EventProcessesChanged = "processes.changed"
 
 // TermClientMsg is attach | resize | takeover.
 type TermClientMsg struct {

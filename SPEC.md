@@ -154,6 +154,9 @@ threads  (id, project_id, kind, name, created_at, last_opened_at, had_session BO
           agent_session_id, agent_model, agent_permission_mode)
            parent_id (tabs), tab_state
 agent_events (thread_id, seq, at, event JSON)               -- claude thread log
+processes (id, thread_id, agent_thread_id, name, command, cwd, spec JSON,
+           status, exit_code, started_at, ended_at, snapshot JSON, prev JSON)
+           UNIQUE (thread_id, name)                         -- see Processes
 ```
 
 Migrations are append-only and tracked in `PRAGMA user_version`.
@@ -195,7 +198,8 @@ Migrations are append-only and tracked in `PRAGMA user_version`.
 ### Tabs
 
 A tab is a `threads` row with `parent_id` set to its thread (tabs don't nest;
-feature `tabs`). Its kind is terminal, claude, browser or files. Terminal and
+feature `tabs`). Its kind is terminal, claude, browser, files, desktop or
+processes (see Processes). Terminal and
 claude tabs are threads in their own right, on their own `term:` / `agent:`
 channels, and run where their thread runs: a tab of a claude thread in a
 worktree works in that worktree (a claude tab records it as its own, and
@@ -300,6 +304,110 @@ same one the Agent SDK uses (`internal/claude`):
   progress; on startup each is resumed once with "Continue where you left off."
 - **Thread list**: `threads.list` reports `running` and `agentStatus`
   (stopped | starting | idle | working | waiting | error).
+
+### Processes
+
+Long-running commands a model (or the user) starts for a thread: dev
+servers, builds, test runs, migrations. The daemon owns them, not claude, so
+they outlive claude's idle stop, show up in the UI, and work for any agent
+that speaks MCP. `internal/process`.
+
+- **Identity**: a process has a `name`, unique within its thread (a tab's
+  processes belong to its thread), plus an opaque id. Starting a name again
+  starts a new run of the same row; the previous run's checkpoint timings are
+  kept for ETAs. A process with no command is a **tracker**: progress the
+  model reports by hand for work it does itself.
+- **Running**: on a PTY like a terminal (ConPTY on Windows), as
+  `<login shell> -l -c <command>` (`pwsh -NoLogo -Command` on Windows) in the
+  thread's workdir or a `cwd` under it, at 120×32 until a viewer resizes it.
+  `EVERYWHERE_THREAD`, `EVERYWHERE_PROCESS` and `EVERYWHERE_PROCESS_NAME`
+  are set. Stopping sends SIGINT, then SIGTERM after 3 s and SIGKILL after
+  6 s, to the whole process group (job object on Windows).
+- **Lifetime**: processes keep running with no viewers and across claude
+  stopping. Archiving or deleting the thread stops them; deleting removes
+  them. The daemon stopping stops them; a row still `running` at startup
+  becomes `lost`. Statuses: running | exited (with code) | stopped |
+  failed (didn't start) | lost | done (tracker). A thread keeps its 30 most
+  recent finished processes.
+- **Output**: the raw PTY bytes go to `<data>/processes/<id>.log` (cut to
+  its last 16 MB when it reaches 64 MB) and a 1 MB in-memory scrollback. Model-facing
+  reads turn it into plain text: escape sequences stripped, `\r` overwrites
+  applied. URLs on localhost are collected as the process's `urls`.
+- **Progress** comes from four places and feeds one view:
+  - **Checkpoints** declared at start, `{label, pattern?, notify?}`. A
+    pattern (regex) is matched against each output line; the first match
+    reaches the checkpoint and records its time and log offset.
+  - **Stats** declared at start, `{key, label?, total?, unit?, notify_when?}`
+    (`notify_when` like `"> 0"`), or created by the first report. A stat with
+    a total is a counter with its own bar; the daemon derives rate and ETA
+    from its history (one sample a second, the last 60 kept for sparklines).
+  - **`::ew` lines** printed by the process, so scripts the model writes can
+    report from any language, over ssh or inside docker:
+    ```
+    ::ew stat migrated 120/4000 "Users migrated"   value/total, optional "label"
+    ::ew stat migrated +1                          increment
+    ::ew stat rate 41.5 /s                         unit
+    ::ew checkpoint "Schema migrated"              reaches a declared one, or adds one
+    ::ew status "Backfilling orders"
+    ::ew notify "Found 3 rows with bad FKs"        tells the model (wakes it)
+    ::ew {"stat":"migrated","value":120,"total":4000}
+    ```
+    Only lines beginning with `::ew ` count. They stay in the log file but are
+    cut from the scrollback viewers see. Updates are applied at once;
+    `processes.changed` goes out at most 4 times a second.
+  - **OSC 9;4** (the terminal progress sequence winget, systemd and others
+    emit) fills the current checkpoint segment.
+- **Telling the model** (the thread's claude, or the claude tab that started
+  it): events are wrapped as `<process-event name=… status=…>…</process-event>`
+  and say they come from process output, not the user.
+  - An event the model asked for (`notify` on the process or a checkpoint,
+    `notify_when`, `::ew notify`) is sent as a user message: during a turn
+    claude folds it in after the next tool result; while idle it starts a
+    turn, resuming claude if it was stopped.
+  - Anything else (e.g. an exit nobody asked about) waits and is prepended
+    to the next prompt, even during a turn: a message that reaches claude as
+    its turn ends starts a turn of its own.
+  - An exit or checkpoint that a `process_start` or `process_wait` call is
+    waiting for isn't sent at all; the call's result reports it.
+  - Never `priority: "now"` (it ends the turn and drops its reply) or
+    `shouldQuery: false` (undocumented; holding events in the daemon does the
+    same).
+  - The timeline shows these as `process` events, not user messages.
+- **MCP tools** (`mcp__everywhere__process_*`). Everything but `start` is
+  allowed without asking; `start` runs a command, so it asks like Bash.
+  - `process_start {name, command?, cwd?, env?, checkpoints?, stats?,
+    notify?, wait_for?, timeout_s?, replace?}`: waits until `wait_for` (a
+    checkpoint label or `exit`) or `timeout_s` (default 5 s, to catch an
+    immediate crash, or 120 s with `wait_for`; at most 600), returning early
+    if the process exits.
+    A name that's running is an error unless `replace`.
+  - `process_list`, `process_status {name}`: status, checkpoints, stats
+    with rate/ETA, status text, URLs, log path, last lines. Cheap enough to
+    check on a job without reading its log.
+  - `process_output {name, tail?, grep?, since_checkpoint?}`: plain text,
+    at most 2000 lines / 64 KB, keeping the end. The log path is for Read
+    and Grep.
+  - `process_wait {name, until, timeout_s}`: instead of sleeping.
+  - `process_stop {name}`; `process_report {name, stat?, value?, total?,
+    unit?, label?, checkpoint?, status?, done?}` for trackers.
+- **Control RPC**: `processes.list {threadId}`, `processes.start {threadId,
+  name, command, cwd?}`, `processes.stop | restart | remove {id}`; event
+  `processes.changed {threadId}`. `threads.list` reports each thread's running
+  `processes` count. All are allowed over the hub's RPC (an MCP agent can
+  already `code.exec`).
+- **`proc:<id>` data channel**: the terminal channel's protocol (attach,
+  writer, takeover, resize, input, exited), so the log viewer is the
+  terminal view and the writer can answer a prompt. Attaching to a finished
+  process replays its scrollback, then `exited`.
+- **UI**: a `processes` tab (one per thread, opened when claude starts a
+  process): one row per process with its checkpoint track, counters with
+  rate and ETA, status text and URLs; selecting one shows its log. Thread
+  rows in the sidebar show a running count. Claude tabs show the thread's
+  running processes, and those that ended in the last 10 minutes, above the
+  composer, one line each; a line opens the process in the processes tab.
+- **Later**: `everywhere progress …` (prints `::ew` lines; a socket for
+  processes not started here), restarting processes after a daemon update,
+  prompt detection, a per-process token for `::ew` lines.
 
 ## MCP (agents such as a ChatGPT connector)
 

@@ -10,6 +10,7 @@ import (
 	"github.com/conner-replogle/everywhere/daemon/internal/browser"
 	"github.com/conner-replogle/everywhere/daemon/internal/desktop"
 	"github.com/conner-replogle/everywhere/daemon/internal/mcp"
+	"github.com/conner-replogle/everywhere/daemon/internal/process"
 )
 
 // mcpName is the daemon's MCP server as claude knows it; its tools show up
@@ -17,8 +18,8 @@ import (
 const mcpName = "everywhere"
 
 // claudeArgs gives a claude thread's process the daemon's MCP server, with
-// a token of its own, and lets it use the browser and desktop tools without
-// asking.
+// a token of its own, and lets it use the browser, desktop and process tools
+// without asking (except process_start, which runs a command).
 // The config goes in a private file: on the command line, other users on
 // the machine could read the token from the process list.
 func (s *Server) claudeArgs(threadID, _ string) ([]string, func(), error) {
@@ -61,7 +62,7 @@ func (s *Server) claudeArgs(threadID, _ string) ([]string, func(), error) {
 		release()
 		return nil, nil, fmt.Errorf("writing mcp config: %w", werr)
 	}
-	names := browser.ToolNames()
+	names := append(browser.ToolNames(), process.ToolNames()...)
 	if s.desktop != nil {
 		names = append(names, desktop.ToolNames()...)
 	}

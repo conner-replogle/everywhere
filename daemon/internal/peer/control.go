@@ -191,6 +191,7 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 			for _, t := range append(tabs, t) {
 				s.stopThread(t)
 			}
+			s.procs.StopThread(t.ID)
 			s.browsers.Close(t.ID, "The thread was archived", false)
 		}
 		s.fillStatus(&t)
@@ -206,6 +207,7 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 			return nil, err
 		}
 		agentThreads := s.agentThreads(threads)
+		s.procs.RemoveThread(params.ID)
 		if err := s.store.DeleteThread(params.ID); err != nil {
 			return nil, err
 		}
@@ -216,6 +218,9 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		return empty{}, nil
 	case "threads.workdir":
 		return s.workdir(params.ID)
+
+	case "processes.list", "processes.start", "processes.stop", "processes.restart", "processes.remove":
+		return s.callProcesses(method, raw)
 
 	case "tabs.list":
 		tabs, err := s.store.ListTabs(params.ThreadID)
@@ -297,6 +302,9 @@ func (s *Server) fillStatus(t *protocol.Thread) {
 		t.Running, t.AgentStatus = s.agents.Status(t.ID)
 	case protocol.ThreadTerminal:
 		t.Running = s.terms.Running(t.ID)
+	}
+	if t.ParentID == "" {
+		t.Processes = s.procs.Running(t.ID)
 	}
 }
 

@@ -614,10 +614,13 @@ export class DevicePeer {
 
   // --- terminals ------------------------------------------------------------
 
-  /** Opens a `term:<threadId>` channel. Throws if not connected. */
-  openTerminal(threadId: string, handlers: TerminalHandlers): TerminalChannel {
+  /**
+   * Opens a `term:<threadId>` channel, or with prefix `proc:` a process's
+   * output (same protocol). Throws if not connected.
+   */
+  openTerminal(id: string, handlers: TerminalHandlers, prefix = TERM_CHANNEL_PREFIX): TerminalChannel {
     if (!this.pc || this.snap.state !== "connected") throw new Error("Not connected to device");
-    const ch = this.pc.createDataChannel(`${TERM_CHANNEL_PREFIX}${threadId}`, { ordered: true });
+    const ch = this.pc.createDataChannel(`${prefix}${id}`, { ordered: true });
     ch.binaryType = "arraybuffer";
     return new TerminalChannel(ch, handlers);
   }

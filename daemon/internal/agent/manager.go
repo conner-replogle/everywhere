@@ -169,6 +169,17 @@ func (m *Manager) Handle(threadID string, c Client, msg protocol.AgentClientMsg)
 	s.do(func() { s.handle(c, msg) })
 }
 
+// ProcessEvent tells a claude thread about something one of its processes
+// did: text for the timeline, prompt for claude. wake lets it start a turn.
+func (m *Manager) ProcessEvent(threadID, name, text, prompt string, wake bool) {
+	s, err := m.session(threadID)
+	if err != nil {
+		slog.Warn("process event for unknown thread", "thread", threadID, "err", err)
+		return
+	}
+	s.do(func() { s.processEvent(name, text, prompt, wake) })
+}
+
 // Request runs a request other than attach for a caller with no channel
 // of its own (an agent over the hub's RPC) and returns its error.
 func (m *Manager) Request(threadID string, msg protocol.AgentClientMsg) error {

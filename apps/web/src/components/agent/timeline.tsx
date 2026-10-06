@@ -1,5 +1,6 @@
 import type { AgentEvent, AgentStreaming } from "@everywhere/protocol";
 import {
+  ActivityIcon,
   BrainIcon,
   CheckIcon,
   ChevronRightIcon,
@@ -38,7 +39,7 @@ type Item =
       kind: "event";
       key: number;
       at: number;
-      event: Ev<"user" | "assistant" | "thinking" | "notice" | "request" | "turn" | "commandOutput" | "rewind">;
+      event: Ev<"user" | "assistant" | "thinking" | "notice" | "request" | "turn" | "commandOutput" | "rewind" | "process">;
     };
 
 /**
@@ -227,7 +228,37 @@ function ItemView({
       return <RequestLine event={e} />;
     case "turn":
       return <TurnEnd event={e} onCompact={onCompact} />;
+    case "process":
+      return <ProcessLine event={e} />;
   }
+}
+
+const PROCESS_HEARD: Record<Ev<"process">["status"], string> = {
+  turn: "Claude saw this during its turn",
+  wake: "This started a turn",
+  held: "Claude sees this with your next message",
+};
+
+/** Something one of the thread's processes did, as claude was told it. */
+function ProcessLine({ event: e }: { event: Ev<"process"> }) {
+  const [open, setOpen] = useState(false);
+  const [first, ...rest] = e.text.split("\n");
+  return (
+    <div className="text-xs text-muted-foreground" title={PROCESS_HEARD[e.status]}>
+      <button
+        type="button"
+        onClick={() => rest.length > 0 && setOpen(!open)}
+        className={cn("flex max-w-full items-center gap-1.5 text-left", rest.length > 0 && "hover:text-foreground")}
+        aria-expanded={rest.length > 0 ? open : undefined}
+      >
+        <ActivityIcon className="size-3.5 shrink-0" />
+        <span className="shrink-0 font-medium text-foreground/80">{e.name}</span>
+        <span className="truncate">{first}</span>
+        {rest.length > 0 && <ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", open && "rotate-90")} />}
+      </button>
+      {open && <Output text={rest.join("\n")} />}
+    </div>
+  );
 }
 
 /** Claude's summary of where the thread stands, from /recap. */

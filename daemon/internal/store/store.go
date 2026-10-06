@@ -91,6 +91,27 @@ CREATE INDEX threads_parent ON threads(parent_id);
 	`
 ALTER TABLE threads ADD COLUMN agent_resume_at TEXT;
 `,
+	// 8: processes a thread runs in the background (see internal/process).
+	// spec is how to start it again; snapshot its progress as last saved;
+	// prev the previous run's checkpoint timings.
+	`
+CREATE TABLE processes (
+  id              TEXT PRIMARY KEY,
+  thread_id       TEXT NOT NULL REFERENCES threads(id) ON DELETE CASCADE,
+  agent_thread_id TEXT,
+  name            TEXT NOT NULL,
+  command         TEXT NOT NULL DEFAULT '',
+  cwd             TEXT NOT NULL DEFAULT '',
+  spec            TEXT,
+  status          TEXT NOT NULL,
+  exit_code       INTEGER,
+  started_at      INTEGER NOT NULL,
+  ended_at        INTEGER,
+  snapshot        TEXT,
+  prev            TEXT,
+  UNIQUE (thread_id, name)
+);
+`,
 }
 
 type Store struct {
@@ -323,7 +344,7 @@ func (s *Store) CreateThread(projectID, name, kind string) (protocol.Thread, err
 // worktree shares that worktree.
 func (s *Store) CreateTab(threadID, kind, name string) (protocol.Thread, error) {
 	switch kind {
-	case protocol.ThreadTerminal, protocol.ThreadClaude, protocol.ThreadBrowser, protocol.ThreadFiles, protocol.ThreadDesktop:
+	case protocol.ThreadTerminal, protocol.ThreadClaude, protocol.ThreadBrowser, protocol.ThreadFiles, protocol.ThreadDesktop, protocol.ThreadProcesses:
 	default:
 		return protocol.Thread{}, fmt.Errorf("unknown tab kind %q", kind)
 	}

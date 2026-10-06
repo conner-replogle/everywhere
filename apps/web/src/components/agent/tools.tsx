@@ -2,6 +2,7 @@
 // and, for file edits, a diff.
 
 import {
+  ActivityIcon,
   BotIcon,
   ClipboardListIcon,
   FilePenIcon,
@@ -27,7 +28,10 @@ function str(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
 
+const PROCESS_TOOL = /^mcp__everywhere__process_(.+)$/;
+
 export function toolIcon(name: string): LucideIcon {
+  if (PROCESS_TOOL.test(name)) return ActivityIcon;
   if (name.startsWith("mcp__")) return PlugIcon;
   switch (name) {
     case "Bash":
@@ -60,6 +64,8 @@ export function toolIcon(name: string): LucideIcon {
 
 /** "server · tool" for MCP tools, the plain name otherwise. */
 export function toolLabel(name: string): string {
+  const p = PROCESS_TOOL.exec(name);
+  if (p) return `Process · ${p[1]}`;
   const m = /^mcp__(.+?)__(.+)$/.exec(name);
   return m ? `${m[1]} · ${m[2]}` : name;
 }
@@ -101,6 +107,10 @@ export function toolSummary(name: string, input: ToolInput, cwd?: string): strin
     }
     case "ExitPlanMode":
       return "Proposed plan";
+    case "mcp__everywhere__process_start": {
+      const what = str(input.command).split("\n")[0] || "tracker";
+      return `${str(input.name)}  ${what}`;
+    }
   }
   const first = Object.values(input).find((v) => typeof v === "string");
   return typeof first === "string" ? first : "";

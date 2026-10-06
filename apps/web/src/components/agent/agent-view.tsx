@@ -47,10 +47,12 @@ import { useAutoRecap } from "./auto-recap";
 import { PERMISSION_MODES } from "@/lib/permission-modes";
 import { usePrefs } from "@/lib/prefs";
 import { buildItems, RECAP_PROMPT, Timeline, type UserEvent } from "./timeline";
+import { ProcessesOverview } from "@/components/processes/overview";
 
 
 const BROWSER_TOOL = /^mcp__everywhere__browser_/;
 const DESKTOP_TOOL = /^mcp__everywhere__desktop_/;
+const PROCESS_START_TOOL = "mcp__everywhere__process_start";
 
 /** Which desktop claude works on: its own (the default) or the user's. */
 type Desk = "claude" | "yours";
@@ -88,6 +90,8 @@ export function AgentView({
   cwd,
   onBrowserUse,
   onDesktopUse,
+  onProcessUse,
+  processes,
   archived,
 }: {
   peer: DevicePeer;
@@ -100,6 +104,10 @@ export function AgentView({
   onBrowserUse?: () => void;
   /** Called when claude uses the desktop, with what it opened there, if it opened something. */
   onDesktopUse?: (source: DesktopSource | undefined, fallback: DesktopSource) => void;
+  /** Called when claude starts a background process. */
+  onProcessUse?: () => void;
+  /** Shows the thread's processes above the composer; absent when the device has none. */
+  processes?: { threadId: string; onOpen: (processId?: string) => void };
   /** Set while the thread is archived: its history shows, with a way back instead of the composer. */
   archived?: { onRestore: () => void; error: string | null };
 }) {
@@ -112,6 +120,8 @@ export function AgentView({
   onBrowserUseRef.current = onBrowserUse;
   const onDesktopUseRef = useRef(onDesktopUse);
   onDesktopUseRef.current = onDesktopUse;
+  const onProcessUseRef = useRef(onProcessUse);
+  onProcessUseRef.current = onProcessUse;
   // The desktop claude is on, as its desktop_open and desktop_launch calls left it.
   const desk = useRef<Desk>("claude");
   useEffect(() => {
@@ -121,9 +131,13 @@ export function AgentView({
     let opened: DesktopSource | undefined;
     let usedDesktop = false;
     let usedBrowser = false;
+    let startedProcess = false;
     for (const e of fresh) {
       if (e.event.type !== "tool" || !DESKTOP_TOOL.test(e.event.name)) {
-        if (e.event.type === "tool" && BROWSER_TOOL.test(e.event.name) && Date.now() - e.at < 30_000) usedBrowser = true;
+        if (e.event.type === "tool" && Date.now() - e.at < 30_000) {
+          if (BROWSER_TOOL.test(e.event.name)) usedBrowser = true;
+          if (e.event.name === PROCESS_START_TOOL) startedProcess = true;
+        }
         continue;
       }
       desk.current = deskOf(e.event.name, e.event.input) ?? desk.current;
@@ -132,6 +146,7 @@ export function AgentView({
       opened = openedSource(e.event.name, e.event.input, desk.current) ?? opened;
     }
     if (usedBrowser) onBrowserUseRef.current?.();
+    if (startedProcess) onProcessUseRef.current?.();
     // A new tab shows the desktop claude is on.
     if (usedDesktop) onDesktopUseRef.current?.(opened, desk.current === "claude" ? { desktop: "claude" } : {});
   }, [agent.events]);
@@ -296,6 +311,7 @@ export function AgentView({
               <PendingRequest key={r.id} request={r} cwd={workdir} respond={agent.send} />
             ))}
             <ResumeBanner threadId={threadId} context={state?.context} canCompact={canCompact} onCompact={compact} />
+            {processes && <ProcessesOverview peer={peer} threadId={processes.threadId} onOpen={processes.onOpen} />}
             <StatusBar agent={agent} />
             <Composer
               agent={agent}

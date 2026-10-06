@@ -1196,3 +1196,61 @@ func TestClaudeUpdateWaitsForIdle(t *testing.T) {
 	h.do(c, protocol.AgentClientMsg{T: "send", Text: "again"})
 	h.waitStatus(c, "working")
 }
+
+func (p *fakeProc) sentMessages() []claude.UserMessage {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]claude.UserMessage(nil), p.sent...)
+}
+
+func TestProcessEvents(t *testing.T) {
+	h := newHarness(t)
+	c := h.attach(0)
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "start the dev server"})
+	p := h.proc(0)
+	h.waitStatus(c, "working")
+
+	// During a turn, one claude asked for joins the turn.
+	h.m.ProcessEvent(h.thread, "dev", "Reached Ready", "<process-event>ready</process-event>", true)
+	eventually(t, "joined the turn", func() bool { return len(p.sentMessages()) == 2 })
+	if got := p.sentMessages()[1].Content[0].Text; got != "<process-event>ready</process-event>" {
+		t.Fatalf("sent %q", got)
+	}
+	// One it didn't ask for waits, even during a turn.
+	h.m.ProcessEvent(h.thread, "dev", "Compiled", "<process-event>compiled</process-event>", false)
+	p.emit(`{"type":"result","subtype":"success"}`)
+	h.waitStatus(c, "idle")
+	if n := len(p.sentMessages()); n != 2 {
+		t.Fatalf("a quiet event was sent during the turn: %d messages", n)
+	}
+
+	// Idle and not asked for: it waits for the next prompt too.
+	h.m.ProcessEvent(h.thread, "dev", "Exited 1", "<process-event>exit</process-event>", false)
+	eventually(t, "event shown", func() bool {
+		evs := c.events()
+		return len(evs) > 0 && evs[len(evs)-1].Type == "process" && evs[len(evs)-1].Status == "held"
+	})
+	if n := len(p.sentMessages()); n != 2 {
+		t.Fatalf("a held event was sent: %d messages", n)
+	}
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "what happened?"})
+	eventually(t, "prompt sent", func() bool { return len(p.sentMessages()) == 3 })
+	content := p.sentMessages()[2].Content
+	if len(content) != 3 || content[0].Text != "<process-event>compiled</process-event>" ||
+		content[1].Text != "<process-event>exit</process-event>" || content[2].Text != "what happened?" {
+		t.Fatalf("prompt content %+v", content)
+	}
+	p.emit(`{"type":"result","subtype":"success"}`)
+	h.waitStatus(c, "idle")
+
+	// Idle and asked for: it starts a turn, even after claude stopped.
+	p.Close()
+	h.waitStatus(c, "stopped")
+	h.m.ProcessEvent(h.thread, "tests", "Exited 0", "<process-event>tests passed</process-event>", true)
+	p2 := h.proc(1)
+	eventually(t, "woke claude", func() bool { return len(p2.sentMessages()) == 1 })
+	if got := p2.sentMessages()[0].Content[0].Text; got != "<process-event>tests passed</process-event>" {
+		t.Fatalf("sent %q", got)
+	}
+	h.waitStatus(c, "working")
+}

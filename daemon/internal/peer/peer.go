@@ -18,6 +18,7 @@ import (
 	"github.com/conner-replogle/everywhere/daemon/internal/browser"
 	"github.com/conner-replogle/everywhere/daemon/internal/desktop"
 	"github.com/conner-replogle/everywhere/daemon/internal/mcp"
+	"github.com/conner-replogle/everywhere/daemon/internal/process"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/store"
 	"github.com/conner-replogle/everywhere/daemon/internal/term"
@@ -38,6 +39,7 @@ type Server struct {
 
 	store    *store.Store
 	terms    *term.Manager
+	procs    *process.Manager
 	agents   *agent.Manager
 	browsers *browser.Manager
 	desktop  *desktop.Manager // nil if its media stack failed to build
@@ -119,6 +121,16 @@ func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string) *Serve
 	threadsChanged := func() { s.broadcast(protocol.EventThreadsChanged) }
 	s.terms = term.NewManager(shells{s}, threadsChanged)
 	s.agents = agent.NewManager(st, dataDir, threadsChanged)
+	s.procs = process.NewManager(st, filepath.Join(dataDir, "processes"))
+	s.procs.Workdir = func(id string) (string, error) {
+		w, err := s.workdir(id)
+		return w.Path, err
+	}
+	s.procs.OnRunning = threadsChanged
+	s.procs.OnChange = func(threadID string) {
+		s.broadcastMsg(protocol.ProcessesChanged{Event: protocol.EventProcessesChanged, ThreadID: threadID})
+	}
+	s.procs.Notify = s.processNotice
 	s.browsers = browser.NewManager(filepath.Join(dataDir, "browser"))
 	s.browsers.ICEServers = func() []webrtc.ICEServer {
 		if s.ICEServers != nil {
@@ -139,7 +151,7 @@ func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string) *Serve
 		d.ArtifactsDir = filepath.Join(dataDir, "desktop", "artifacts")
 		s.desktop = d
 	}
-	tools := browser.Tools(s.browsers)
+	tools := append(browser.Tools(s.browsers), process.Tools(s.procs)...)
 	if s.desktop != nil && (runtime.GOOS == "linux" || runtime.GOOS == "windows") {
 		tools = append(tools, desktop.Tools(s.desktop)...)
 	}
@@ -191,6 +203,7 @@ func (s *Server) Shutdown() {
 		s.desktop.Shutdown()
 	}
 	s.terms.Shutdown()
+	s.procs.Shutdown()
 	s.agents.Shutdown()
 	s.mcp.Close()
 	s.browsers.Shutdown()
@@ -275,7 +288,9 @@ func (s *Server) answer(from, sid, sdp string) error {
 		case label == protocol.ControlChannel:
 			s.serveControl(p, dc)
 		case strings.HasPrefix(label, protocol.TermChannelPrefix):
-			s.serveTerm(p, dc, strings.TrimPrefix(label, protocol.TermChannelPrefix))
+			s.serveTerm(p, dc, strings.TrimPrefix(label, protocol.TermChannelPrefix), s.terms)
+		case strings.HasPrefix(label, protocol.ProcChannelPrefix):
+			s.serveTerm(p, dc, strings.TrimPrefix(label, protocol.ProcChannelPrefix), s.procs)
 		case strings.HasPrefix(label, protocol.AgentChannelPrefix):
 			s.serveAgent(p, dc, strings.TrimPrefix(label, protocol.AgentChannelPrefix))
 		case strings.HasPrefix(label, protocol.BrowserChannelPrefix):
@@ -347,8 +362,12 @@ func (s *Server) send(to, sid string, data protocol.SignalData) {
 }
 
 // broadcast sends an RPC event to every connected control channel.
-func (s *Server) broadcast(event string) {
-	msg, _ := json.Marshal(protocol.RPCEvent{Event: event})
+func (s *Server) broadcast(event string) { s.broadcastMsg(protocol.RPCEvent{Event: event}) }
+
+// broadcastMsg sends an event with a payload to every connected control
+// channel.
+func (s *Server) broadcastMsg(event any) {
+	msg, _ := json.Marshal(event)
 	s.mu.Lock()
 	peers := make([]*peer, 0, len(s.peers))
 	for _, p := range s.peers {

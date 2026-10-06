@@ -1,6 +1,7 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import type { AgentStatus, DesktopSource, Tab, TabKind, Thread } from "@everywhere/protocol";
 import {
+  ActivityIcon,
   ArchiveRestoreIcon,
   FolderTreeIcon,
   GlobeIcon,
@@ -38,6 +39,9 @@ const AgentView = lazy(() => import("@/components/agent/agent-view").then((m) =>
 const BrowserView = lazy(() => import("@/components/browser/browser-view").then((m) => ({ default: m.BrowserView })));
 const FilesView = lazy(() => import("@/components/files/files-view").then((m) => ({ default: m.FilesView })));
 const DesktopView = lazy(() => import("@/components/desktop/desktop-view").then((m) => ({ default: m.DesktopView })));
+const ProcessesView = lazy(() =>
+  import("@/components/processes/processes-view").then((m) => ({ default: m.ProcessesView })),
+);
 
 const KIND_ICON: Record<TabKind, LucideIcon> = {
   terminal: SquareTerminalIcon,
@@ -45,6 +49,7 @@ const KIND_ICON: Record<TabKind, LucideIcon> = {
   browser: GlobeIcon,
   files: FolderTreeIcon,
   desktop: MonitorIcon,
+  processes: ActivityIcon,
 };
 
 const KIND_LABEL: Record<TabKind, string> = {
@@ -53,6 +58,7 @@ const KIND_LABEL: Record<TabKind, string> = {
   browser: "Browser",
   files: "Files",
   desktop: "Desktop",
+  processes: "Processes",
 };
 
 /** The thread itself, or one of its tabs. */
@@ -118,6 +124,11 @@ function ThreadPage() {
   const [closing, setClosing] = useState<Tab | null>(null);
   const browserClosedAt = useRef(0);
   const desktopClosedAt = useRef(0);
+  const processesClosedAt = useRef(0);
+  // A process for the processes tab to show (picked in a claude tab's overview).
+  const [processShow, setProcessShow] = useState<{ id: string; at: number } | undefined>();
+  // A page for the browser tab to open (a URL a process printed).
+  const [browserOpen, setBrowserOpen] = useState<{ url: string; at: number } | undefined>();
   const creatingDesktop = useRef(false);
   // What the thread's claude opened on the desktop, for its Desktop tab to show.
   const [desktopShow, setDesktopShow] = useState<{ tabId: string; source: DesktopSource; at: number } | null>(null);
@@ -132,13 +143,17 @@ function ThreadPage() {
     }
   };
 
+  const openingTab = useRef<Partial<Record<TabKind, boolean>>>({});
   const openTab = async (kind: TabKind, focus = true) => {
-    // One browser per thread: a second tab would show the same page.
-    const existing = kind === "browser" && tabs.data?.find((t) => t.kind === "browser");
+    // One browser per thread (a second tab would show the same page), and one processes tab.
+    const single = kind === "browser" || kind === "processes";
+    const existing = single && tabs.data?.find((t) => t.kind === kind);
     if (existing) {
       if (focus) setActive(existing.id);
       return;
     }
+    if (single && openingTab.current[kind]) return;
+    openingTab.current[kind] = true;
     setError(null);
     try {
       const mode = kind === "claude" ? (await getPrefs()).defaultPermissionMode : undefined;
@@ -147,12 +162,15 @@ function ThreadPage() {
       if (focus) setActive(t.id);
     } catch (e) {
       setError(errorMessage(e));
+    } finally {
+      openingTab.current[kind] = false;
     }
   };
 
   const closeTab = async (t: Tab) => {
     if (t.kind === "browser") browserClosedAt.current = Date.now();
     if (t.kind === "desktop") desktopClosedAt.current = Date.now();
+    if (t.kind === "processes") processesClosedAt.current = Date.now();
     if (active?.id === t.id) {
       const i = panes.findIndex((p) => p.id === t.id);
       setActive((panes[i + 1] ?? panes[i - 1] ?? thread!).id);
@@ -181,6 +199,22 @@ function ThreadPage() {
     // Open the browser as a tab, but not right after the user closed it.
     if (!canTab || Date.now() - browserClosedAt.current < 120_000) return;
     void openTab("browser", false);
+  };
+
+  const onProcessUse = () => {
+    // Show processes as a tab, but not right after the user closed it.
+    if (!canTab || !features.includes("processes") || Date.now() - processesClosedAt.current < 120_000) return;
+    void openTab("processes", false);
+  };
+
+  const openProcess = (id?: string) => {
+    if (id) setProcessShow({ id, at: Date.now() });
+    void openTab("processes");
+  };
+
+  const openUrl = (url: string) => {
+    setBrowserOpen({ url, at: Date.now() });
+    void openTab("browser");
   };
 
   // source: what claude opened, if it did; fallback: what a new tab shows otherwise.
@@ -227,6 +261,10 @@ function ThreadPage() {
               cwd={project?.path}
               onBrowserUse={onBrowserUse}
               onDesktopUse={features.includes("desktop") ? onDesktopUse : undefined}
+              onProcessUse={onProcessUse}
+              processes={
+                canTab && features.includes("processes") ? { threadId, onOpen: openProcess } : undefined
+              }
             />
           </Suspense>
         );
@@ -259,6 +297,7 @@ function ThreadPage() {
               threadId={legacyBrowser ? thread.projectId : threadId}
               generation={conn.generation}
               remoteOs={info.data?.os}
+              open={browserOpen}
               onAnnotate={
                 claudeTarget
                   ? (draft) => {
@@ -308,6 +347,20 @@ function ThreadPage() {
             />
           </Suspense>
         );
+      case "processes":
+        return (
+          <Suspense>
+            <ProcessesView
+              peer={peer}
+              threadId={threadId}
+              generation={conn.generation}
+              initialState={p.tabState}
+              onStateChange={(state) => void peer.call("tabs.setState", { id: p.id, state }).catch(() => {})}
+              onOpenUrl={canTab ? openUrl : undefined}
+              show={processShow}
+            />
+          </Suspense>
+        );
     }
   };
 
@@ -338,6 +391,7 @@ function ThreadPage() {
                 key={p.id}
                 pane={p}
                 active={p.id === active?.id}
+                running={p.kind === "processes" ? thread?.processes : undefined}
                 onSelect={() => setActive(p.id)}
                 onRename={p.parentId && canTab ? () => setRenaming(p as Tab) : undefined}
                 onClose={
@@ -361,8 +415,8 @@ function ThreadPage() {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start">
-                {(["terminal", "claude", "browser", "files", "desktop"] as const)
-                  .filter((k) => (k !== "claude" && k !== "desktop") || features.includes(k))
+                {(["terminal", "claude", "browser", "files", "desktop", "processes"] as const)
+                  .filter((k) => (k !== "claude" && k !== "desktop" && k !== "processes") || features.includes(k))
                   .map((k) => {
                     const Icon = KIND_ICON[k];
                     return (
@@ -422,12 +476,15 @@ function ThreadPage() {
 function TabButton({
   pane: p,
   active,
+  running,
   onSelect,
   onRename,
   onClose,
 }: {
   pane: Pane;
   active: boolean;
+  /** How many processes are running, for the processes tab. */
+  running?: number;
   onSelect: () => void;
   onRename?: () => void;
   onClose?: () => void;
@@ -459,6 +516,11 @@ function TabButton({
           <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-primary" aria-label="working" />
         )}
         {status === "waiting" && <span className="size-1.5 shrink-0 rounded-full bg-warn" aria-label="needs you" />}
+        {!!running && (
+          <span className="shrink-0 rounded-sm bg-live/15 px-1 text-[10px] text-live tabular-nums" aria-label={`${running} running`}>
+            {running}
+          </span>
+        )}
       </button>
       {onClose && (
         <button

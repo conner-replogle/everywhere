@@ -119,6 +119,8 @@ export const TERM_CHANNEL_PREFIX = "term:";
 export const AGENT_CHANNEL_PREFIX = "agent:";
 export const UPLOAD_CHANNEL_PREFIX = "upload:";
 export const FILE_CHANNEL_PREFIX = "file:";
+/** A process's output; the terminal channel's protocol. */
+export const PROC_CHANNEL_PREFIX = "proc:";
 
 export * from "./browser";
 
@@ -142,7 +144,8 @@ export interface DeviceInfo {
  * agent channel's rewind request. icons: projects.icon. clone: projects.clone,
  * clones.list and clones.changed. gitStatus: git.status, git.fetch, git.pull,
  * git.updateDefault and git.changed. claudeUpdate: agent.claudeVersion and
- * agent.updateClaude. mkdir: fs.mkdir.
+ * agent.updateClaude. mkdir: fs.mkdir. processes: processes.*,
+ * processes.changed, proc channels and the processes tab.
  */
 export type DeviceFeature =
   | "claude"
@@ -158,7 +161,8 @@ export type DeviceFeature =
   | "clone"
   | "gitStatus"
   | "claudeUpdate"
-  | "mkdir";
+  | "mkdir"
+  | "processes";
 
 /**
  * What desktop.start captures: a monitor by name, or a window by id
@@ -267,10 +271,12 @@ export interface Thread {
   worktree?: string;
   /** archive: set while archived (hidden, its shell or claude stopped). */
   archivedAt?: number;
+  /** processes: how many of its processes are running. */
+  processes?: number;
 }
 
 /** What a tab shows: a thread kind, the project's browser, or its files. */
-export type TabKind = ThreadKind | "browser" | "files" | "desktop";
+export type TabKind = ThreadKind | "browser" | "files" | "desktop" | "processes";
 
 /**
  * A tab opened inside a thread. Terminal and claude tabs are threads of
@@ -282,6 +288,75 @@ export interface Tab extends Omit<Thread, "kind" | "archivedAt"> {
   parentId: string;
   /** The tab's UI state, as its view saved it (tabs.setState). */
   tabState?: string;
+}
+
+/**
+ * A command a thread runs in the background (a dev server, build, test run),
+ * or a tracker: no command, progress the model reports itself.
+ * - running, or for a tracker open
+ * - exited: ended by itself (see exitCode)
+ * - stopped: by the user, the model or the daemon
+ * - failed: didn't start
+ * - lost: the daemon went away while it ran
+ * - done: a tracker marked done
+ */
+export type ProcessStatus = "running" | "exited" | "stopped" | "failed" | "lost" | "done";
+
+export interface Process {
+  id: string;
+  threadId: string;
+  name: string;
+  /** Absent for a tracker. */
+  command?: string;
+  cwd?: string;
+  status: ProcessStatus;
+  exitCode?: number;
+  /** The model asked to be told when it ends. */
+  notify?: boolean;
+  startedAt: number;
+  endedAt?: number;
+  checkpoints: ProcessCheckpoint[];
+  stats: ProcessStat[];
+  /** The phase it last reported. */
+  statusText?: string;
+  /** The terminal progress (OSC 9;4) it last reported. */
+  progress?: ProcessProgress;
+  /** Local URLs seen in its output. */
+  urls?: string[];
+  lastLine?: string;
+  logPath?: string;
+}
+
+export interface ProcessCheckpoint {
+  label: string;
+  /** Regex matched against output lines. */
+  pattern?: string;
+  notify?: boolean;
+  /** Unix ms. */
+  reachedAt?: number;
+  /** How long after starting the previous run reached it, in ms. */
+  prevMs?: number;
+}
+
+/** A number a process reports; a counter (with a bar) when it has a total. */
+export interface ProcessStat {
+  key: string;
+  label?: string;
+  unit?: string;
+  value: number;
+  total?: number;
+  /** Per second. */
+  rate?: number;
+  /** Seconds left. */
+  eta?: number;
+  /** One sample a second, oldest first. */
+  history?: number[];
+  notifyWhen?: string;
+}
+
+export interface ProcessProgress {
+  state: "normal" | "error" | "indeterminate" | "paused";
+  percent: number;
 }
 
 /** Where a thread works (threads.workdir). */
@@ -363,6 +438,15 @@ export interface RpcMethods {
   /** keepWorktree: leave a claude thread's worktree on disk (its branch is always kept). */
   "threads.delete": [{ id: string; keepWorktree?: boolean }, Record<string, never>];
   "threads.workdir": [{ id: string }, Workdir];
+  /** processes: a thread's (or its tab's thread's) processes, newest first. */
+  "processes.list": [{ threadId: string }, Process[]];
+  /** Starts a command for the thread; one that fails to start comes back failed. */
+  "processes.start": [{ threadId: string; name: string; command: string; cwd?: string }, Process];
+  "processes.stop": [{ id: string }, Record<string, never>];
+  /** Starts it again the way it was last started. */
+  "processes.restart": [{ id: string }, Process];
+  /** Stops it if it's running and forgets it, with its log. */
+  "processes.remove": [{ id: string }, Record<string, never>];
   "tabs.list": [{ threadId: string }, Tab[]];
   "tabs.create": [{ threadId: string; kind: TabKind; name?: string; permissionMode?: PermissionMode }, Tab];
   /** Deletes the tab, stopping its shell or claude. Rename one with threads.rename. */
@@ -534,6 +618,8 @@ export type RpcEvent =
   | { event: "clones.changed" }
   | { event: "git.changed" }
   | { event: "threads.changed" }
+  /** A thread's processes started, stopped or made progress (at most 4 a second). */
+  | { event: "processes.changed"; threadId: string }
   /** One of a desktop session's ICE candidates (trickle ICE); see desktop.start. */
   | { event: "desktop.candidate"; id: string; candidate: IceCandidate };
 
@@ -826,4 +912,10 @@ export type AgentEvent = AgentEventBase &
     | { type: "rewind"; id: string; text: string; fromSeq: number; filesRestored?: number }
     /** What a local slash command (e.g. /cost) printed. */
     | { type: "commandOutput"; text: string }
+    /**
+     * Something one of the thread's processes did (name is the process's).
+     * status says how claude hears of it: turn (in the turn running), wake
+     * (in a turn it started), held (with the next prompt).
+     */
+    | { type: "process"; name: string; text: string; status: "turn" | "wake" | "held" }
   );

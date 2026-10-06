@@ -129,10 +129,13 @@ export function BrowserView({
   remoteOs,
   onClose,
   onAnnotate,
+  open,
 }: {
   peer: DevicePeer;
   /** The thread whose browser page this shows. */
   threadId: string;
+  /** A page to open, e.g. a dev server a process printed; at makes asking again open it again. */
+  open?: { url: string; at: number };
   /** Peer connection generation; a new one means reopen the channel. */
   generation: number;
   remoteOs?: string;
@@ -177,6 +180,18 @@ export function BrowserView({
   const narrow = stage.width > 0 && stage.width < NARROW_PX;
 
   const send = useCallback((msg: BrowserClientMsg) => chanRef.current?.send(msg), []);
+  // Opened once the channel is, if it isn't yet.
+  const pendingOpen = useRef<string | null>(null);
+  const openAt = open?.at;
+  const openUrl = open?.url;
+  useEffect(() => {
+    if (!openUrl) return;
+    pendingOpen.current = openUrl;
+    if (chanRef.current?.isOpen) {
+      chanRef.current.send({ t: "navigate", url: openUrl });
+      pendingOpen.current = null;
+    }
+  }, [openAt, openUrl]);
 
   const noticeTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const showNotice = useCallback((text: string) => {
@@ -328,6 +343,10 @@ export function BrowserView({
             ...(viewport() ?? { width: 800, height: 600, dpr: 1, quality: 65 }),
             video: wantVideo,
           });
+          if (pendingOpen.current) {
+            chan.send({ t: "navigate", url: pendingOpen.current });
+            pendingOpen.current = null;
+          }
           if (!wantVideo) return;
           const v = new BrowserVideo(
             (m) => chan.send(m),

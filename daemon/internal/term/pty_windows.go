@@ -76,8 +76,10 @@ func (t *conPTY) wait() {
 	t.closeConsole()
 }
 
-// spawn starts the user's shell in dir on a new pseudo console.
-func spawn(threadID, dir string, cols, rows uint16) (tty, *proc.Group, error) {
+// Spawn starts the user's shell in c.Dir on a new pseudo console, running
+// c.Command if it's set.
+func Spawn(c Command) (TTY, *proc.Group, error) {
+	cols, rows := c.Cols, c.Rows
 	var inR, inW, outR, outW windows.Handle
 	if err := windows.CreatePipe(&inR, &inW, nil, 0); err != nil {
 		return nil, nil, err
@@ -104,7 +106,7 @@ func spawn(threadID, dir string, cols, rows uint16) (tty, *proc.Group, error) {
 		hpc:    hpc,
 	}
 	shell := windowsShell()
-	pi, err := startOnConsole(hpc, windows.ComposeCommandLine([]string{shell, "-NoLogo"}), dir, windowsEnv(shell, threadID))
+	pi, err := startOnConsole(hpc, commandLine(shell, c.Command), c.Dir, windowsEnv(shell, c.Env))
 	if err != nil {
 		t.closeConsole()
 		t.in.Close()
@@ -175,6 +177,19 @@ func envBlock(env []string) []uint16 {
 	return append(b, 0)
 }
 
+// commandLine runs command in shell, or starts it interactively if command
+// is "".
+func commandLine(shell, command string) string {
+	if command == "" {
+		return windows.ComposeCommandLine([]string{shell, "-NoLogo"})
+	}
+	if strings.EqualFold(filepath.Base(shell), "cmd.exe") {
+		// /s: cmd strips the outer quotes and runs the rest as typed.
+		return windows.EscapeArg(shell) + ` /d /s /c "` + command + `"`
+	}
+	return windows.ComposeCommandLine([]string{shell, "-NoLogo", "-Command", command})
+}
+
 // windowsShell is PowerShell 7 if it's installed, else Windows PowerShell,
 // else cmd.
 func windowsShell() string {
@@ -191,7 +206,7 @@ func windowsShell() string {
 
 // windowsEnv is the daemon's environment for a shell, minus what describes
 // the daemon itself.
-func windowsEnv(shell, threadID string) []string {
+func windowsEnv(shell string, extra []string) []string {
 	env := []string{}
 	for _, kv := range os.Environ() {
 		k, _, _ := strings.Cut(kv, "=")
@@ -201,10 +216,10 @@ func windowsEnv(shell, threadID string) []string {
 		}
 		env = append(env, kv)
 	}
-	return append(env,
+	env = append(env,
 		"SHELL="+shell,
 		"TERM=xterm-256color",
 		"COLORTERM=truecolor",
-		"EVERYWHERE_THREAD="+threadID,
 	)
+	return append(env, extra...)
 }

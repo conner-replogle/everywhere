@@ -1000,6 +1000,22 @@ function ProjectGlyph({ entry, project: p, enabled }: { entry: Entry; project: P
 
 /** Mint means live (shell or idle claude); claude threads also show what they're doing. */
 export function ThreadStatusDot({ thread: t }: { thread: Thread }) {
+  const dot = <ThreadDot thread={t} />;
+  if (!t.processes) return dot;
+  return (
+    <span className="ml-auto flex shrink-0 items-center gap-1.5">
+      <span
+        className="rounded-sm bg-live/15 px-1 text-[10px] text-live tabular-nums"
+        title={`${t.processes} process${t.processes === 1 ? "" : "es"} running`}
+      >
+        {t.processes}
+      </span>
+      {dot}
+    </span>
+  );
+}
+
+function ThreadDot({ thread: t }: { thread: Thread }) {
   const s = t.kind === "claude" ? t.agentStatus : undefined;
   if (s === "working" || s === "starting") {
     return <span className="ml-auto size-1.5 shrink-0 animate-pulse rounded-full bg-primary" title="Claude is working" />;

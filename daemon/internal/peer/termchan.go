@@ -8,6 +8,7 @@ import (
 	"github.com/pion/webrtc/v4"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
+	"github.com/conner-replogle/everywhere/daemon/internal/term"
 )
 
 const (
@@ -17,12 +18,23 @@ const (
 	maxBuffered = 4 << 20
 )
 
-// termClient adapts a term:<threadId> data channel to term.Client.
+// terminals is what a terminal channel drives: thread shells (term.Manager)
+// or process output (process.Manager).
+type terminals interface {
+	Attach(id string, c term.Client, cols, rows uint16) error
+	Detach(id string, c term.Client)
+	Input(id string, c term.Client, p []byte)
+	Resize(id string, c term.Client, cols, rows uint16)
+	Takeover(id string, c term.Client, cols, rows uint16)
+}
+
+// termClient adapts a term:<threadId> or proc:<processId> data channel to
+// term.Client.
 type termClient struct {
-	s        *Server
+	terms    terminals
 	dc       *webrtc.DataChannel
 	once     sync.Once
-	threadID string
+	threadID string // or process id
 
 	mu       sync.Mutex
 	attached bool
@@ -41,7 +53,7 @@ func (c *termClient) detach() {
 	c.attached = false
 	c.mu.Unlock()
 	if was {
-		c.s.terms.Detach(c.threadID, c)
+		c.terms.Detach(c.threadID, c)
 	}
 }
 
@@ -78,8 +90,8 @@ func (c *termClient) sendJSON(v any) {
 
 func (c *termClient) close() { c.once.Do(func() { _ = c.dc.Close() }) }
 
-func (s *Server) serveTerm(p *peer, dc *webrtc.DataChannel, threadID string) {
-	c := &termClient{s: s, dc: dc, threadID: threadID}
+func (s *Server) serveTerm(p *peer, dc *webrtc.DataChannel, threadID string, terms terminals) {
+	c := &termClient{terms: terms, dc: dc, threadID: threadID}
 	p.mu.Lock()
 	if p.terms == nil { // peer already closed
 		p.mu.Unlock()
@@ -92,7 +104,7 @@ func (s *Server) serveTerm(p *peer, dc *webrtc.DataChannel, threadID string) {
 	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 		if !msg.IsString {
 			if c.isAttached() {
-				s.terms.Input(threadID, c, msg.Data)
+				terms.Input(threadID, c, msg.Data)
 			}
 			return
 		}
@@ -109,16 +121,16 @@ func (s *Server) serveTerm(p *peer, dc *webrtc.DataChannel, threadID string) {
 			}
 			c.attached = true
 			c.mu.Unlock()
-			if err := s.terms.Attach(threadID, c, m.Cols, m.Rows); err != nil {
+			if err := terms.Attach(threadID, c, m.Cols, m.Rows); err != nil {
 				c.mu.Lock()
 				c.attached = false
 				c.mu.Unlock()
 				c.sendJSON(protocol.TermError{T: "error", Message: err.Error()})
 			}
 		case "resize":
-			s.terms.Resize(threadID, c, m.Cols, m.Rows)
+			terms.Resize(threadID, c, m.Cols, m.Rows)
 		case "takeover":
-			s.terms.Takeover(threadID, c, m.Cols, m.Rows)
+			terms.Takeover(threadID, c, m.Cols, m.Rows)
 		}
 	})
 	dc.OnClose(func() {

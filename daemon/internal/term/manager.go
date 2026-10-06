@@ -44,8 +44,9 @@ type Manager struct {
 	sessions map[string]*session
 }
 
-// tty is a shell on a pseudo-terminal: a PTY on Unix, a ConPTY on Windows.
-type tty interface {
+// TTY is a shell or command on a pseudo-terminal: a PTY on Unix, a ConPTY
+// on Windows.
+type TTY interface {
 	// Read returns the terminal's output, and an error once the shell has
 	// exited and its output is drained.
 	Read(p []byte) (int, error)
@@ -59,7 +60,7 @@ type tty interface {
 
 type session struct {
 	threadID string
-	tty      tty
+	tty      TTY
 	group    *proc.Group
 	done     chan struct{}
 
@@ -258,7 +259,7 @@ func (m *Manager) getOrSpawn(threadID string, cols, rows uint16) (*session, bool
 	if cols == 0 || rows == 0 {
 		cols, rows = 80, 24
 	}
-	t, group, err := spawn(threadID, dir, cols, rows)
+	t, group, err := Spawn(Command{Dir: dir, Env: []string{"EVERYWHERE_THREAD=" + threadID}, Cols: cols, Rows: rows})
 	if err != nil {
 		return nil, false, err
 	}

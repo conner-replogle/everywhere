@@ -5,6 +5,7 @@ import { EyeIcon, RotateCcwIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { applyModifiers, type Modifiers, TerminalKeys, useCoarsePointer } from "@/components/terminal-keys";
 import { Button } from "@/components/ui/button";
+import { PROC_CHANNEL_PREFIX } from "@everywhere/protocol";
 import type { DevicePeer, TerminalChannel } from "@/lib/peer";
 import { errorMessage } from "@/lib/utils";
 
@@ -58,9 +59,12 @@ export function TerminalView({
   generation,
   onWriterChange,
   active = true,
+  processId,
 }: {
   peer: DevicePeer;
   threadId: string;
+  /** Show this process's output instead of the thread's shell; it isn't restarted when it ends. */
+  processId?: string;
   /** Peer connection generation; a new one means reopen the channel. */
   generation: number;
   onWriterChange?: (w: WriterState) => void;
@@ -93,10 +97,11 @@ export function TerminalView({
   const sendKeys = useCallback(
     (data: string) => {
       setModifiers(NO_MODS);
-      if (exitedRef.current) reattach();
-      else if (writerRef.current) chanRef.current?.sendInput(data);
+      if (exitedRef.current) {
+        if (!processId) reattach();
+      } else if (writerRef.current) chanRef.current?.sendInput(data);
     },
-    [reattach, setModifiers],
+    [reattach, setModifiers, processId],
   );
 
   const onWriterChangeRef = useRef(onWriterChange);
@@ -217,7 +222,7 @@ export function TerminalView({
 
     let ch: TerminalChannel;
     try {
-      ch = peer.openTerminal(threadId, {
+      ch = peer.openTerminal(processId ?? threadId, {
         onOpen: () => ch.sendControl({ t: "attach", cols: term.cols, rows: term.rows }),
         onOutput: (bytes) => term.write(bytes),
         onControl: (msg) => {
@@ -241,7 +246,7 @@ export function TerminalView({
           }
         },
         onClose: () => setClosed(true),
-      });
+      }, processId ? PROC_CHANNEL_PREFIX : undefined);
     } catch (e) {
       setError(errorMessage(e));
       return;
@@ -251,7 +256,7 @@ export function TerminalView({
       ch.close();
       if (chanRef.current === ch) chanRef.current = null;
     };
-  }, [ready, peer, threadId, generation, attachKey]);
+  }, [ready, peer, threadId, processId, generation, attachKey]);
 
   const takeover = () => {
     const term = termRef.current;
@@ -267,7 +272,9 @@ export function TerminalView({
       {writer === "viewer" && !exited && !closed && (
         <Banner tone="info">
           <EyeIcon className="size-3.5 shrink-0" />
-          <span className="flex-1">Read-only — this terminal is being used on another client.</span>
+          <span className="flex-1">
+            Read-only — this {processId ? "process" : "terminal"} is being used on another client.
+          </span>
           <Button size="sm" variant="secondary" onClick={takeover}>
             Take over
           </Button>
@@ -293,7 +300,12 @@ export function TerminalView({
       )}
       <div className="relative min-h-0 flex-1" onMouseDown={() => termRef.current?.focus()}>
         <div ref={containerRef} className="absolute inset-0 overflow-hidden" />
-        {exited && (
+        {exited && processId && (
+          <div className="absolute inset-x-0 bottom-0 border-t bg-sidebar/95 px-3 py-1.5 text-center text-xs text-muted-foreground backdrop-blur-sm">
+            Ended{exitCode !== null && exitCode >= 0 ? ` with code ${exitCode}` : ""}
+          </div>
+        )}
+        {exited && !processId && (
           <button
             type="button"
             onClick={reattach}

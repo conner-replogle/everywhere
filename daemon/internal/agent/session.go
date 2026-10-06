@@ -100,6 +100,8 @@ type session struct {
 	refineTitle string
 	titleGen    int    // bumped per title request, so only the latest applies
 	firstReply  string // claude's last top-level text in the current turn
+	// held are process events waiting for the next prompt.
+	held []string
 }
 
 func newSession(m *Manager, threadID string, a store.AgentThread) *session {
@@ -302,6 +304,11 @@ func (s *session) send(text string, attachmentIDs []string) error {
 	if err != nil {
 		return err
 	}
+	// A /recap must stay a slash command, so held events wait for a real prompt.
+	sentHeld := !s.recapping && len(s.held) > 0
+	if sentHeld {
+		content = append(s.heldBlocks(), content...)
+	}
 	id := newUUID()
 	if !s.turnActive {
 		s.beginTurn()
@@ -314,6 +321,9 @@ func (s *session) send(text string, attachmentIDs []string) error {
 	s.changed()
 	err = s.proc.Send(claude.UserMessage{UUID: id, Content: content})
 	if err == nil {
+		if sentHeld {
+			s.held = nil
+		}
 		s.maybeTitle(text, files)
 		if !s.recapping {
 			if err := s.m.store.TouchThread(s.threadID); err != nil {
@@ -323,6 +333,55 @@ func (s *session) send(text string, attachmentIDs []string) error {
 		}
 	}
 	return err
+}
+
+// processEvent tells claude about something one of the thread's processes
+// did. One it asked for (wake) joins the turn in progress (claude reads it
+// after the next tool result) or starts one. Anything else waits for the
+// next prompt: sent during a turn, it could arrive as the turn ends and
+// start one of its own.
+func (s *session) processEvent(name, text, prompt string, wake bool) {
+	// Status says how claude hears of it: in this turn, in a new one, or with
+	// the next prompt.
+	status := "held"
+	switch {
+	case wake && s.turnActive && s.proc != nil:
+		status = "turn"
+	case wake:
+		status = "wake"
+	}
+	s.emit(protocol.AgentEvent{Type: "process", Name: name, Text: text, Status: status})
+	switch status {
+	case "turn":
+		if err := s.proc.Send(claude.UserMessage{Content: []claude.ContentBlock{claude.Text(prompt)}}); err != nil {
+			slog.Warn("sending process event", "thread", s.threadID, "err", err)
+			s.held = append(s.held, prompt)
+		}
+	case "wake":
+		s.held = append(s.held, prompt)
+		if err := s.ensureProc(); err != nil {
+			s.emit(protocol.AgentEvent{Type: "notice", Text: "Couldn't start claude for a process event: " + err.Error()})
+			break
+		}
+		s.beginTurn()
+		if err := s.proc.Send(claude.UserMessage{Content: s.heldBlocks()}); err != nil {
+			slog.Warn("sending process event", "thread", s.threadID, "err", err)
+			break
+		}
+		s.held = nil
+	default:
+		s.held = append(s.held, prompt)
+	}
+	s.changed()
+}
+
+// heldBlocks are the held process events as prompt content.
+func (s *session) heldBlocks() []claude.ContentBlock {
+	blocks := make([]claude.ContentBlock, 0, len(s.held))
+	for _, h := range s.held {
+		blocks = append(blocks, claude.Text(h))
+	}
+	return blocks
 }
 
 // continueTurn restarts a turn that a daemon update interrupted.

@@ -39,14 +39,19 @@ func (t *unixTTY) Wait() int {
 	}
 }
 
-// spawn starts the user's login shell in dir on a new PTY.
-func spawn(threadID, dir string, cols, rows uint16) (tty, *proc.Group, error) {
+// Spawn starts the user's login shell in c.Dir on a new PTY, running
+// c.Command if it's set (as `shell -l -c command`).
+func Spawn(c Command) (TTY, *proc.Group, error) {
 	shell := loginShell()
 	cmd := exec.Command(shell)
-	cmd.Args = []string{"-" + filepath.Base(shell)} // login shell
-	cmd.Dir = dir
-	cmd.Env = shellEnv(shell, threadID)
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: cols, Rows: rows})
+	if c.Command == "" {
+		cmd.Args = []string{"-" + filepath.Base(shell)} // login shell
+	} else {
+		cmd.Args = []string{filepath.Base(shell), "-l", "-c", c.Command}
+	}
+	cmd.Dir = c.Dir
+	cmd.Env = shellEnv(shell, c.Env)
+	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: c.Cols, Rows: c.Rows})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -91,7 +96,7 @@ var dropEnv = map[string]bool{
 	"MANAGERPID": true, "SYSTEMD_EXEC_PID": true, "LISTEN_FDS": true, "LISTEN_PID": true,
 }
 
-func shellEnv(shell, threadID string) []string {
+func shellEnv(shell string, extra []string) []string {
 	env := []string{}
 	have := map[string]bool{}
 	for _, kv := range os.Environ() {
@@ -115,10 +120,10 @@ func shellEnv(shell, threadID string) []string {
 	if !have["LANG"] {
 		env = append(env, "LANG=C.UTF-8")
 	}
-	return append(env,
+	env = append(env,
 		"SHELL="+shell,
 		"TERM=xterm-256color",
 		"COLORTERM=truecolor",
-		"EVERYWHERE_THREAD="+threadID,
 	)
+	return append(env, extra...)
 }
