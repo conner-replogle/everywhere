@@ -4,6 +4,7 @@ import {
   ArchiveIcon,
   ArchiveRestoreIcon,
   ArrowDownUpIcon,
+  ArrowUpCircleIcon,
   BugIcon,
   ChevronRightIcon,
   ChevronsUpDownIcon,
@@ -18,6 +19,7 @@ import {
   PencilIcon,
   PlusIcon,
   RotateCcwIcon,
+  RotateCwIcon,
   SettingsIcon,
   SparklesIcon,
   SquareTerminalIcon,
@@ -29,7 +31,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { DeviceContext, type DeviceContextValue, useDevice } from "@/components/device-context";
 import { ClaudeUpdate, useClaudeUpdateCheck } from "@/components/claude-update";
-import { DeviceUpdate, RefreshVersionButton, useUpdateCheck } from "@/components/device-update";
+import { DeviceUpdate, updateStatus, useUpdateCheck } from "@/components/device-update";
 import { useFleet } from "@/components/fleet";
 import { HubStatus } from "@/components/hub-status";
 import { Logo } from "@/components/logo";
@@ -782,6 +784,11 @@ function DeviceRow({
   const live = conn.state === "connected";
   const hasDesktop = live && !!info.data?.features?.includes("desktop");
   const openDesktop = () => void navigate({ to: "/d/$deviceId/desktop", params: { deviceId: device.id } });
+  const [updating, setUpdating] = useState<"device" | "claude" | null>(null);
+  const deviceUpdate = live && update.data?.available ? update.data : undefined;
+  const claudeNew = live && claudeUpdate.data?.available ? claudeUpdate.data : undefined;
+  const hasUpdate = !!deviceUpdate || !!claudeNew;
+  const checkStatus = updateStatus(update);
   const status = live
     ? info.data
       ? `${info.data.os}/${info.data.arch} · ${info.data.version}`
@@ -802,37 +809,20 @@ function DeviceRow({
             {status}
           </span>
         </div>
-        {live && info.data && <RefreshVersionButton update={update} onRefresh={() => claudeUpdate.check(true)} />}
-        {hasDesktop && (
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="text-muted-foreground pointer-coarse:size-8"
-            aria-label={`Remote desktop of ${deviceName(entry)}`}
-            title="Remote desktop"
-            asChild
-          >
-            <Link
-              to="/d/$deviceId/desktop"
-              params={{ deviceId: device.id }}
-              activeProps={{ className: "bg-accent text-accent-foreground" }}
-            >
-              <MonitorIcon />
-            </Link>
-          </Button>
-        )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
               variant="ghost"
               size="icon-sm"
               className={cn(
-                "opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 pointer-coarse:opacity-100",
-                debugging && "opacity-100",
+                "relative opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 pointer-coarse:opacity-100",
+                (debugging || hasUpdate) && "opacity-100",
               )}
-              aria-label={`Actions for ${deviceName(entry)}`}
+              aria-label={`Actions for ${deviceName(entry)}${hasUpdate ? " (update available)" : ""}`}
+              title={hasUpdate ? "Update available" : undefined}
             >
               <MoreHorizontalIcon />
+              {hasUpdate && <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary" />}
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" side="top">
@@ -852,6 +842,46 @@ function DeviceRow({
                 Try connecting again
               </DropdownMenuItem>
             )}
+            {live && info.data && (
+              <>
+                <DropdownMenuSeparator />
+                {deviceUpdate && (
+                  <DropdownMenuItem className="text-primary" onSelect={() => setUpdating("device")}>
+                    <ArrowUpCircleIcon />
+                    <span className="flex-1">Update everywhere to {deviceUpdate.latest}</span>
+                    <span className="text-xs text-muted-foreground">{deviceUpdate.current}</span>
+                  </DropdownMenuItem>
+                )}
+                {claudeNew && (
+                  <DropdownMenuItem className="text-primary" onSelect={() => setUpdating("claude")}>
+                    <ArrowUpCircleIcon />
+                    <span className="flex-1">Update Claude Code to {claudeNew.latest}</span>
+                    <span className="text-xs text-muted-foreground">{claudeNew.current}</span>
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuItem
+                  disabled={update.checking}
+                  // Stays open, so the result shows.
+                  onSelect={(e) => {
+                    e.preventDefault();
+                    info.refetch();
+                    if (update.supported) update.check(true);
+                    claudeUpdate.check(true);
+                  }}
+                >
+                  <RotateCwIcon className={cn(update.checking && "animate-spin")} />
+                  <span className="grid">
+                    Check for updates
+                    {checkStatus && (
+                      <span className={cn("text-xs text-muted-foreground", update.error && "text-warn")}>
+                        {checkStatus}
+                      </span>
+                    )}
+                  </span>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+              </>
+            )}
             <DropdownMenuItem onSelect={onDebug}>
               <BugIcon />
               {debugging ? "Hide connection debug" : "Connection debug"}
@@ -859,8 +889,8 @@ function DeviceRow({
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      <DeviceUpdate update={update} />
-      <ClaudeUpdate update={claudeUpdate} />
+      <DeviceUpdate update={update} open={updating === "device"} onOpenChange={(o) => setUpdating(o ? "device" : null)} />
+      <ClaudeUpdate update={claudeUpdate} open={updating === "claude"} onOpenChange={(o) => setUpdating(o ? "claude" : null)} />
     </div>
   );
 }

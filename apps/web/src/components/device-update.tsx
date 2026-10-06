@@ -1,9 +1,9 @@
 import type { UpdateInfo } from "@everywhere/protocol";
-import { ArrowUpCircleIcon, LoaderIcon, RotateCwIcon } from "lucide-react";
+import { LoaderIcon } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { useDevice } from "@/components/device-context";
-import { cn, errorMessage } from "@/lib/utils";
+import { errorMessage } from "@/lib/utils";
 
 const UPDATE_TIMEOUT_MS = 3 * 60_000; // download + verify on a slow link
 const RECHECK_MS = 15 * 60_000;
@@ -64,48 +64,29 @@ export function useUpdateCheck(): UpdateCheck {
   return { supported, data, error, checking, check };
 }
 
-/** The small button next to the version: re-read the device and look for a release now. */
-export function RefreshVersionButton({ update, onRefresh }: { update: UpdateCheck; onRefresh?: () => void }) {
-  const { info } = useDevice();
-  const upToDate = update.data && !update.data.available && !update.data.reason;
-  return (
-    <button
-      type="button"
-      onClick={() => {
-        info.refetch();
-        if (update.supported) update.check(true);
-        onRefresh?.();
-      }}
-      disabled={update.checking}
-      className={cn(
-        "shrink-0 rounded-sm p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-60",
-        update.error && "text-warn",
-      )}
-      aria-label="Check for updates"
-      title={
-        update.checking
-          ? "Checking for updates…"
-          : update.error
-            ? `Couldn't check for updates: ${update.error}`
-            : update.data?.reason
-              ? `${update.data.reason} Updates are off.`
-              : upToDate
-                ? `Up to date (latest is ${update.data?.latest}). Click to check again.`
-                : "Check for updates"
-      }
-    >
-      <RotateCwIcon className={cn("size-3", update.checking && "animate-spin")} />
-    </button>
-  );
+/** What the device menu says about the daemon's version, for its "Check for updates" item. */
+export function updateStatus(update: UpdateCheck): string | undefined {
+  if (update.checking) return "Checking…";
+  if (update.error) return `Couldn't check: ${update.error}`;
+  if (update.data?.reason) return `${update.data.reason} Updates are off.`;
+  if (update.data && !update.data.available) return `Up to date (${update.data.latest})`;
+  return undefined;
 }
 
 /**
- * Offers the latest daemon release when there is one, installs it on
- * request and follows the daemon through its restart.
+ * Confirms installing the latest daemon release (opened from the device
+ * menu), installs it and follows the daemon through its restart.
  */
-export function DeviceUpdate({ update }: { update: UpdateCheck }) {
+export function DeviceUpdate({
+  update,
+  open,
+  onOpenChange,
+}: {
+  update: UpdateCheck;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const { device, peer, info } = useDevice();
-  const [confirming, setConfirming] = useState(false);
   // The version the daemon is restarting into, until it's back on it.
   const [target, setTarget] = useState<string | null>(null);
   const { check } = update;
@@ -131,18 +112,9 @@ export function DeviceUpdate({ update }: { update: UpdateCheck }) {
   const name = device?.name ?? info.data?.hostname ?? "this device";
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setConfirming(true)}
-        className="mx-2 mt-2 flex items-center gap-1.5 rounded-md bg-primary/10 px-2 py-1 text-left text-xs text-primary hover:bg-primary/15"
-      >
-        <ArrowUpCircleIcon className="size-3.5 shrink-0" />
-        <span className="flex-1">Update available: {u.latest}</span>
-        <span className="text-primary/70">{u.current}</span>
-      </button>
       <ConfirmDialog
-        open={confirming}
-        onOpenChange={setConfirming}
+        open={open}
+        onOpenChange={onOpenChange}
         title={`Update ${name} to ${u.latest}?`}
         confirmLabel="Update and restart"
         description={

@@ -1,5 +1,4 @@
 import type { ClaudeVersion } from "@everywhere/protocol";
-import { ArrowUpCircleIcon } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { Button } from "@/components/ui/button";
@@ -50,28 +49,26 @@ export function useClaudeUpdateCheck(): ClaudeUpdateCheck {
 }
 
 /**
- * Offers the newest Claude Code when the device's is behind, and runs its
- * installer's update on request. An install the daemon can't attribute to an
- * installer is left to the user, with what to run.
+ * Confirms updating Claude Code (opened from the device menu) and runs its
+ * installer's update. An install the daemon can't attribute to an installer
+ * is left to the user, with what to run.
  */
-export function ClaudeUpdate({ update }: { update: ClaudeUpdateCheck }) {
+export function ClaudeUpdate({
+  update,
+  open,
+  onOpenChange: setOpen,
+}: {
+  update: ClaudeUpdateCheck;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const { device, peer, info } = useDevice();
-  const [open, setOpen] = useState(false);
   const u = update.data;
   if (!u?.available) return null;
 
   const name = device?.name ?? info.data?.hostname ?? "this device";
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="mx-2 mt-2 flex items-center gap-1.5 rounded-md bg-primary/10 px-2 py-1 text-left text-xs text-primary hover:bg-primary/15"
-      >
-        <ArrowUpCircleIcon className="size-3.5 shrink-0" />
-        <span className="flex-1">Claude Code update: {u.latest}</span>
-        <span className="text-primary/70">{u.current}</span>
-      </button>
       {u.canUpdate ? (
         <ConfirmDialog
           open={open}
