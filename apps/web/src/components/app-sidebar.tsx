@@ -86,6 +86,7 @@ type GroupBy = "project" | "device" | "none";
 
 const COLLAPSED_KEY = "ew:collapsed";
 const ARCHIVED_OPEN_KEY = "ew:archived-open";
+const DEVICES_COLLAPSED_KEY = "ew:devices-collapsed";
 const VIEW_KEY = "ew:sidebar-view";
 
 /** How the sidebar sorts and groups projects and threads, remembered per browser. */
@@ -186,6 +187,7 @@ export function AppSidebar({
   const { collapsed, toggle } = useCollapsed();
   const view = useSidebarView();
   const [archivedOpen, setArchivedOpen] = useState(() => localStorage.getItem(ARCHIVED_OPEN_KEY) === "1");
+  const [devicesCollapsed, setDevicesCollapsed] = useState(() => localStorage.getItem(DEVICES_COLLAPSED_KEY) === "1");
   const [pending, setPending] = useState<Pending>(null);
   // Deleting a claude thread that has a worktree: also remove the worktree?
   const [removeWorktree, setRemoveWorktree] = useState(true);
@@ -621,8 +623,29 @@ export function AppSidebar({
 
       {list.length > 0 && (
         <div className="max-h-[40%] shrink-0 overflow-y-auto border-t py-1">
-          <div className="px-3 pt-1 pb-0.5 text-xs font-medium text-muted-foreground">Devices</div>
-          {list.map((entry) => (
+          <button
+            type="button"
+            onClick={() => {
+              const next = !devicesCollapsed;
+              setDevicesCollapsed(next);
+              try {
+                localStorage.setItem(DEVICES_COLLAPSED_KEY, next ? "1" : "0");
+              } catch {
+                // Only a convenience.
+              }
+            }}
+            className="flex h-6 w-full items-center gap-1.5 px-3 text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none pointer-coarse:h-8"
+            aria-expanded={!devicesCollapsed}
+          >
+            <ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", !devicesCollapsed && "rotate-90")} />
+            Devices
+            {devicesCollapsed && (
+              <span className="tabular-nums">
+                {connectedEntries.length}/{list.length} online
+              </span>
+            )}
+          </button>
+          {!devicesCollapsed && list.map((entry) => (
             <DeviceContext.Provider key={entry.deviceId} value={entry}>
               <DeviceRow
                 debugging={debugDevice === entry.deviceId}
