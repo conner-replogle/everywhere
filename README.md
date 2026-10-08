@@ -32,8 +32,24 @@ On the device:
 everywhere add ~/code/api     # register a project (also possible from the web UI)
 everywhere status
 everywhere update
-everywhere uninstall [--purge]
+everywhere uninstall [--purge]   # --purge keeps Scratch folders unless --purge-scratch
 ```
+
+## Scratch
+
+For anything on a machine that isn't a project, such as working out why a
+laptop is slow, what's filling its disk or why Wi-Fi drops, or a quick task
+with some files: open the device (its name in the sidebar, or the launcher
+on the home page), say what you need, and Start. Each Scratch thread works in
+a fresh folder of its own under the daemon's data directory
+(`~/.local/share/everywhere/scratch/<date>-<thread>`), kept until you delete
+it. Claude starts in Auto there, knows it's on a machine rather than in a
+project, and has no root: commands that need sudo come with a "Run in
+terminal" button that types them in for you to check and run. A thread's
+"Changes to this computer" filter lists what it changed outside its folder.
+When the work turns into a project, "Make this a project" keeps the thread
+going in the same folder, and "Continue in a project" starts a thread
+elsewhere with the conversation so far.
 
 ## Remote desktop (Omarchy / Hyprland, Windows)
 

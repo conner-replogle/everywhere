@@ -145,7 +145,11 @@ export interface DeviceInfo {
  * clones.list and clones.changed. gitStatus: git.status, git.fetch, git.pull,
  * git.updateDefault and git.changed. claudeUpdate: agent.claudeVersion and
  * agent.updateClaude. mkdir: fs.mkdir. processes: processes.*,
- * processes.changed, proc channels and the processes tab.
+ * processes.changed, proc channels and the processes tab. scratch: the
+ * Scratch project (Project.isScratch) and its threads' own folders
+ * (Thread.scratchDir), threads.promote, threads.continueIn,
+ * threads.search, scratch.usage, threads.delete's removeScratch,
+ * tabs.create's input and threads.create's prompt.
  */
 export type DeviceFeature =
   | "claude"
@@ -162,7 +166,8 @@ export type DeviceFeature =
   | "gitStatus"
   | "claudeUpdate"
   | "mkdir"
-  | "processes";
+  | "processes"
+  | "scratch";
 
 /**
  * What desktop.start captures: a monitor by name, or a window by id
@@ -214,6 +219,11 @@ export interface Project {
   name: string;
   path: string;
   isHome: boolean;
+  /**
+   * scratch: Everywhere's own project for work outside any project, in its
+   * data directory. Each of its threads works in a folder of its own.
+   */
+  isScratch?: boolean;
   createdAt: number;
 }
 
@@ -273,6 +283,18 @@ export interface Thread {
   archivedAt?: number;
   /** processes: how many of its processes are running. */
   processes?: number;
+  /** scratch: a Scratch thread's own folder, where it works; kept until deleted. */
+  scratchDir?: string;
+}
+
+/** scratch.usage: what the Scratch folders hold, in all and per thread folder (by path). */
+export interface ScratchUsage {
+  root: string;
+  files: number;
+  bytes: number;
+  folders: Record<string, { files: number; bytes: number }>;
+  /** Too many files to count them all. */
+  truncated?: boolean;
 }
 
 /** What a tab shows: a thread kind, the project's browser, or its files. */
@@ -430,14 +452,38 @@ export interface RpcMethods {
   /** The project's favicon or logo, found in its files; null if it has none. */
   "projects.icon": [{ id: string }, { icon: ProjectIcon | null }];
   "threads.list": [{ projectId?: string }, Thread[]];
-  /** permissionMode: a claude thread's starting mode (older daemons ignore it). */
-  "threads.create": [{ projectId: string; name?: string; kind?: ThreadKind; permissionMode?: PermissionMode }, Thread];
+  /**
+   * permissionMode: a claude thread's starting mode (older daemons ignore it;
+   * Scratch threads start in auto without one). prompt (scratch): a claude
+   * thread's first prompt, sent right away.
+   */
+  "threads.create": [
+    { projectId: string; name?: string; kind?: ThreadKind; permissionMode?: PermissionMode; prompt?: string },
+    Thread,
+  ];
   "threads.rename": [{ id: string; name: string }, Thread];
   /** archive: archiving stops the thread's shell or claude; history and worktree stay. */
   "threads.archive": [{ id: string; archived: boolean }, Thread];
-  /** keepWorktree: leave a claude thread's worktree on disk (its branch is always kept). */
-  "threads.delete": [{ id: string; keepWorktree?: boolean }, Record<string, never>];
+  /**
+   * keepWorktree: leave a claude thread's worktree on disk (its branch is always kept).
+   * removeScratch (scratch): also delete a Scratch thread's folder, which otherwise stays.
+   */
+  "threads.delete": [{ id: string; keepWorktree?: boolean; removeScratch?: boolean }, Record<string, never>];
   "threads.workdir": [{ id: string }, Workdir];
+  /** scratch: threads whose name or claude prompts and replies contain query, newest match first. */
+  "threads.search": [{ query: string; limit?: number }, SearchHit[]];
+  /**
+   * scratch: makes a Scratch thread's folder a project (named name, else the
+   * thread's name) and moves the thread there, still working in the same folder.
+   */
+  "threads.promote": [{ id: string; name?: string }, Project];
+  /**
+   * scratch: starts a claude thread in another project that carries on from
+   * a claude thread, with its conversation so far as the first prompt.
+   */
+  "threads.continueIn": [{ id: string; projectId: string; permissionMode?: PermissionMode }, Thread];
+  /** scratch: how much the Scratch folders hold. */
+  "scratch.usage": [Record<string, never>, ScratchUsage];
   /** processes: a thread's (or its tab's thread's) processes, newest first. */
   "processes.list": [{ threadId: string }, Process[]];
   /** Starts a command for the thread; one that fails to start comes back failed. */
@@ -448,7 +494,11 @@ export interface RpcMethods {
   /** Stops it if it's running and forgets it, with its log. */
   "processes.remove": [{ id: string }, Record<string, never>];
   "tabs.list": [{ threadId: string }, Tab[]];
-  "tabs.create": [{ threadId: string; kind: TabKind; name?: string; permissionMode?: PermissionMode }, Tab];
+  /** input (scratch): typed into a new terminal tab's shell without running it. */
+  "tabs.create": [
+    { threadId: string; kind: TabKind; name?: string; permissionMode?: PermissionMode; input?: string },
+    Tab,
+  ];
   /** Deletes the tab, stopping its shell or claude. Rename one with threads.rename. */
   "tabs.close": [{ id: string }, Record<string, never>];
   "tabs.setState": [{ id: string; state: string }, Record<string, never>];
@@ -527,8 +577,6 @@ export interface RemoteMethods
   /** projects.clone, with a token answering git's HTTPS credential prompt. */
   "projects.clone": [{ url: string; path: string; name?: string; token?: string }, Project];
   "threads.get": [{ threadId: string }, Thread];
-  /** Threads whose name or claude prompts and replies contain query, newest match first. */
-  "threads.search": [{ query: string; limit?: number }, SearchHit[]];
   /**
    * A claude thread's state and the newest limit events after afterSeq (and
    * before beforeSeq). waitMs: first wait up to that long (at most 50s) for

@@ -3,10 +3,13 @@ import type { AgentStatus, DesktopSource, Tab, TabKind, Thread } from "@everywhe
 import {
   ActivityIcon,
   ArchiveRestoreIcon,
+  FolderInputIcon,
+  FolderPlusIcon,
   FolderTreeIcon,
   GlobeIcon,
   type LucideIcon,
   MonitorIcon,
+  MoreHorizontalIcon,
   PlusIcon,
   SparklesIcon,
   SquareTerminalIcon,
@@ -15,7 +18,9 @@ import {
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { CenteredMessage } from "@/components/centered-message";
 import { ConfirmDialog } from "@/components/confirm-dialog";
+import { RunInTerminalContext } from "@/components/agent/markdown";
 import { useDevice } from "@/components/device-context";
+import { ContinueDialog, PromoteDialog } from "@/components/scratch-actions";
 import { RenameDialog } from "@/components/rename-dialog";
 import { GitChip } from "@/components/git-chip";
 import { TerminalView, type WriterState } from "@/components/terminal-view";
@@ -25,6 +30,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { sendToComposer } from "@/lib/composer-inbox";
@@ -75,10 +81,13 @@ function ThreadPage() {
   const { deviceId, threadId } = Route.useParams();
   const { tab: tabParam } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
-  const { device, peer, conn, threads, projects, info } = useDevice();
+  const entry = useDevice();
+  const { device, peer, conn, threads, projects, info } = entry;
   const features = info.data?.features ?? [];
   const thread = threads.data?.find((t) => t.id === threadId);
   const project = thread && projects.data?.find((p) => p.id === thread.projectId);
+  const scratch = projects.data?.find((p) => p.isScratch);
+  const inScratch = !!project?.isScratch;
   const archived = !!thread?.archivedAt;
   const canTab = features.includes("tabs") && !archived;
   const tabs = useRpc(peer, "tabs.list", { threadId }, ["threads.changed"], canTab);
@@ -128,6 +137,7 @@ function ThreadPage() {
   const [error, setError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<Tab | null>(null);
   const [closing, setClosing] = useState<Tab | null>(null);
+  const [moving, setMoving] = useState<"promote" | "continue" | "toScratch" | null>(null);
   const browserClosedAt = useRef(0);
   const desktopClosedAt = useRef(0);
   const processesClosedAt = useRef(0);
@@ -172,6 +182,23 @@ function ThreadPage() {
       openingTab.current[kind] = false;
     }
   };
+
+  // Opens a terminal tab with a command typed in (not run), e.g. one that needs sudo.
+  const runInTerminal =
+    canTab && features.includes("scratch")
+      ? (command: string) => {
+          void (async () => {
+            setError(null);
+            try {
+              const t = await peer.call("tabs.create", { threadId, kind: "terminal", name: "Terminal", input: command });
+              tabs.refetch();
+              setActive(t.id);
+            } catch (e) {
+              setError(errorMessage(e));
+            }
+          })();
+        }
+      : null;
 
   const closeTab = async (t: Tab) => {
     if (t.kind === "browser") browserClosedAt.current = Date.now();
@@ -275,7 +302,8 @@ function ThreadPage() {
               threadId={p.id}
               projectId={thread.projectId}
               generation={conn.generation}
-              cwd={project?.path}
+              cwd={workdir.data?.path ?? thread.scratchDir ?? project?.path}
+              scratch={inScratch}
               onBrowserUse={onBrowserUse}
               onDesktopUse={features.includes("desktop") ? onDesktopUse : undefined}
               onProcessUse={onProcessUse}
@@ -290,7 +318,7 @@ function ThreadPage() {
         return archived ? (
           <CenteredMessage
             title="This terminal is archived"
-            body={error ?? "Its shell was stopped. Restore it to start a new shell in the project."}
+            body={error ?? `Its shell was stopped. Restore it to start a new shell in the ${inScratch ? "same folder" : "project"}.`}
           >
             <Button variant="outline" size="sm" onClick={restore}>
               <ArchiveRestoreIcon />
@@ -391,9 +419,61 @@ function ThreadPage() {
         <ThreadTabs
           deviceId={deviceId}
           threadId={threadId}
-          title={thread && project ? `${thread.name} — ${workdir.data?.worktree ? workdir.data.path : project.path}` : undefined}
+          title={
+            thread && project
+              ? `${thread.name} — ${inScratch ? `Scratch on ${device.name || info.data?.hostname || "this device"}: ` : ""}${workdir.data?.worktree || inScratch ? (workdir.data?.path ?? thread.scratchDir ?? project.path) : project.path}`
+              : undefined
+          }
         />
-        {features.includes("gitStatus") && !archived && <GitChip peer={peer} threadId={threadId} />}
+        {inScratch && (
+          <Link
+            to="/d/$deviceId"
+            params={{ deviceId }}
+            className="hidden shrink-0 rounded-sm px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground sm:block"
+            title="Scratch: this thread works in a folder of its own"
+          >
+            Scratch
+          </Link>
+        )}
+        {features.includes("gitStatus") && !archived && !inScratch && <GitChip peer={peer} threadId={threadId} />}
+        {thread && !archived && features.includes("scratch") && (inScratch || (thread.kind === "claude" && scratch)) && (
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="ghost" size="icon-sm" className="shrink-0" aria-label="Thread actions" title="Thread actions">
+                <MoreHorizontalIcon />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {inScratch && canTab && (
+                <DropdownMenuItem onSelect={() => void openTab("files")}>
+                  <FolderTreeIcon />
+                  Open its folder
+                </DropdownMenuItem>
+              )}
+              {inScratch && (
+                <DropdownMenuItem onSelect={() => setMoving("promote")}>
+                  <FolderPlusIcon />
+                  Make this a project…
+                </DropdownMenuItem>
+              )}
+              {thread.kind === "claude" && (
+                <>
+                  {inScratch && <DropdownMenuSeparator />}
+                  <DropdownMenuItem onSelect={() => setMoving("continue")}>
+                    <FolderInputIcon />
+                    Continue in a project…
+                  </DropdownMenuItem>
+                  {!inScratch && scratch && (
+                    <DropdownMenuItem onSelect={() => setMoving("toScratch")}>
+                      <MonitorIcon />
+                      Continue in Scratch…
+                    </DropdownMenuItem>
+                  )}
+                </>
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
         {archived ? (
           <span className="ml-auto shrink-0 rounded-sm bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
             Archived
@@ -458,6 +538,7 @@ function ThreadPage() {
           )}
         </div>
       )}
+      <RunInTerminalContext.Provider value={runInTerminal}>
       <div className="relative min-h-0 flex-1">
         {/* Panes wait for the thread list, so a claude thread never flashes a terminal. */}
         {panes
@@ -474,6 +555,19 @@ function ThreadPage() {
             </div>
           ))}
       </div>
+      </RunInTerminalContext.Provider>
+      {thread && (
+        <>
+          <PromoteDialog entry={entry} thread={thread} open={moving === "promote"} onOpenChange={(o) => !o && setMoving(null)} />
+          <ContinueDialog
+            entry={entry}
+            thread={thread}
+            open={moving === "continue" || moving === "toScratch"}
+            only={moving === "toScratch" ? scratch : undefined}
+            onOpenChange={(o) => !o && setMoving(null)}
+          />
+        </>
+      )}
       <RenameDialog
         open={!!renaming}
         onOpenChange={(o) => !o && setRenaming(null)}

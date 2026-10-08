@@ -40,7 +40,8 @@ Usage:
   everywhere service install|uninstall           manage the background service
   everywhere update                              install the latest release
   everywhere desktop enable|disable|status       allow remote desktop of this machine's screen
-  everywhere uninstall [--purge]                 remove the service and binary (--purge: config and data too)
+  everywhere uninstall [--purge]                 remove the service and binary (--purge: config and data too,
+                                                 but Scratch folders only with --purge-scratch)
   everywhere version
 `
 
@@ -150,7 +151,7 @@ func daemon(args []string) error {
 
 	hostname, _ := os.Hostname()
 	home, _ := os.UserHomeDir()
-	features := []string{protocol.FeatureClaude, protocol.FeatureUpdate, protocol.FeatureWorktrees, protocol.FeatureAttachments, protocol.FeatureHistory, protocol.FeatureArchive, protocol.FeatureTabs, protocol.FeatureRewind, protocol.FeatureIcons, protocol.FeatureClone, protocol.FeatureGitStatus, protocol.FeatureClaudeUpdate, protocol.FeatureMkdir, protocol.FeatureProcesses}
+	features := []string{protocol.FeatureClaude, protocol.FeatureUpdate, protocol.FeatureWorktrees, protocol.FeatureAttachments, protocol.FeatureHistory, protocol.FeatureArchive, protocol.FeatureTabs, protocol.FeatureRewind, protocol.FeatureIcons, protocol.FeatureClone, protocol.FeatureGitStatus, protocol.FeatureClaudeUpdate, protocol.FeatureMkdir, protocol.FeatureProcesses, protocol.FeatureScratch}
 	if runtime.GOOS == "linux" || runtime.GOOS == "windows" {
 		features = append(features, protocol.FeatureDesktop)
 	}
@@ -285,13 +286,14 @@ func selfUpdate() error {
 
 func uninstall(args []string) error {
 	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
-	purge := fs.Bool("purge", false, "also delete config, credential, projects and threads")
+	purge := fs.Bool("purge", false, "also delete config, credential, projects and threads (Scratch folders stay)")
+	purgeScratch := fs.Bool("purge-scratch", false, "with --purge, also delete the Scratch threads' folders")
 	_ = fs.Parse(args)
 	if err := service.Uninstall(); err != nil {
 		return err
 	}
 	if *purge {
-		if err := config.Remove(); err != nil {
+		if err := purgeData(*purgeScratch); err != nil {
 			return err
 		}
 	}
@@ -307,6 +309,33 @@ func uninstall(args []string) error {
 		return err
 	}
 	fmt.Println("Uninstalled. Remove the device in the web UI to revoke its access.")
+	return nil
+}
+
+// purgeData deletes the config and data directories. Scratch folders hold
+// the user's files, so they stay unless scratch is set.
+func purgeData(scratch bool) error {
+	scratchDir := filepath.Join(config.DataDir(), store.ScratchDirName)
+	entries, _ := os.ReadDir(scratchDir)
+	if scratch || len(entries) == 0 {
+		return config.Remove()
+	}
+	if err := os.RemoveAll(config.ConfigDir()); err != nil {
+		return err
+	}
+	data, err := os.ReadDir(config.DataDir())
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for _, e := range data {
+		if e.Name() == store.ScratchDirName {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(config.DataDir(), e.Name())); err != nil {
+			return err
+		}
+	}
+	fmt.Printf("Kept %d Scratch folder(s) in %s (delete them with --purge-scratch, or by hand).\n", len(entries), scratchDir)
 	return nil
 }
 

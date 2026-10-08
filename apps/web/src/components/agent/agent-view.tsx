@@ -46,7 +46,7 @@ import { ResumeBanner } from "./resume-banner";
 import { useAutoRecap } from "./auto-recap";
 import { PERMISSION_MODES } from "@/lib/permission-modes";
 import { usePrefs } from "@/lib/prefs";
-import { buildItems, RECAP_PROMPT, Timeline, type UserEvent } from "./timeline";
+import { buildItems, changeItems, RECAP_PROMPT, Timeline, type UserEvent } from "./timeline";
 import { ProcessesOverview } from "@/components/processes/overview";
 
 
@@ -94,6 +94,7 @@ export function AgentView({
   onInteract,
   processes,
   archived,
+  scratch,
 }: {
   peer: DevicePeer;
   threadId: string;
@@ -113,6 +114,8 @@ export function AgentView({
   processes?: { threadId: string; onOpen: (processId?: string) => void };
   /** Set while the thread is archived: its history shows, with a way back instead of the composer. */
   archived?: { onRestore: () => void; error: string | null };
+  /** A Scratch thread: it works in a folder of its own, and its changes to the computer can be listed. */
+  scratch?: boolean;
 }) {
   const agent = useAgentThread(peer, threadId, generation);
   const { state } = agent;
@@ -174,9 +177,15 @@ export function AgentView({
   // Paths are shown relative to wherever claude works: the worktree, if any.
   const workdir = state?.workspace.path || cwd;
   const allItems = useMemo(() => buildItems(agent.events), [agent.events]);
+  // The change trail: what claude did to the computer outside its folder.
+  const changes = useMemo(() => (scratch ? changeItems(allItems, workdir) : []), [scratch, allItems, workdir]);
+  const [changesOnly, setChangesOnly] = useState(false);
   const [shown, setShown] = useState(PAGE);
-  const items = useMemo(() => allItems.slice(-shown), [allItems, shown]);
-  const hidden = allItems.length - items.length;
+  const items = useMemo(
+    () => (changesOnly ? changes : allItems.slice(-shown)),
+    [changesOnly, changes, allItems, shown],
+  );
+  const hidden = changesOnly ? 0 : allItems.length - items.length;
   const canPage = features.includes("history");
   const busy = state?.status === "working" || state?.status === "waiting" || state?.status === "starting";
   // /compact is a prompt like any other; offered only when one could be sent.
@@ -280,10 +289,31 @@ export function AgentView({
           ) : (
             agent.truncated && <p className="text-center text-xs text-muted-foreground">Older messages aren't shown.</p>
           )}
-          {agent.synced && agent.events.length === 0 && <EmptyState />}
+          {changes.length > 0 && (
+            <div className="flex items-center gap-2 self-center rounded-full border px-1 py-0.5 text-xs text-muted-foreground">
+              <button
+                type="button"
+                onClick={() => setChangesOnly(false)}
+                className={cn("rounded-full px-2 py-0.5", !changesOnly ? "bg-secondary text-foreground" : "hover:text-foreground")}
+                aria-pressed={!changesOnly}
+              >
+                Everything
+              </button>
+              <button
+                type="button"
+                onClick={() => setChangesOnly(true)}
+                className={cn("rounded-full px-2 py-0.5", changesOnly ? "bg-secondary text-foreground" : "hover:text-foreground")}
+                aria-pressed={changesOnly}
+                title="Files Claude changed outside this thread's folder, commands that change the system, and using the screen"
+              >
+                Changes to this computer ({changes.length})
+              </button>
+            </div>
+          )}
+          {agent.synced && agent.events.length === 0 && <EmptyState scratch={scratch} />}
           <Timeline
             items={items}
-            streaming={state?.streaming ?? []}
+            streaming={changesOnly ? [] : (state?.streaming ?? [])}
             cwd={workdir}
             working={state?.status === "working"}
             compacting={state?.compacting}
@@ -391,12 +421,16 @@ function RewindDialog({
   );
 }
 
-function EmptyState() {
+function EmptyState({ scratch }: { scratch?: boolean }) {
   return (
     <div className="py-16 text-center text-muted-foreground">
-      <p className="text-[15px] text-foreground">Start a conversation with Claude</p>
+      <p className="text-[15px] text-foreground">
+        {scratch ? "What do you need done on this computer?" : "Start a conversation with Claude"}
+      </p>
       <p className="mt-1">
-        It runs on this device with your Claude login, in the project directory or its own git worktree.
+        {scratch
+          ? "It runs on this device with your Claude login, in a fresh Scratch folder of its own that's kept until you delete it."
+          : "It runs on this device with your Claude login, in the project directory or its own git worktree."}
       </p>
     </div>
   );

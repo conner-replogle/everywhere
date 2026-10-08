@@ -70,7 +70,11 @@ func (s *Server) claudeArgs(threadID, _ string) ([]string, func(), error) {
 	for _, name := range names {
 		allowed = append(allowed, "mcp__"+mcpName+"__"+name)
 	}
-	return []string{"--mcp-config", path, "--allowedTools", strings.Join(allowed, ",")}, release, nil
+	args := []string{"--mcp-config", path, "--allowedTools", strings.Join(allowed, ",")}
+	if a, err := s.store.AgentThread(threadID); err == nil && a.Scratch {
+		args = append(args, "--append-system-prompt", s.scratchPrompt(a.Dir))
+	}
+	return args, release, nil
 }
 
 // clearMCPConfigs removes configs left by a daemon that didn't exit

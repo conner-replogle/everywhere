@@ -121,6 +121,11 @@ const (
 	FeatureClaudeUpdate = "claudeUpdate" // agent.claudeVersion and agent.updateClaude
 	FeatureMkdir        = "mkdir"        // fs.mkdir
 	FeatureProcesses    = "processes"    // processes.*, the proc channel and the processes tab
+	// FeatureScratch: the Scratch project (Project.IsScratch), threads in
+	// their own scratch folder (Thread.ScratchDir), threads.promote,
+	// threads.continueIn, threads.search, scratch.usage, threads.delete's
+	// removeScratch, tabs.create's input and threads.create's prompt.
+	FeatureScratch = "scratch"
 )
 
 // DesktopInfo is the result of desktop.info.
@@ -202,11 +207,14 @@ type UpdateResult struct {
 }
 
 type Project struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Path      string `json:"path"`
-	IsHome    bool   `json:"isHome"`
-	CreatedAt int64  `json:"createdAt"`
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	IsHome bool   `json:"isHome"`
+	// IsScratch marks Scratch, Everywhere's own project for work outside
+	// any project; each of its threads works in a folder of its own.
+	IsScratch bool  `json:"isScratch,omitempty"`
+	CreatedAt int64 `json:"createdAt"`
 }
 
 const (
@@ -242,6 +250,24 @@ type Thread struct {
 	TabState string `json:"tabState,omitempty"`
 	// Processes is how many of a thread's processes are running.
 	Processes int `json:"processes,omitempty"`
+	// ScratchDir is a Scratch thread's own folder, where it works.
+	ScratchDir string `json:"scratchDir,omitempty"`
+}
+
+// ScratchUsage is the result of scratch.usage: how much the Scratch
+// folders hold, in all and per thread folder.
+type ScratchUsage struct {
+	Root    string                 `json:"root"`
+	Files   int                    `json:"files"`
+	Bytes   int64                  `json:"bytes"`
+	Folders map[string]ScratchSize `json:"folders"` // by folder path
+	// Truncated: there were too many files to count them all.
+	Truncated bool `json:"truncated,omitempty"`
+}
+
+type ScratchSize struct {
+	Files int   `json:"files"`
+	Bytes int64 `json:"bytes"`
 }
 
 // Workdir is where a thread works (threads.workdir): its worktree, the

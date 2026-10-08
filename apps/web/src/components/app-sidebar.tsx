@@ -40,6 +40,7 @@ import { Logo } from "@/components/logo";
 import { NewProjectDialog } from "@/components/new-project-dialog";
 import { PresenceDot } from "@/components/presence-dot";
 import { RenameDialog } from "@/components/rename-dialog";
+import { canScratch, scratchProject, scratchThreads, startScratch } from "@/components/scratch";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -94,6 +95,8 @@ type GroupBy = "project" | "device" | "none";
 const COLLAPSED_KEY = "ew:collapsed";
 const ARCHIVED_OPEN_KEY = "ew:archived-open";
 const DEVICES_COLLAPSED_KEY = "ew:devices-collapsed";
+/** How many Scratch threads a device shows in the sidebar; the rest are on its page. */
+const SCRATCH_SHOWN = 5;
 const VIEW_KEY = "ew:sidebar-view";
 
 interface SidebarView {
@@ -170,10 +173,14 @@ const projectKey = (deviceId: string, projectId: string) => `${deviceId}/${proje
 const connected = (e: Entry) => e.conn.state === "connected";
 const hasFeature = (e: Entry, f: string) => e.info.data?.features?.includes(f as never) ?? false;
 const deviceName = (e: Entry) => e.device.name || e.info.data?.hostname || "Device";
+const projectLabel = (p: Project) => (p.isScratch ? "Scratch" : p.isHome ? "Home" : p.name);
 /** When a thread was last used (a prompt sent, keys typed), or else created. */
 const threadRecency = (t: Thread) => Math.max(t.lastOpenedAt ?? 0, t.createdAt);
 /** A project is as recent as its most recent thread. */
 const projectRecency = (r: ProjectRow) => Math.max(r.project.createdAt, ...r.threads.map(threadRecency));
+
+/** Scratch, and home on a device that has Scratch: shown in the Scratch section and on the device's page. */
+const isGeneral = (r: ProjectRow) => !!r.project.isScratch || (r.project.isHome && !!scratchProject(r.entry));
 
 /** Projects by name, each device's home folder after them. */
 const byProjectName = (a: ProjectRow, b: ProjectRow) =>
@@ -219,6 +226,8 @@ export function AppSidebar({
   const [pending, setPending] = useState<Pending>(null);
   // Deleting a claude thread that has a worktree: also remove the worktree?
   const [removeWorktree, setRemoveWorktree] = useState(true);
+  // Deleting a Scratch thread: also delete its folder? Off unless asked.
+  const [removeScratch, setRemoveScratch] = useState(false);
   const [newProjectFor, setNewProjectFor] = useState<Entry | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   // Which "idle" rows are open (by project key, or "all" for the ungrouped list); not remembered.
@@ -267,17 +276,19 @@ export function AppSidebar({
       );
       return { group: "none" as const, threads: threads.sort(compareThreads(view.sort)) };
     }
+    // Scratch and home have their own place, above (home moved there with Scratch).
+    const listed = sorted.filter((r) => !isGeneral(r));
     if (view.group === "device") {
       const devices = [...list]
         .map((entry) => {
-          const rows = sorted.filter((r) => r.entry === entry);
+          const rows = listed.filter((r) => r.entry === entry);
           return { entry, rows, recent: Math.max(0, ...rows.map(projectRecency)) };
         })
         .filter((d) => d.rows.length > 0)
         .sort((a, b) => (view.sort === "recent" ? b.recent - a.recent : 0) || byDeviceName(a, b));
       return { group: "device" as const, devices };
     }
-    return { group: "project" as const, projects: sorted };
+    return { group: "project" as const, projects: listed };
   }, [projects, list, view.sort, view.group]);
 
   const connectedEntries = list.filter(connected);
@@ -363,6 +374,7 @@ export function AppSidebar({
           variant="destructive"
           onSelect={() => {
             setRemoveWorktree(true);
+            setRemoveScratch(false);
             setPending({ kind: "delete-thread", entry, thread: t });
           }}
         >
@@ -521,6 +533,15 @@ export function AppSidebar({
           <HubStatus />
         </span>
       </div>
+      <ScratchSection
+        entries={list}
+        collapsed={collapsed}
+        toggle={toggle}
+        isActive={isActive}
+        threadActions={threadActions}
+        onError={setActionError}
+      />
+
       <div className="flex h-9 shrink-0 items-center pr-1.5 pl-3">
         <span className="text-xs font-medium text-muted-foreground">Projects</span>
         <DropdownMenu>
@@ -594,7 +615,7 @@ export function AppSidebar({
 
       <nav className="min-h-0 flex-1 overflow-y-auto px-1.5 py-1.5" aria-label="Projects and threads">
         {loading && projects.length === 0 && <SidebarSkeleton />}
-        {!loading && projects.length === 0 && devices && devices.length > 0 && (
+        {!loading && devices && devices.length > 0 && (shown.group === "none" ? projects.length === 0 : !projects.some((r) => !isGeneral(r))) && (
           <p className="px-2 py-1 text-xs text-muted-foreground">
             {connectedEntries.length === 0 ? "No device is connected." : "No projects yet."}
           </p>
@@ -635,7 +656,7 @@ export function AppSidebar({
                 flat
                 dimmed={!connected(entry)}
                 idle={isIdleRow ? idleAge(entry, t) : undefined}
-                detail={[project.name, multiDevice ? deviceName(entry) : undefined].filter(Boolean).join(" · ")}
+                detail={[projectLabel(project), multiDevice ? deviceName(entry) : undefined].filter(Boolean).join(" · ")}
                 actions={threadActions(entry, t, isIdleRow)}
               />
             );
@@ -682,7 +703,9 @@ export function AppSidebar({
                     deviceId={entry.deviceId}
                     thread={t}
                     active={isActive(entry, t)}
-                    detail={[project?.name, multiDevice ? deviceName(entry) : undefined].filter(Boolean).join(" · ")}
+                    detail={[project && projectLabel(project), multiDevice ? deviceName(entry) : undefined]
+                      .filter(Boolean)
+                      .join(" · ")}
                     actions={
                       <>
                         <DropdownMenuItem disabled={!connected(entry)} onSelect={() => setArchived(entry, t, false)}>
@@ -695,6 +718,7 @@ export function AppSidebar({
                           disabled={!connected(entry)}
                           onSelect={() => {
                             setRemoveWorktree(true);
+            setRemoveScratch(false);
                             setPending({ kind: "delete-thread", entry, thread: t });
                           }}
                         >
@@ -823,6 +847,22 @@ export function AppSidebar({
                   : "If its shell is running, it's killed."}{" "}
                 This can't be undone.
               </p>
+              {pending?.kind === "delete-thread" && pending.thread.scratchDir && (
+                <label className="flex items-start gap-2 text-foreground">
+                  <input
+                    type="checkbox"
+                    className="mt-0.5"
+                    checked={removeScratch}
+                    onChange={(e) => setRemoveScratch(e.target.checked)}
+                  />
+                  <span>
+                    Also delete its Scratch folder and the files in it. Otherwise the folder stays.
+                    <code className="mt-0.5 block font-mono text-xs break-all text-muted-foreground">
+                      {pending.thread.scratchDir}
+                    </code>
+                  </span>
+                </label>
+              )}
               {pending?.kind === "delete-thread" && pending.thread.worktree && (
                 <label className="flex items-start gap-2 text-foreground">
                   <input
@@ -852,13 +892,157 @@ export function AppSidebar({
             if (doomed) await navigate({ to: "/" });
           } else if (pending?.kind === "delete-thread") {
             const { entry, thread } = pending;
-            await entry.peer.call("threads.delete", { id: thread.id, keepWorktree: !removeWorktree });
+            await entry.peer.call("threads.delete", {
+              id: thread.id,
+              keepWorktree: !removeWorktree,
+              ...(thread.scratchDir && removeScratch ? { removeScratch: true } : {}),
+            });
             entry.threads.refetch();
             if (isActive(entry, thread)) await navigate({ to: "/" });
           }
         }}
       />
     </aside>
+  );
+}
+
+/**
+ * Scratch, per device: its newest threads, a way to start one, and the
+ * device's page (with the rest) a click away.
+ */
+function ScratchSection({
+  entries,
+  collapsed,
+  toggle,
+  isActive,
+  threadActions,
+  onError,
+}: {
+  entries: Entry[];
+  collapsed: Set<string>;
+  toggle: (key: string) => void;
+  isActive: (entry: Entry, t: Thread) => boolean;
+  threadActions: (entry: Entry, t: Thread) => React.ReactNode;
+  onError: (message: string | null) => void;
+}) {
+  const navigate = useNavigate();
+  const { deviceId: activeDeviceId, threadId: activeThreadId } = useParams({ strict: false });
+  const rows = entries.filter((e) => !!scratchProject(e)).sort((a, b) => deviceName(a).localeCompare(deviceName(b)));
+  if (rows.length === 0) return null;
+
+  async function start(entry: Entry, kind: ThreadKind) {
+    onError(null);
+    try {
+      const t = await startScratch(entry, kind);
+      const key = `scratch:${entry.deviceId}`;
+      if (collapsed.has(key)) toggle(key);
+      await navigate({ to: "/d/$deviceId/t/$threadId", params: { deviceId: entry.deviceId, threadId: t.id } });
+    } catch (e) {
+      onError(errorMessage(e));
+    }
+  }
+
+  return (
+    <div className="max-h-[40%] shrink-0 overflow-y-auto border-b px-1.5 pt-1 pb-1.5">
+      <div className="flex h-7 items-center pl-1.5 text-xs font-medium text-muted-foreground">Scratch</div>
+      <ul className="flex flex-col gap-px">
+        {rows.map((entry) => {
+          const key = `scratch:${entry.deviceId}`;
+          const isCollapsed = collapsed.has(key);
+          const threads = scratchThreads(entry);
+          const live = canScratch(entry);
+          const onPage = entry.deviceId === activeDeviceId && !activeThreadId;
+          return (
+            <li key={key} className={cn(!connected(entry) && "opacity-50")}>
+              <div
+                className={cn(
+                  "group flex h-7 items-center rounded-md pr-1 pointer-coarse:h-10",
+                  onPage ? "bg-accent text-accent-foreground" : "hover:bg-accent/60",
+                )}
+              >
+                <button
+                  type="button"
+                  onClick={() => toggle(key)}
+                  className="flex h-full shrink-0 items-center rounded-md pl-1.5 focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none"
+                  aria-expanded={!isCollapsed}
+                  aria-label={isCollapsed ? `Show ${deviceName(entry)}'s Scratch threads` : `Hide ${deviceName(entry)}'s Scratch threads`}
+                >
+                  <ChevronRightIcon
+                    className={cn("size-3 shrink-0 text-muted-foreground transition-transform", !isCollapsed && "rotate-90")}
+                  />
+                </button>
+                <Link
+                  to="/d/$deviceId"
+                  params={{ deviceId: entry.deviceId }}
+                  className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-md pl-1.5 focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none"
+                  title={`${deviceName(entry)}: Scratch, home and projects`}
+                >
+                  <MonitorIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                  <span className="truncate">{deviceName(entry)}</span>
+                  {isCollapsed && threads.length > 0 && (
+                    <span className="text-xs text-muted-foreground tabular-nums">{threads.length}</span>
+                  )}
+                </Link>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      disabled={!live}
+                      className="hidden group-hover:inline-flex focus-visible:inline-flex data-[state=open]:inline-flex pointer-coarse:inline-flex pointer-coarse:size-8"
+                      aria-label={`New Scratch thread on ${deviceName(entry)}`}
+                      title="New Scratch thread"
+                    >
+                      <PlusIcon />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start">
+                    <DropdownMenuLabel>New in a fresh Scratch folder</DropdownMenuLabel>
+                    <NewThreadItems claude={hasFeature(entry, "claude")} onPick={(kind) => void start(entry, kind)} />
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+              {!isCollapsed && (
+                <ul className="flex flex-col gap-px pb-1">
+                  {threads.slice(0, SCRATCH_SHOWN).map((t) => (
+                    <ThreadRow
+                      key={t.id}
+                      deviceId={entry.deviceId}
+                      thread={t}
+                      active={isActive(entry, t)}
+                      actions={threadActions(entry, t)}
+                    />
+                  ))}
+                  {threads.length > SCRATCH_SHOWN && (
+                    <li>
+                      <Link
+                        to="/d/$deviceId"
+                        params={{ deviceId: entry.deviceId }}
+                        className="flex h-6 items-center pl-7 text-xs text-muted-foreground hover:text-foreground pointer-coarse:h-9"
+                      >
+                        All {threads.length} on {deviceName(entry)}
+                      </Link>
+                    </li>
+                  )}
+                  {threads.length === 0 && live && (
+                    <li>
+                      <Link
+                        to="/d/$deviceId"
+                        params={{ deviceId: entry.deviceId }}
+                        className="flex h-6 items-center gap-1.5 pl-7 text-xs text-muted-foreground hover:text-foreground pointer-coarse:h-9"
+                      >
+                        <PlusIcon className="size-3" />
+                        Start something on {deviceName(entry)}
+                      </Link>
+                    </li>
+                  )}
+                </ul>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 
@@ -900,12 +1084,17 @@ function DeviceRow({
     <div>
       <div className="group flex h-8 items-center gap-2 rounded-md pr-1.5 pl-3 hover:bg-accent/40">
         <PresenceDot online={online} />
-        <div className="flex min-w-0 flex-1 items-baseline gap-2">
+        <Link
+          to="/d/$deviceId"
+          params={{ deviceId: device.id }}
+          className="flex min-w-0 flex-1 items-baseline gap-2 rounded-sm focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none"
+          title={`Open ${deviceName(entry)}`}
+        >
           <span className="truncate">{deviceName(entry)}</span>
           <span className={cn("truncate text-[11px] text-muted-foreground", conn.state === "failed" && "text-warn")}>
             {status}
           </span>
-        </div>
+        </Link>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button

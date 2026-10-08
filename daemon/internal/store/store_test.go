@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
@@ -24,8 +26,8 @@ func open(t *testing.T) *Store {
 func TestProjectsAndThreads(t *testing.T) {
 	s := open(t)
 	projects, err := s.ListProjects()
-	if err != nil || len(projects) != 1 || !projects[0].IsHome {
-		t.Fatalf("want seeded home project, got %+v %v", projects, err)
+	if err != nil || len(projects) != 2 || !projects[0].IsHome || !projects[1].IsScratch {
+		t.Fatalf("want seeded home and Scratch projects, got %+v %v", projects, err)
 	}
 	home := projects[0]
 	if err := s.DeleteProject(home.ID); !errors.Is(err, ErrNotFound) {
@@ -350,5 +352,112 @@ func TestTouchThread(t *testing.T) {
 		if got, err := s.GetThread(id); err != nil || got.LastOpenedAt == nil {
 			t.Errorf("GetThread(%s).LastOpenedAt = nil, %v", id, err)
 		}
+	}
+}
+
+func TestScratch(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	s, err := Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	root := filepath.Join(filepath.Dir(dbPath), ScratchDirName)
+	scratch, err := s.ScratchProject()
+	if err != nil || scratch.Path != root || scratch.Name != "Scratch" {
+		t.Fatalf("ScratchProject = %+v, %v", scratch, err)
+	}
+	if err := s.DeleteProject(scratch.ID); !errors.Is(err, ErrNotFound) {
+		t.Errorf("deleting Scratch: err = %v, want ErrNotFound", err)
+	}
+	if _, err := s.RenameProject(scratch.ID, "x"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("renaming Scratch: err = %v, want ErrNotFound", err)
+	}
+
+	// Each thread gets a fresh folder of its own; claude starts in auto.
+	a, err := s.CreateThread(scratch.ID, "", protocol.ThreadClaude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := s.CreateThread(scratch.ID, "", protocol.ThreadTerminal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ScratchDir == "" || a.ScratchDir == b.ScratchDir || filepath.Dir(a.ScratchDir) != root ||
+		!strings.HasSuffix(a.ScratchDir, "-"+a.ID) {
+		t.Fatalf("scratch dirs %q, %q", a.ScratchDir, b.ScratchDir)
+	}
+	if info, err := os.Stat(a.ScratchDir); err != nil || !info.IsDir() {
+		t.Fatalf("scratch dir not made: %v", err)
+	}
+	if !s.InScratch(a.ScratchDir) || s.InScratch(root) || s.InScratch(filepath.Join(a.ScratchDir, "x")) || s.InScratch(t.TempDir()) {
+		t.Error("InScratch wrong")
+	}
+	agent, err := s.AgentThread(a.ID)
+	if err != nil || agent.Dir != a.ScratchDir || !agent.Scratch || agent.PermissionMode != "auto" {
+		t.Fatalf("AgentThread = %+v, %v", agent, err)
+	}
+	if dir, _, err := s.ThreadShell(b.ID); err != nil || dir != b.ScratchDir {
+		t.Errorf("ThreadShell = %q, %v", dir, err)
+	}
+	// Tabs work in their thread's folder.
+	tab, err := s.CreateTab(a.ID, protocol.ThreadTerminal, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dir, wt, err := s.ThreadWorkdir(tab.ID); err != nil || dir != a.ScratchDir || wt != "" {
+		t.Errorf("tab workdir = %q %q %v", dir, wt, err)
+	}
+	ctab, err := s.CreateTab(a.ID, protocol.ThreadClaude, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ag, err := s.AgentThread(ctab.ID); err != nil || ag.Dir != a.ScratchDir || !ag.Scratch {
+		t.Errorf("claude tab = %+v, %v", ag, err)
+	}
+	// Threads elsewhere don't get a folder.
+	home, _ := s.ListProjects()
+	h, err := s.CreateThread(home[0].ID, "", protocol.ThreadClaude)
+	if err != nil || h.ScratchDir != "" {
+		t.Fatalf("home thread = %+v, %v", h, err)
+	}
+	if ag, _ := s.AgentThread(h.ID); ag.Scratch || ag.PermissionMode != "default" {
+		t.Errorf("home thread agent = %+v", ag)
+	}
+
+	// Promoting: the folder becomes a project, the thread and its tabs move.
+	p, err := s.PromoteThread(a.ID, "pdf tools")
+	if err != nil || p.Path != a.ScratchDir || p.Name != "pdf tools" || p.IsScratch {
+		t.Fatalf("PromoteThread = %+v, %v", p, err)
+	}
+	moved, _ := s.GetThread(a.ID)
+	if moved.ProjectID != p.ID || moved.ScratchDir != "" {
+		t.Errorf("promoted thread = %+v", moved)
+	}
+	if ag, err := s.AgentThread(ctab.ID); err != nil || ag.Dir != a.ScratchDir || ag.Scratch || ag.ProjectID != p.ID {
+		t.Errorf("promoted tab = %+v, %v", ag, err)
+	}
+	if _, err := s.PromoteThread(a.ID, ""); err == nil {
+		t.Error("promoted a thread twice")
+	}
+	if _, err := s.PromoteThread(h.ID, ""); err == nil {
+		t.Error("promoted a home thread")
+	}
+
+	// Reopening keeps the one Scratch project.
+	s.Close()
+	s, err = Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	projects, _ := s.ListProjects()
+	n := 0
+	for _, p := range projects {
+		if p.IsScratch {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d Scratch projects after reopening", n)
 	}
 }

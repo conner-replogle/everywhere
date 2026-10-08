@@ -112,13 +112,26 @@ CREATE TABLE processes (
   UNIQUE (thread_id, name)
 );
 `,
+	// 9: Scratch, a project of Everywhere's own (under the data directory)
+	// for work outside any project, where each thread gets a folder of its
+	// own: scratch_dir.
+	`
+ALTER TABLE projects ADD COLUMN is_scratch INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE threads ADD COLUMN scratch_dir TEXT;
+`,
 }
 
 type Store struct {
 	db *sql.DB
+	// scratchRoot holds the Scratch project's thread folders.
+	scratchRoot string
 }
 
-// Open opens (creating if needed) the database and seeds the home project.
+// ScratchDirName is the Scratch project's directory, next to the database.
+const ScratchDirName = "scratch"
+
+// Open opens (creating if needed) the database and seeds the home and
+// Scratch projects. Scratch lives in ScratchDirName next to the database.
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
@@ -132,8 +145,12 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
-	s := &Store{db: db}
+	s := &Store{db: db, scratchRoot: filepath.Join(filepath.Dir(path), ScratchDirName)}
 	if err := s.seedHome(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err := s.seedScratch(); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -186,10 +203,49 @@ func (s *Store) seedHome() error {
 	return err
 }
 
+// seedScratch makes the Scratch project, or points it at the scratch root
+// if the data directory moved.
+func (s *Store) seedScratch() error {
+	if err := os.MkdirAll(s.scratchRoot, 0o700); err != nil {
+		return err
+	}
+	res, err := s.db.Exec("UPDATE projects SET path = ? WHERE is_scratch = 1", s.scratchRoot)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		return nil
+	}
+	_, err = s.db.Exec(
+		"INSERT INTO projects (id, name, path, is_scratch, created_at) VALUES (?, 'Scratch', ?, 1, ?)",
+		newID(), s.scratchRoot, now(),
+	)
+	return err
+}
+
+// ScratchRoot is where the Scratch project's thread folders are.
+func (s *Store) ScratchRoot() string { return s.scratchRoot }
+
+// ScratchProject returns the Scratch project.
+func (s *Store) ScratchProject() (protocol.Project, error) {
+	return s.scanProject(s.db.QueryRow("SELECT " + projectCols + " FROM projects WHERE is_scratch = 1"))
+}
+
 // --- projects ---------------------------------------------------------------
 
+const projectCols = "id, name, path, is_home, is_scratch, created_at"
+
+func (s *Store) scanProject(row *sql.Row) (protocol.Project, error) {
+	var p protocol.Project
+	err := row.Scan(&p.ID, &p.Name, &p.Path, &p.IsHome, &p.IsScratch, &p.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return p, ErrNotFound
+	}
+	return p, err
+}
+
 func (s *Store) ListProjects() ([]protocol.Project, error) {
-	rows, err := s.db.Query("SELECT id, name, path, is_home, created_at FROM projects ORDER BY is_home DESC, name")
+	rows, err := s.db.Query("SELECT " + projectCols + " FROM projects ORDER BY is_home DESC, is_scratch DESC, name")
 	if err != nil {
 		return nil, err
 	}
@@ -197,7 +253,7 @@ func (s *Store) ListProjects() ([]protocol.Project, error) {
 	out := []protocol.Project{}
 	for rows.Next() {
 		var p protocol.Project
-		if err := rows.Scan(&p.ID, &p.Name, &p.Path, &p.IsHome, &p.CreatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Path, &p.IsHome, &p.IsScratch, &p.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, p)
@@ -206,13 +262,7 @@ func (s *Store) ListProjects() ([]protocol.Project, error) {
 }
 
 func (s *Store) GetProject(id string) (protocol.Project, error) {
-	var p protocol.Project
-	err := s.db.QueryRow("SELECT id, name, path, is_home, created_at FROM projects WHERE id = ?", id).
-		Scan(&p.ID, &p.Name, &p.Path, &p.IsHome, &p.CreatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return p, ErrNotFound
-	}
-	return p, err
+	return s.scanProject(s.db.QueryRow("SELECT "+projectCols+" FROM projects WHERE id = ?", id))
 }
 
 // CreateProject registers an existing directory. The name defaults to the
@@ -240,27 +290,28 @@ func (s *Store) RenameProject(id, name string) (protocol.Project, error) {
 	if name == "" {
 		return protocol.Project{}, errors.New("name is required")
 	}
-	if err := s.execOne("UPDATE projects SET name = ? WHERE id = ?", name, id); err != nil {
+	if err := s.execOne("UPDATE projects SET name = ? WHERE id = ? AND is_scratch = 0", name, id); err != nil {
 		return protocol.Project{}, err
 	}
 	return s.GetProject(id)
 }
 
-// DeleteProject removes a project and its threads. The home project can't be deleted.
+// DeleteProject removes a project and its threads. The home and Scratch
+// projects can't be deleted.
 func (s *Store) DeleteProject(id string) error {
-	return s.execOne("DELETE FROM projects WHERE id = ? AND is_home = 0", id)
+	return s.execOne("DELETE FROM projects WHERE id = ? AND is_home = 0 AND is_scratch = 0", id)
 }
 
 // --- threads ----------------------------------------------------------------
 
-const threadCols = "id, project_id, kind, name, created_at, last_opened_at, agent_worktree, archived_at, parent_id, tab_state"
+const threadCols = "id, project_id, kind, name, created_at, last_opened_at, agent_worktree, archived_at, parent_id, tab_state, scratch_dir"
 
 func scanThread(sc interface{ Scan(...any) error }) (protocol.Thread, error) {
 	var t protocol.Thread
 	var opened, archived sql.NullInt64
-	var worktree, parent, state sql.NullString
-	err := sc.Scan(&t.ID, &t.ProjectID, &t.Kind, &t.Name, &t.CreatedAt, &opened, &worktree, &archived, &parent, &state)
-	t.Worktree, t.ParentID, t.TabState = worktree.String, parent.String, state.String
+	var worktree, parent, state, scratch sql.NullString
+	err := sc.Scan(&t.ID, &t.ProjectID, &t.Kind, &t.Name, &t.CreatedAt, &opened, &worktree, &archived, &parent, &state, &scratch)
+	t.Worktree, t.ParentID, t.TabState, t.ScratchDir = worktree.String, parent.String, state.String, scratch.String
 	if opened.Valid {
 		t.LastOpenedAt = &opened.Int64
 	}
@@ -313,7 +364,8 @@ func (s *Store) GetThread(id string) (protocol.Thread, error) {
 }
 
 // CreateThread adds a thread of the given kind ("" means terminal). The name
-// defaults to "<kind> N".
+// defaults to "<kind> N". A thread in Scratch gets a new folder of its own
+// there, which it works in; a claude one starts in auto mode.
 func (s *Store) CreateThread(projectID, name, kind string) (protocol.Thread, error) {
 	if kind == "" {
 		kind = protocol.ThreadTerminal
@@ -321,7 +373,8 @@ func (s *Store) CreateThread(projectID, name, kind string) (protocol.Thread, err
 	if kind != protocol.ThreadTerminal && kind != protocol.ThreadClaude {
 		return protocol.Thread{}, fmt.Errorf("unknown thread kind %q", kind)
 	}
-	if _, err := s.GetProject(projectID); err != nil {
+	project, err := s.GetProject(projectID)
+	if err != nil {
 		return protocol.Thread{}, err
 	}
 	name = strings.TrimSpace(name)
@@ -334,9 +387,67 @@ func (s *Store) CreateThread(projectID, name, kind string) (protocol.Thread, err
 		name = fmt.Sprintf("%s %d", kind, n+1)
 	}
 	t := protocol.Thread{ID: newID(), ProjectID: projectID, Kind: kind, Name: name, CreatedAt: now()}
-	_, err := s.db.Exec("INSERT INTO threads (id, project_id, kind, name, created_at) VALUES (?, ?, ?, ?, ?)",
-		t.ID, t.ProjectID, t.Kind, t.Name, t.CreatedAt)
+	mode := "default"
+	if project.IsScratch {
+		if t.ScratchDir, err = s.newScratchDir(t.ID, t.CreatedAt); err != nil {
+			return protocol.Thread{}, err
+		}
+		mode = "auto"
+	}
+	_, err = s.db.Exec(`INSERT INTO threads (id, project_id, kind, name, created_at, scratch_dir, agent_permission_mode)
+VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), ?)`,
+		t.ID, t.ProjectID, t.Kind, t.Name, t.CreatedAt, t.ScratchDir, mode)
+	if err != nil && t.ScratchDir != "" {
+		_ = os.Remove(t.ScratchDir)
+	}
 	return t, err
+}
+
+// newScratchDir makes a thread's folder in the scratch root, named for the
+// day it was made and the thread: 2026-10-07-a1b2c3d4e5.
+func (s *Store) newScratchDir(threadID string, at int64) (string, error) {
+	dir := filepath.Join(s.scratchRoot, time.UnixMilli(at).Format("2006-01-02")+"-"+threadID)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", fmt.Errorf("making the scratch folder: %w", err)
+	}
+	return dir, nil
+}
+
+// InScratch reports whether path is a thread folder inside the scratch root
+// (not the root itself), so it's Everywhere's to delete.
+func (s *Store) InScratch(path string) bool {
+	rel, err := filepath.Rel(s.scratchRoot, path)
+	return err == nil && rel != "." && !strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel) &&
+		!strings.ContainsRune(rel, filepath.Separator)
+}
+
+// PromoteThread makes a Scratch thread's folder a project of its own and
+// moves the thread (with its tabs) there. Its folder stays where it is, so
+// claude carries on in the same directory.
+func (s *Store) PromoteThread(threadID, name string) (protocol.Project, error) {
+	t, err := s.GetThread(threadID)
+	if err != nil {
+		return protocol.Project{}, err
+	}
+	if t.ParentID != "" {
+		return protocol.Project{}, errors.New("a tab can't become a project; its thread can")
+	}
+	if t.ScratchDir == "" {
+		return protocol.Project{}, errors.New("only Scratch threads can become a project")
+	}
+	if strings.TrimSpace(name) == "" {
+		name = t.Name
+	}
+	p, err := s.CreateProject(t.ScratchDir, name)
+	if err != nil {
+		return p, err
+	}
+	if _, err := s.db.Exec("UPDATE threads SET project_id = ?1, scratch_dir = NULL WHERE id = ?2 OR parent_id = ?2",
+		p.ID, threadID); err != nil {
+		_ = s.DeleteProject(p.ID)
+		return protocol.Project{}, err
+	}
+	return p, nil
 }
 
 // CreateTab opens a tab of the given kind in a thread (not in another tab).
@@ -426,7 +537,8 @@ func (s *Store) DeleteThread(id string) error {
 // in and whether it has had a shell before (so the terminal shows a notice).
 func (s *Store) ThreadShell(threadID string) (dir string, hadSession bool, err error) {
 	err = s.db.QueryRow(
-		`SELECT p.path, t.had_session FROM threads t JOIN projects p ON p.id = t.project_id WHERE t.id = ?`,
+		`SELECT `+threadDir+`, t.had_session FROM threads t JOIN projects p ON p.id = t.project_id
+LEFT JOIN threads par ON par.id = t.parent_id WHERE t.id = ?`,
 		threadID,
 	).Scan(&dir, &hadSession)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -435,13 +547,18 @@ func (s *Store) ThreadShell(threadID string) (dir string, hadSession bool, err e
 	return dir, hadSession, err
 }
 
+// threadDir is the directory a thread (t, with its parent par and project
+// p) works in when it has no worktree: its scratch folder, its thread's, or
+// the project's.
+const threadDir = "COALESCE(t.scratch_dir, par.scratch_dir, p.path)"
+
 // ThreadWorkdir is where a thread works: its own worktree (claude), its
-// parent's (a tab of a claude thread in a worktree), or the project
-// directory. The worktree is "" for the project directory.
+// parent's (a tab of a claude thread in a worktree), its or its parent's
+// scratch folder, or the project directory. The worktree is "" otherwise.
 func (s *Store) ThreadWorkdir(threadID string) (dir, worktree string, err error) {
 	var own, parent sql.NullString
 	err = s.db.QueryRow(`
-SELECT p.path, t.agent_worktree, par.agent_worktree FROM threads t
+SELECT `+threadDir+`, t.agent_worktree, par.agent_worktree FROM threads t
 JOIN projects p ON p.id = t.project_id
 LEFT JOIN threads par ON par.id = t.parent_id
 WHERE t.id = ?`, threadID,
@@ -475,7 +592,9 @@ WHERE id = ?2 OR id = (SELECT parent_id FROM threads WHERE id = ?2)`, now(), thr
 // AgentThread is what the agent manager needs to run a claude thread.
 type AgentThread struct {
 	ProjectID string
-	Dir       string // the project directory
+	Dir       string // the project directory, or the thread's scratch folder
+	// Scratch: the thread works in a folder of its own in Scratch.
+	Scratch   bool
 	SessionID string // "" until the first turn
 	// ResumeAt, when set, is where the next start forks SessionID: the
 	// conversation was rolled back to it.
@@ -504,12 +623,12 @@ func (s *Store) AgentThread(threadID string) (AgentThread, error) {
 	var session, resumeAt, model, base, worktree, branch, ctxUsage, effort sql.NullString
 	var kind string
 	err := s.db.QueryRow(`
-SELECT t.project_id, p.path, t.kind, t.agent_session_id, t.agent_resume_at, t.agent_model, t.agent_permission_mode,
+SELECT t.project_id, `+threadDir+`, p.is_scratch, t.kind, t.agent_session_id, t.agent_resume_at, t.agent_model, t.agent_permission_mode,
        t.agent_workspace, t.agent_base_branch, t.agent_worktree, t.agent_branch, t.agent_continue, t.agent_context,
        t.agent_effort, t.agent_thinking, COALESCE(t.agent_worktree = par.agent_worktree, 0)
 FROM threads t JOIN projects p ON p.id = t.project_id LEFT JOIN threads par ON par.id = t.parent_id
 WHERE t.id = ?`, threadID,
-	).Scan(&a.ProjectID, &a.Dir, &kind, &session, &resumeAt, &model, &a.PermissionMode,
+	).Scan(&a.ProjectID, &a.Dir, &a.Scratch, &kind, &session, &resumeAt, &model, &a.PermissionMode,
 		&a.Workspace, &base, &worktree, &branch, &a.Continue, &ctxUsage, &effort, &a.Thinking, &a.SharedWorktree)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound

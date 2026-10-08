@@ -581,7 +581,7 @@ export const tools: Tool[] = [
     name: "list_projects",
     title: "List projects",
     description:
-      "Projects (directories) on one device, or on every online device. Each device has a home project for its home directory.",
+      "Projects (directories) on one device, or on every online device. Each device has a home project for its home directory, and Scratch (isScratch): for work outside any project, where each thread gets a fresh folder of its own.",
     inputSchema: {
       type: "object",
       properties: { device_id: { ...deviceId, description: "Only this device (id or name). Omit for all." } },
@@ -603,6 +603,7 @@ export const tools: Tool[] = [
               name: p.name,
               path: p.path,
               ...(p.isHome ? { isHome: true } : {}),
+              ...(p.isScratch ? { isScratch: true } : {}),
               threads: threads.filter((t) => t.projectId === p.id && !t.archivedAt).length,
             })),
           };
@@ -726,12 +727,12 @@ export const tools: Tool[] = [
     name: "create_thread",
     title: "Create a thread",
     description:
-      "Start a new claude thread (a Claude Code conversation in the project) or terminal in a project, optionally with a first message. Claude names the thread from its first message when no name is given.",
+      "Start a new claude thread (a Claude Code conversation in the project) or terminal in a project, optionally with a first message. Without a project it starts in the device's Scratch, in a fresh folder of its own: for general computer tasks outside any project (Scratch claude threads start in auto mode). Claude names the thread from its first message when no name is given.",
     inputSchema: {
       type: "object",
       properties: {
         device_id: deviceId,
-        project_id: { type: "string", description: "The project, from list_projects. Omit for the device's home project." },
+        project_id: { type: "string", description: "The project, from list_projects. Omit for the device's Scratch (its home project on older daemons)." },
         kind: { type: "string", enum: ["claude", "terminal"], description: "Default claude." },
         name: { type: "string", description: "Optional name." },
         message: { type: "string", description: "A first prompt (claude) or command (terminal) to send right away." },
@@ -751,9 +752,11 @@ export const tools: Tool[] = [
       const d = await resolveDevice(ctx, args.device_id);
       let projectId = str(args, "project_id");
       if (!projectId) {
-        const home = (await call(ctx, d, "projects.list", {})).find((p) => p.isHome);
-        if (!home) throw new ToolError("the device has no home project; pass project_id");
-        projectId = home.id;
+        // Scratch, or home on daemons from before it.
+        const projects = await call(ctx, d, "projects.list", {});
+        const general = projects.find((p) => p.isScratch) ?? projects.find((p) => p.isHome);
+        if (!general) throw new ToolError("the device has no Scratch or home project; pass project_id");
+        projectId = general.id;
       }
       const kind = oneOf(args, "kind", ["claude", "terminal"] as const) ?? "claude";
       const thread = await call(ctx, d, "threads.create", { projectId, kind, name: str(args, "name") });

@@ -72,9 +72,18 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		ThreadID     string `json:"threadId"`
 		State        string `json:"state"`
 		KeepWorktree bool   `json:"keepWorktree"`
-		Archived     bool   `json:"archived"`
-		Force        bool   `json:"force"`
-		URL          string `json:"url"`
+		// threads.delete: also delete a Scratch thread's folder.
+		RemoveScratch bool `json:"removeScratch"`
+		// tabs.create: typed into a new terminal tab's shell, not run.
+		Input string `json:"input"`
+		// threads.create: a new claude thread's first prompt, sent right away.
+		Prompt string `json:"prompt"`
+		// threads.search
+		Query    string `json:"query"`
+		Limit    int    `json:"limit"`
+		Archived bool   `json:"archived"`
+		Force    bool   `json:"force"`
+		URL      string `json:"url"`
 		// A new claude thread or tab's starting permission mode.
 		PermissionMode string `json:"permissionMode"`
 	}
@@ -145,7 +154,7 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		agentThreads := s.agentThreads(threads)
 		if err := s.store.DeleteProject(params.ID); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
-				return nil, errors.New("project not found (the home project can't be deleted)")
+				return nil, errors.New("project not found (the home and Scratch projects can't be deleted)")
 			}
 			return nil, err
 		}
@@ -171,6 +180,9 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		}
 		if err == nil {
 			s.broadcast(protocol.EventThreadsChanged)
+		}
+		if err == nil && strings.TrimSpace(params.Prompt) != "" && t.Kind == protocol.ThreadClaude {
+			err = s.agents.Request(t.ID, protocol.AgentClientMsg{T: "send", Text: params.Prompt})
 		}
 		return t, err
 	case "threads.rename":
@@ -215,9 +227,23 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 			s.killThread(t, agentThreads[t.ID], params.KeepWorktree)
 		}
 		s.broadcast(protocol.EventThreadsChanged)
+		// A Scratch thread's folder stays unless the user asked for it to go.
+		if params.RemoveScratch {
+			if err := s.removeScratch(t.ScratchDir); err != nil {
+				return nil, fmt.Errorf("the thread was deleted, but not its folder: %w", err)
+			}
+		}
 		return empty{}, nil
 	case "threads.workdir":
 		return s.workdir(params.ID)
+	case "threads.search":
+		return s.store.SearchAgentEvents(params.Query, min(max(params.Limit, 1), 50))
+	case "threads.promote":
+		return s.promote(params.ID, params.Name)
+	case "threads.continueIn":
+		return s.continueIn(params.ID, params.ProjectID, params.PermissionMode)
+	case "scratch.usage":
+		return s.scratchUsage()
 
 	case "processes.list", "processes.start", "processes.stop", "processes.restart", "processes.remove":
 		return s.callProcesses(method, raw)
@@ -232,6 +258,10 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		t, err := s.store.CreateTab(params.ThreadID, params.Kind, params.Name)
 		if err == nil {
 			err = s.initialMode(t, params.PermissionMode)
+		}
+		if err == nil && params.Input != "" && t.Kind == protocol.ThreadTerminal {
+			// The browser's attach resizes the shell to fit.
+			err = s.terms.Type(t.ID, []byte(params.Input), remoteCols, remoteRows)
 		}
 		if err == nil {
 			s.broadcast(protocol.EventThreadsChanged)

@@ -2,6 +2,7 @@ import { createFileRoute, Link, Outlet } from "@tanstack/react-router";
 import { LoaderIcon, RotateCcwIcon, WifiOffIcon } from "lucide-react";
 import { CenteredMessage } from "@/components/centered-message";
 import { DeviceContext, useDevice } from "@/components/device-context";
+import { canScratch, deviceName } from "@/components/scratch";
 import { useFleet } from "@/components/fleet";
 import { Button } from "@/components/ui/button";
 import { NO_ANSWER_MESSAGE, UNREACHABLE_MESSAGE } from "@/lib/peer";
@@ -50,6 +51,7 @@ function ConnectionPanel() {
           On the machine, check it with{" "}
           <code className="rounded bg-terminal px-1 py-0.5 font-mono text-xs text-foreground">everywhere status</code>.
         </p>
+        <ElsewhereHint />
       </Panel>
     );
   }
@@ -91,6 +93,28 @@ function ConnectionPanel() {
     <Panel icon={<LoaderIcon className="size-5 animate-spin text-muted-foreground" />} title="Connecting…" key={deviceId}>
       <p>Opening a direct connection to {name}.</p>
     </Panel>
+  );
+}
+
+/** Another device can look into this one: its Scratch is a click away. */
+function ElsewhereHint() {
+  const { deviceId } = useDevice();
+  const { entries } = useFleet();
+  const others = [...entries.values()].filter((e) => e.deviceId !== deviceId && canScratch(e));
+  if (others.length === 0) return null;
+  return (
+    <p>
+      To look into it from another device, start a Scratch thread on{" "}
+      {others.map((e, i) => (
+        <span key={e.deviceId}>
+          {i > 0 && (i === others.length - 1 ? " or " : ", ")}
+          <Link to="/d/$deviceId" params={{ deviceId: e.deviceId }} className="text-primary underline-offset-4 hover:underline">
+            {deviceName(e)}
+          </Link>
+        </span>
+      ))}
+      .
+    </p>
   );
 }
 

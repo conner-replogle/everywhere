@@ -17,7 +17,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { SentAttachments } from "./composer-parts";
 import { Markdown } from "./markdown";
-import { asInput, EditPreview, isEdit, type ToolInput, toolIcon, toolLabel, toolSummary } from "./tools";
+import { asInput, EditPreview, isEdit, machineChange, type ToolInput, toolIcon, toolLabel, toolSummary } from "./tools";
 
 type Ev<T extends AgentEvent["type"]> = Extract<AgentEvent, { type: T }>;
 
@@ -100,6 +100,25 @@ export function buildItems(events: LoggedEvent[]): Item[] {
 }
 
 export type UserEvent = Ev<"user">;
+
+/**
+ * The tool calls among items (subagents' too) that changed the computer
+ * outside cwd, oldest first, each with why: the thread's change trail.
+ */
+export function changeItems(items: Item[], cwd: string | undefined): Item[] {
+  const out: Item[] = [];
+  const walk = (list: Item[]) => {
+    for (const item of list) {
+      if (item.kind !== "tool") continue;
+      // A call that was denied or never ran changed nothing.
+      const ran = !!item.result && item.request?.decision !== "deny";
+      if (ran && machineChange(item.tool.name, asInput(item.tool.input), cwd)) out.push({ ...item, children: [] });
+      walk(item.children);
+    }
+  };
+  walk(items);
+  return out;
+}
 
 /** The prompt an automatic (or typed) recap sends. */
 export const RECAP_PROMPT = "/recap";

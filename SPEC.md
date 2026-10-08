@@ -8,7 +8,8 @@ something you run in a terminal. Harness-specific support comes later.
 
 - **Device**: a machine running the `everywhere` daemon, enrolled to an account.
 - **Project**: a named directory on a device (e.g. `~/code/api` on `hetzner-1`).
-  Every device has an implicit **home** project (`$HOME`) for loose terminals.
+  Every device has an implicit **home** project (`$HOME`) for loose terminals,
+  and **Scratch**, for work outside any project (see Scratch).
 - **Thread**: a named, persistent slot inside a project, either a
   **terminal** (a shell, spawned lazily when a client opens the thread) or a
   **claude** thread (a Claude Code conversation; see Claude threads).
@@ -150,9 +151,10 @@ everywhere status | version | update | uninstall
 
 ```
 projects (id, name, path UNIQUE, created_at)                -- home project seeded on first run
+          is_home, is_scratch                               -- Scratch seeded too (see Scratch)
 threads  (id, project_id, kind, name, created_at, last_opened_at, had_session BOOL,
           agent_session_id, agent_model, agent_permission_mode)
-           parent_id (tabs), tab_state
+           parent_id (tabs), tab_state, scratch_dir
 agent_events (thread_id, seq, at, event JSON)               -- claude thread log
 processes (id, thread_id, agent_thread_id, name, command, cwd, spec JSON,
            status, exit_code, started_at, ended_at, snapshot JSON, prev JSON)
@@ -409,6 +411,64 @@ that speaks MCP. `internal/process`.
   processes not started here), restarting processes after a daemon update,
   prompt detection, a per-process token for `::ew` lines.
 
+### Scratch
+
+General computer work outside any project: diagnosing a problem with the
+machine, a quick task, some files. Feature `scratch`.
+
+- **The project**: seeded next to home (`is_scratch`, name "Scratch", path
+  `<data>/scratch`, re-pointed there if the data directory moves). It can't
+  be renamed or deleted.
+- **A folder per thread**: creating a thread in Scratch makes a fresh folder,
+  `<data>/scratch/<YYYY-MM-DD>-<thread id>` (0700), stored as the thread's
+  `scratch_dir`. The thread, its terminal and claude tabs, its processes and
+  its files tab all work there (`threads.workdir`, `ThreadShell` and
+  `AgentThread` resolve `scratch_dir`, then the parent's, then the project).
+  There are no worktrees in Scratch. New threads never reuse a folder.
+- **Kept until deleted**: archiving keeps the folder; `threads.delete` keeps
+  it unless `removeScratch` is set (the delete dialog's checkbox, off by
+  default), and then only removes a direct child of the scratch root.
+  `everywhere uninstall --purge` keeps the scratch root unless
+  `--purge-scratch` is given.
+- **Claude**: a Scratch claude thread starts in `auto` unless a mode is
+  passed. Its claude gets `--append-system-prompt`, saying where it is (the
+  device, OS, its folder), to put its files in the folder, that it runs as
+  the user without root (a command needing sudo goes in a fenced `sh` block
+  starting with `sudo`, which the app offers to type into a terminal), to
+  diagnose read-only first, and to say what it'll change before changing the
+  system. When remote desktop is usable it's told about the desktop tools.
+  Those stay allowed as for any thread.
+- **RPC**: `threads.create {…, prompt?}` sends a claude thread's first
+  prompt at once. `threads.promote {id, name?}` registers a Scratch thread's
+  folder as a project and moves the thread and its tabs there; the cwd is
+  unchanged, so claude resumes as before. `threads.continueIn {id,
+  projectId, permissionMode?}` starts a claude thread in another project
+  (Scratch included) whose first prompt is the conversation so far (user and
+  assistant text, each message cut at 1500 characters, the newest 12000 kept)
+  and where the old thread worked; the old one stays. `threads.search` (as
+  over the hub). `scratch.usage` counts files and bytes in all and per
+  folder (up to 200 000 entries). `tabs.create {kind: "terminal", input}`
+  types input into the new shell without running it.
+- **MCP**: `create_thread` without a project starts in Scratch (home on
+  daemons from before it); `list_projects` marks it `isScratch`.
+- **Web app**: Scratch and home leave the Projects list (on daemons that have
+  Scratch). The sidebar's Scratch section lists each device with its newest
+  Scratch threads and a + menu; device names link to the device page. The
+  device page (`/d/$deviceId`) has a Scratch composer, what Claude can do there (Auto, no root, screen
+  access), Scratch threads with file counts, search across the device's
+  threads, archived ones, the folder's size and path, home (with "Terminal
+  in ~") and the device's projects. `/` is a launcher: the same composer
+  with a device picker (remembered per browser) and the devices. A Scratch
+  thread's header links back to the device and has "Open its folder",
+  "Make this a project…" and "Continue in a project…"; a project's claude
+  thread has "Continue in Scratch…". Code blocks with a sudo command get
+  "Run in terminal". A Scratch claude thread can filter its timeline to
+  "Changes to this computer": file edits outside its folder,
+  system-changing commands (services, packages, rm/mv/chmod, settings,
+  registry…) and screen actions, from calls that ran. An offline device's
+  panel points to Scratch on the devices that are online. No thread list is
+  cached for offline devices.
+
 ## MCP (agents such as a ChatGPT connector)
 
 `POST /mcp` is an MCP server (Streamable HTTP, stateless JSON responses) that
@@ -542,7 +602,8 @@ TODO.md items come later.
 ```
 /login, /signup                 signup only while no user exists
 /                               devices with live presence; offline = greyed, empty
-/d/$deviceId                    project + thread sidebar (via control channel)
+/                               launcher: start a Scratch thread on a picked device; the devices
+/d/$deviceId                    device page: Scratch composer and threads, home, projects
 /d/$deviceId/t/$threadId        terminal: xterm.js (WebGL, fit addon), writer banner + Take over
                                 claude: timeline, permission/question/plan cards, composer
                                 tab strip: the thread, then its tabs; ?tab=<id> picks one

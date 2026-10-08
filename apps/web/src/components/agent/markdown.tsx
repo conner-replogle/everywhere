@@ -1,7 +1,72 @@
-import { memo } from "react";
-import ReactMarkdown, { type Components } from "react-markdown";
+import { SquareTerminalIcon } from "lucide-react";
+import { createContext, memo, useContext } from "react";
+import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "@/lib/utils";
+
+/**
+ * Opens a terminal with a command typed in, not run, for the user to check
+ * and run themselves: offered on code blocks that need root, which claude
+ * can't do. Absent where there's no terminal to open.
+ */
+export const RunInTerminalContext = createContext<((command: string) => void) | null>(null);
+
+type HastNode = NonNullable<ExtraProps["node"]>;
+
+function hastText(node: HastNode | { type: string; value?: string; children?: unknown[] } | undefined): string {
+  if (!node) return "";
+  if (node.type === "text") return (node as { value: string }).value;
+  const children = (node as { children?: unknown[] }).children ?? [];
+  return children.map((c) => hastText(c as HastNode)).join("");
+}
+
+/**
+ * The command a code block runs with sudo, as one line to type: shell
+ * prompts and comments dropped, several commands joined with &&. Null when
+ * no line uses sudo.
+ */
+export function sudoCommand(block: string): string | null {
+  const lines = block
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith("#"))
+    .map((l) => l.replace(/^\$\s+/, ""));
+  if (!lines.some((l) => /^sudo\s/.test(l))) return null;
+  // Lines continued with a backslash are one command.
+  const commands: string[] = [];
+  let current = "";
+  for (const l of lines) {
+    current = current ? `${current} ${l}` : l;
+    if (current.endsWith("\\")) current = current.slice(0, -1).trimEnd();
+    else {
+      commands.push(current);
+      current = "";
+    }
+  }
+  if (current) commands.push(current);
+  return commands.join(" && ");
+}
+
+function CodeBlock({ node, children }: { node: HastNode | undefined; children: React.ReactNode }) {
+  const run = useContext(RunInTerminalContext);
+  const command = run ? sudoCommand(hastText(node)) : null;
+  return (
+    <div className="group/code relative my-2">
+      <pre className="overflow-x-auto rounded-md border bg-terminal p-3 font-mono text-xs leading-relaxed">{children}</pre>
+      {command && run && (
+        <button
+          type="button"
+          onClick={() => run(command)}
+          title={`Open a terminal with this typed in, to check and run yourself:\n${command}`}
+          className="mt-1 inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none"
+        >
+          <SquareTerminalIcon className="size-3.5" />
+          Run in terminal
+        </button>
+      )}
+    </div>
+  );
+}
 
 // Model output renders as React elements only: raw HTML in the markdown is
 // shown as text, never injected.
@@ -22,11 +87,7 @@ const components: Components = {
     <blockquote className="my-2 border-l-2 border-border pl-3 text-muted-foreground">{children}</blockquote>
   ),
   hr: () => <hr className="my-3" />,
-  pre: ({ children }) => (
-    <pre className="my-2 overflow-x-auto rounded-md border bg-terminal p-3 font-mono text-xs leading-relaxed">
-      {children}
-    </pre>
-  ),
+  pre: ({ children, node }) => <CodeBlock node={node}>{children}</CodeBlock>,
   code: ({ className, children }) =>
     // Fenced blocks carry a language class and sit inside <pre>, which styles them.
     className ? (
