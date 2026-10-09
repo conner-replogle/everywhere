@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev --port 8787",
-    "deploy": "wrangler d1 migrations apply DB --remote && wrangler deploy",
+    "deploy": "bun scripts/migrate.ts && wrangler deploy",
     "migrate:local": "wrangler d1 migrations apply DB --local",
     "types": "wrangler types",
     "typecheck": "tsc -p .",
