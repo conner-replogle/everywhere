@@ -9,6 +9,7 @@ import {
   XIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ClaudeSignIn, SignedOutBanner, signedOut, useClaudeAuth } from "@/components/claude-auth";
 import { useDevice } from "@/components/device-context";
 import { Button } from "@/components/ui/button";
 import {
@@ -192,6 +193,9 @@ export function AgentView({
   const canCompact =
     !archived && !busy && agent.attached && agent.synced && !state?.pending.length && commands.some((c) => c.name === "compact");
   const compact = () => user.send({ t: "send", text: "/compact" });
+  const claudeAuth = useClaudeAuth();
+  const [signingIn, setSigningIn] = useState(false);
+  const onSignIn = signedOut(claudeAuth.data) ? () => setSigningIn(true) : undefined;
   const prefs = usePrefs();
   useAutoRecap({
     threadId,
@@ -319,10 +323,12 @@ export function AgentView({
             compacting={state?.compacting}
             recapping={state?.recapping}
             onCompact={canCompact ? compact : undefined}
+            onSignIn={archived ? undefined : onSignIn}
             onRewind={features.includes("rewind") && !archived && !busy ? onRewind : undefined}
           />
         </div>
       </div>
+      <ClaudeSignIn auth={claudeAuth.data} open={signingIn} onOpenChange={setSigningIn} />
       <RewindDialog
         prompt={rewindTo}
         onClose={() => setRewindTo(null)}
@@ -351,6 +357,7 @@ export function AgentView({
             {state?.pending.map((r) => (
               <PendingRequest key={r.id} request={r} cwd={workdir} respond={user.send} />
             ))}
+            {claudeAuth.data && onSignIn && <SignedOutBanner auth={claudeAuth.data} onSignIn={onSignIn} />}
             <ResumeBanner threadId={threadId} context={state?.context} canCompact={canCompact} onCompact={compact} />
             {processes && <ProcessesOverview peer={peer} threadId={processes.threadId} onOpen={processes.onOpen} />}
             <StatusBar agent={agent} />

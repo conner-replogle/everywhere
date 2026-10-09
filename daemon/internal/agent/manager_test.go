@@ -1254,3 +1254,81 @@ func TestProcessEvents(t *testing.T) {
 	}
 	h.waitStatus(c, "working")
 }
+
+func TestSignedOut(t *testing.T) {
+	h := newHarness(t)
+	var mu sync.Mutex
+	var notified []string
+	authChanges := 0
+	h.m.Notify = func(n protocol.HubNotify) {
+		mu.Lock()
+		defer mu.Unlock()
+		notified = append(notified, n.Kind)
+	}
+	h.m.AuthChanged = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		authChanges++
+	}
+	problem := func() string {
+		h.m.mu.Lock()
+		defer h.m.mu.Unlock()
+		return h.m.authProblem
+	}
+	c := h.attach(0)
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "hi"})
+	p := h.proc(0)
+	p.emit(`{"type":"assistant","uuid":"u1","error":"authentication_failed","message":{"id":"m1","content":[{"type":"text","text":"Not logged in · Please run /login"}]}}`)
+	p.emit(`{"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login"}`)
+	h.waitStatus(c, "idle")
+
+	evs := c.events()
+	if last := evs[len(evs)-1]; last.Status != "error" || last.Kind != "signedOut" || last.Text != "Not logged in" {
+		t.Fatalf("turn end = %+v", last)
+	}
+	if got := problem(); got != "Not logged in" {
+		t.Fatalf("auth problem = %q", got)
+	}
+	eventually(t, "a signedOut notice, not a generic error", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return strings.Join(notified, " ") == "signedOut" && authChanges == 1
+	})
+
+	// Signing in moves the idle thread to a claude with the new credentials.
+	h.m.signedIn()
+	h.waitStatus(c, "stopped")
+	if got := problem(); got != "" {
+		t.Fatalf("auth problem after sign-in = %q", got)
+	}
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "again"})
+	p2 := h.proc(1)
+	p2.emit(`{"type":"result","subtype":"success"}`)
+	h.waitStatus(c, "idle")
+	if running, _ := h.m.Status(h.thread); !running {
+		t.Fatal("the new process was stopped too")
+	}
+
+	// A turn that gets through clears a problem reported meanwhile.
+	h.m.noteAuthFailed("Invalid API key")
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "once more"})
+	h.waitStatus(c, "working")
+	p2.emit(`{"type":"result","subtype":"success"}`)
+	h.waitStatus(c, "idle")
+	if got := problem(); got != "" {
+		t.Fatalf("auth problem after a working turn = %q", got)
+	}
+}
+
+func TestSignInProblem(t *testing.T) {
+	for in, want := range map[string]string{
+		"Not logged in · Please run /login":                       "Not logged in",
+		"Invalid API key · Please run /login":                     "Invalid API key",
+		"OAuth token has expired. Please obtain a new token":      "OAuth token has expired. Please obtain a new token",
+		"  Failed to authenticate - API Error: 401 · run /login ": "Failed to authenticate - API Error: 401",
+	} {
+		if got := signInProblem(in); got != want {
+			t.Errorf("signInProblem(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

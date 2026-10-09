@@ -121,6 +121,7 @@ func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string) *Serve
 	threadsChanged := func() { s.broadcast(protocol.EventThreadsChanged) }
 	s.terms = term.NewManager(shells{s}, threadsChanged)
 	s.agents = agent.NewManager(st, dataDir, threadsChanged)
+	s.agents.AuthChanged = func() { s.broadcast(protocol.EventClaudeAuth) }
 	s.procs = process.NewManager(st, filepath.Join(dataDir, "processes"))
 	s.procs.Workdir = func(id string) (string, error) {
 		w, err := s.workdir(id)

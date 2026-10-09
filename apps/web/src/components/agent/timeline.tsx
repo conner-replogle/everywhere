@@ -6,6 +6,7 @@ import {
   ChevronRightIcon,
   CircleAlertIcon,
   HistoryIcon,
+  KeyRoundIcon,
   LoaderCircleIcon,
   Minimize2Icon,
   RotateCcwIcon,
@@ -136,6 +137,7 @@ export const Timeline = memo(function Timeline({
   recapping,
   onRewind,
   onCompact,
+  onSignIn,
 }: {
   items: Item[];
   streaming: AgentStreaming[];
@@ -146,13 +148,22 @@ export const Timeline = memo(function Timeline({
   recapping?: boolean;
   /** Sends /compact; offered when a turn fails because the context is full. */
   onCompact?: () => void;
+  /** Signs claude in; offered when a turn failed for it, while it's still signed out. */
+  onSignIn?: () => void;
   /** Offers rolling back to before a prompt; absent when the device can't. */
   onRewind?: (prompt: UserEvent) => void;
 }) {
   return (
     <div className="flex flex-col gap-3">
       {items.map((item) => (
-        <ItemView key={item.key} item={item} cwd={cwd} onRewind={working ? undefined : onRewind} onCompact={onCompact} />
+        <ItemView
+          key={item.key}
+          item={item}
+          cwd={cwd}
+          onRewind={working ? undefined : onRewind}
+          onCompact={onCompact}
+          onSignIn={onSignIn}
+        />
       ))}
       {recapping && (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -185,11 +196,13 @@ function ItemView({
   cwd,
   onRewind,
   onCompact,
+  onSignIn,
 }: {
   item: Item;
   cwd?: string;
   onRewind?: (prompt: UserEvent) => void;
   onCompact?: () => void;
+  onSignIn?: () => void;
 }) {
   if (item.kind === "tool") return <ToolRow item={item} cwd={cwd} />;
   if (item.kind === "recap") return <RecapCard text={item.text} />;
@@ -246,7 +259,7 @@ function ItemView({
     case "request":
       return <RequestLine event={e} />;
     case "turn":
-      return <TurnEnd event={e} onCompact={onCompact} />;
+      return <TurnEnd event={e} onCompact={onCompact} onSignIn={onSignIn} />;
     case "process":
       return <ProcessLine event={e} />;
   }
@@ -441,7 +454,15 @@ function RequestLine({ event: e }: { event: Ev<"request"> }) {
   );
 }
 
-function TurnEnd({ event: e, onCompact }: { event: Ev<"turn">; onCompact?: () => void }) {
+function TurnEnd({
+  event: e,
+  onCompact,
+  onSignIn,
+}: {
+  event: Ev<"turn">;
+  onCompact?: () => void;
+  onSignIn?: () => void;
+}) {
   if (e.status === "error") {
     return (
       <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive max-sm:flex-wrap">
@@ -451,6 +472,12 @@ function TurnEnd({ event: e, onCompact }: { event: Ev<"turn">; onCompact?: () =>
           <Button size="sm" variant="secondary" className="-my-1 shrink-0" onClick={onCompact}>
             <Minimize2Icon />
             Compact conversation
+          </Button>
+        )}
+        {e.kind === "signedOut" && onSignIn && (
+          <Button size="sm" variant="secondary" className="-my-1 shrink-0" onClick={onSignIn}>
+            <KeyRoundIcon />
+            Sign in
           </Button>
         )}
       </div>

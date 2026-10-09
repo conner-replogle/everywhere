@@ -12,6 +12,7 @@ import {
   FolderPlusIcon,
   HistoryIcon,
   HomeIcon,
+  KeyRoundIcon,
   LoaderIcon,
   MonitorDownIcon,
   LogOutIcon,
@@ -32,6 +33,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { DeviceContext, type DeviceContextValue, useDevice } from "@/components/device-context";
+import { ClaudeSignIn, signedOut, useClaudeAuth } from "@/components/claude-auth";
 import { ClaudeUpdate, useClaudeUpdateCheck } from "@/components/claude-update";
 import { DeviceUpdate, updateStatus, useUpdateCheck } from "@/components/device-update";
 import { useFleet } from "@/components/fleet";
@@ -1061,24 +1063,28 @@ function DeviceRow({
   const online = useDeviceOnline(device.id);
   const update = useUpdateCheck();
   const claudeUpdate = useClaudeUpdateCheck();
+  const claudeAuth = useClaudeAuth();
   const navigate = useNavigate();
   const live = conn.state === "connected";
   const hasDesktop = live && !!info.data?.features?.includes("desktop");
   const openDesktop = () => void navigate({ to: "/d/$deviceId/desktop", params: { deviceId: device.id } });
-  const [updating, setUpdating] = useState<"device" | "claude" | null>(null);
+  const [updating, setUpdating] = useState<"device" | "claude" | "signIn" | null>(null);
   const deviceUpdate = live && update.data?.available ? update.data : undefined;
   const claudeNew = live && claudeUpdate.data?.available ? claudeUpdate.data : undefined;
   const hasUpdate = !!deviceUpdate || !!claudeNew;
+  const needsSignIn = live && signedOut(claudeAuth.data);
   const checkStatus = updateStatus(update);
-  const status = live
-    ? info.data
-      ? `${info.data.os}/${info.data.arch} · ${info.data.version}`
-      : "Connected"
-    : conn.state === "offline"
-      ? "Offline"
-      : conn.state === "failed"
-        ? "Unreachable"
-        : "Connecting…";
+  const status = needsSignIn
+    ? "Claude Code signed out"
+    : live
+      ? info.data
+        ? `${info.data.os}/${info.data.arch} · ${info.data.version}`
+        : "Connected"
+      : conn.state === "offline"
+        ? "Offline"
+        : conn.state === "failed"
+          ? "Unreachable"
+          : "Connecting…";
 
   return (
     <div>
@@ -1091,7 +1097,12 @@ function DeviceRow({
           title={`Open ${deviceName(entry)}`}
         >
           <span className="truncate">{deviceName(entry)}</span>
-          <span className={cn("truncate text-[11px] text-muted-foreground", conn.state === "failed" && "text-warn")}>
+          <span
+            className={cn(
+              "truncate text-[11px] text-muted-foreground",
+              (conn.state === "failed" || needsSignIn) && "text-warn",
+            )}
+          >
             {status}
           </span>
         </Link>
@@ -1102,13 +1113,20 @@ function DeviceRow({
               size="icon-sm"
               className={cn(
                 "relative opacity-0 group-hover:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100 pointer-coarse:opacity-100",
-                (debugging || hasUpdate) && "opacity-100",
+                (debugging || hasUpdate || needsSignIn) && "opacity-100",
               )}
-              aria-label={`Actions for ${deviceName(entry)}${hasUpdate ? " (update available)" : ""}`}
-              title={hasUpdate ? "Update available" : undefined}
+              aria-label={`Actions for ${deviceName(entry)}${needsSignIn ? " (Claude Code signed out)" : hasUpdate ? " (update available)" : ""}`}
+              title={needsSignIn ? "Claude Code signed out" : hasUpdate ? "Update available" : undefined}
             >
               <MoreHorizontalIcon />
-              {hasUpdate && <span className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-primary" />}
+              {(hasUpdate || needsSignIn) && (
+                <span
+                  className={cn(
+                    "absolute top-0.5 right-0.5 size-1.5 rounded-full",
+                    needsSignIn ? "bg-warn" : "bg-primary",
+                  )}
+                />
+              )}
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" side="top">
@@ -1131,6 +1149,12 @@ function DeviceRow({
             {live && info.data && (
               <>
                 <DropdownMenuSeparator />
+                {needsSignIn && (
+                  <DropdownMenuItem className="text-warn" onSelect={() => setUpdating("signIn")}>
+                    <KeyRoundIcon />
+                    Sign in to Claude Code…
+                  </DropdownMenuItem>
+                )}
                 {deviceUpdate && (
                   <DropdownMenuItem className="text-primary" onSelect={() => setUpdating("device")}>
                     <ArrowUpCircleIcon />
@@ -1177,6 +1201,11 @@ function DeviceRow({
       </div>
       <DeviceUpdate update={update} open={updating === "device"} onOpenChange={(o) => setUpdating(o ? "device" : null)} />
       <ClaudeUpdate update={claudeUpdate} open={updating === "claude"} onOpenChange={(o) => setUpdating(o ? "claude" : null)} />
+      <ClaudeSignIn
+        auth={claudeAuth.data}
+        open={updating === "signIn"}
+        onOpenChange={(o) => setUpdating(o ? "signIn" : null)}
+      />
     </div>
   );
 }

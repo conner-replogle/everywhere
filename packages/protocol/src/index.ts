@@ -63,7 +63,8 @@ export interface HubNotify {
   tool?: string;
 }
 
-export type NotifyKind = "permission" | "question" | "plan" | "done" | "error";
+/** signedOut: the device's Claude Code was refused for its credentials. */
+export type NotifyKind = "permission" | "question" | "plan" | "done" | "error" | "signedOut";
 
 /** A HubNotify as the hub passes it on to browsers, with the device it came from. */
 export interface HubAlert extends Omit<HubNotify, "t"> {
@@ -89,6 +90,8 @@ export function notifyText(n: Pick<HubNotify, "kind" | "tool">): string {
       return "Finished";
     case "error":
       return "Stopped with an error";
+    case "signedOut":
+      return "Claude Code needs you to sign in";
   }
 }
 
@@ -149,7 +152,9 @@ export interface DeviceInfo {
  * Scratch project (Project.isScratch) and its threads' own folders
  * (Thread.scratchDir), threads.promote, threads.continueIn,
  * threads.search, scratch.usage, threads.delete's removeScratch,
- * tabs.create's input and threads.create's prompt.
+ * tabs.create's input and threads.create's prompt. claudeAuth:
+ * agent.auth, agent.login, agent.loginCode, agent.loginCancel, claude.auth
+ * and the signedOut turn kind.
  */
 export type DeviceFeature =
   | "claude"
@@ -167,7 +172,8 @@ export type DeviceFeature =
   | "claudeUpdate"
   | "mkdir"
   | "processes"
-  | "scratch";
+  | "scratch"
+  | "claudeAuth";
 
 /**
  * What desktop.start captures: a monitor by name, or a window by id
@@ -212,6 +218,23 @@ export interface ClaudeVersion {
   /** agent.updateClaude runs `command`, the update of the installer that owns this install. */
   canUpdate: boolean;
   command?: string;
+}
+
+/** agent.auth: whether the device's Claude Code is signed in. */
+export interface ClaudeAuth {
+  signedIn: boolean;
+  /** claude.ai, console, an API key's source, or none. */
+  method: string;
+  email?: string;
+  org?: string;
+  subscription?: string;
+  /**
+   * What claude said when a request was refused for its credentials, until a
+   * sign-in or a turn that works. signedIn is false while it's set.
+   */
+  problem?: string;
+  /** An agent.login is waiting for its code. */
+  signingIn?: boolean;
 }
 
 export interface Project {
@@ -527,6 +550,17 @@ export interface RpcMethods {
    * Open threads move to the new version when they're next idle.
    */
   "agent.updateClaude": [Record<string, never>, { version: string }];
+  "agent.auth": [Record<string, never>, ClaudeAuth];
+  /**
+   * Starts signing Claude Code in (console: an Anthropic Console account
+   * rather than a Claude subscription). url is the sign-in page, which can be
+   * opened anywhere and ends on a code for agent.loginCode; none means claude
+   * signed in without one. Replaces a sign-in already waiting.
+   */
+  "agent.login": [{ console?: boolean }, { url?: string }];
+  /** Finishes the waiting sign-in with the code from its page. Open threads switch over when next idle. */
+  "agent.loginCode": [{ code: string }, ClaudeAuth];
+  "agent.loginCancel": [Record<string, never>, Record<string, never>];
   "debug.peer": [Record<string, never>, PeerDebug];
   "desktop.info": [Record<string, never>, DesktopInfo];
   /**
@@ -666,6 +700,8 @@ export type RpcEvent =
   | { event: "clones.changed" }
   | { event: "git.changed" }
   | { event: "threads.changed" }
+  /** The device's Claude Code was signed out or in, or a sign-in started or ended. */
+  | { event: "claude.auth" }
   /** A thread's processes started, stopped or made progress (at most 4 a second). */
   | { event: "processes.changed"; threadId: string }
   /** One of a desktop session's ICE candidates (trickle ICE); see desktop.start. */
@@ -946,8 +982,11 @@ export type AgentEvent = AgentEventBase &
         type: "turn";
         status: "started" | "completed" | "interrupted" | "error";
         text?: string;
-        /** contextFull: an error because the conversation outgrew the context window. */
-        kind?: "contextFull";
+        /**
+         * contextFull: an error because the conversation outgrew the context
+         * window. signedOut: claude's credentials were refused.
+         */
+        kind?: "contextFull" | "signedOut";
         costUsd?: number;
         durationMs?: number;
       }

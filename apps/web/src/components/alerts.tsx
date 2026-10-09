@@ -7,6 +7,7 @@ import {
   CheckIcon,
   CircleAlertIcon,
   ClipboardListIcon,
+  KeyRoundIcon,
   type LucideIcon,
   MessageCircleQuestionIcon,
   ShieldIcon,
@@ -27,6 +28,7 @@ const KIND_ICON: Record<NotifyKind, LucideIcon> = {
   plan: ClipboardListIcon,
   done: CheckIcon,
   error: CircleAlertIcon,
+  signedOut: KeyRoundIcon,
 };
 
 export function Alerts() {

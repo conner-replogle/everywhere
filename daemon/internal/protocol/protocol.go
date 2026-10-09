@@ -70,7 +70,7 @@ type HubNotify struct {
 	ThreadID string `json:"threadId"`
 	ParentID string `json:"parentId,omitempty"`
 	Name     string `json:"name"`
-	Kind     string `json:"kind"`           // permission | question | plan | done | error
+	Kind     string `json:"kind"`           // permission | question | plan | done | error | signedOut
 	Tool     string `json:"tool,omitempty"` // for permission
 }
 
@@ -125,7 +125,8 @@ const (
 	// their own scratch folder (Thread.ScratchDir), threads.promote,
 	// threads.continueIn, threads.search, scratch.usage, threads.delete's
 	// removeScratch, tabs.create's input and threads.create's prompt.
-	FeatureScratch = "scratch"
+	FeatureScratch    = "scratch"
+	FeatureClaudeAuth = "claudeAuth" // agent.auth, agent.login*, claude.auth and kind signedOut
 )
 
 // DesktopInfo is the result of desktop.info.
@@ -194,6 +195,32 @@ type ClaudeVersion struct {
 	CanUpdate bool   `json:"canUpdate"`
 	Command   string `json:"command,omitempty"`
 }
+
+// ClaudeAuth is the result of agent.auth: whether the device's Claude Code
+// is signed in.
+type ClaudeAuth struct {
+	SignedIn bool `json:"signedIn"`
+	// Method is claude.ai, console, an API key's source, or none.
+	Method       string `json:"method"`
+	Email        string `json:"email,omitempty"`
+	Org          string `json:"org,omitempty"`
+	Subscription string `json:"subscription,omitempty"`
+	// Problem is what claude said when a request was refused for its
+	// credentials ("Not logged in · Please run /login"), until a sign-in or a
+	// turn that works. SignedIn is false while it's set.
+	Problem string `json:"problem,omitempty"`
+	// SigningIn: an agent.login is waiting for its code.
+	SigningIn bool `json:"signingIn,omitempty"`
+}
+
+// ClaudeLogin is the result of agent.login: the sign-in page, which ends on
+// a code to pass to agent.loginCode. Empty if claude signed in without one.
+type ClaudeLogin struct {
+	URL string `json:"url,omitempty"`
+}
+
+// EventClaudeAuth: the device's Claude Code was signed out or in.
+const EventClaudeAuth = "claude.auth"
 
 // ClaudeUpdateResult is the result of agent.updateClaude.
 type ClaudeUpdateResult struct {

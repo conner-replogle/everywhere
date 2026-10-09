@@ -415,7 +415,7 @@ function isSignal(m: unknown): m is { t: "signal"; to: string; sid: string; data
   );
 }
 
-const NOTIFY_KINDS = new Set<string>(["permission", "question", "plan", "done", "error"]);
+const NOTIFY_KINDS = new Set<string>(["permission", "question", "plan", "done", "error", "signedOut"]);
 
 function isNotify(m: unknown): m is HubNotify {
   const x = m as Record<string, unknown> | null;

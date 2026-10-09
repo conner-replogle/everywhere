@@ -25,6 +25,9 @@ func TestMain(m *testing.M) {
 }
 
 func fakeClaude() {
+	if fakeAuth(os.Getenv("EW_FAKE_CLAUDE")) {
+		return
+	}
 	if os.Getenv("EW_FAKE_CLAUDE") == "crash" {
 		fmt.Fprintln(os.Stderr, "error: unknown option '--bogus'")
 		os.Exit(1)

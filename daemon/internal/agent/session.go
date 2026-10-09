@@ -83,6 +83,8 @@ type session struct {
 	// its version.
 	procBuild   string
 	procVersion string
+	procAuth    int  // the sign-in it started under (Manager.authGeneration)
+	authFailed  bool // claude's credentials were refused this turn
 	clients     map[Client]bool
 	state       protocol.AgentState
 	pending     map[string]*claude.PermissionRequest
@@ -455,6 +457,7 @@ func (s *session) ensureProc() error {
 	}
 	s.proc, s.procMsgs = p, p.Messages()
 	s.procBuild, s.procVersion = s.m.currentBuild()
+	s.procAuth = s.m.authGeneration()
 	s.m.noteInit(p.Init())
 	s.state.Status = statusIdle
 	s.state.Workspace.Locked = true
@@ -1115,6 +1118,16 @@ func (s *session) onAssistant(msg claude.Message) {
 	if !s.turnActive {
 		s.beginTurn()
 	}
+	if f.Error == authFailed {
+		s.authFailed = true
+		var text string
+		for _, b := range f.Message.Content {
+			text += b.Text
+		}
+		if s.m.noteAuthFailed(signInProblem(text)) {
+			s.notify("signedOut", "")
+		}
+	}
 	for i, b := range f.Message.Content {
 		id := msg.UUID
 		if i > 0 {
@@ -1197,6 +1210,9 @@ func (s *session) onResult(msg claude.Message) {
 		if len(e.Errors) > 0 {
 			ev.Text = strings.Join(e.Errors, "\n")
 		}
+		if s.authFailed {
+			ev.Kind, ev.Text = "signedOut", signInProblem(ev.Text)
+		}
 		if contextFull(e.TerminalReason, ev.Text) {
 			ev.Kind = "contextFull"
 			if e.TerminalReason == "rapid_refill_breaker" {
@@ -1205,6 +1221,9 @@ func (s *session) onResult(msg claude.Message) {
 				ev.Text = "The conversation no longer fits in the model's context window. Compact it to continue."
 			}
 		}
+	}
+	if ev.Status == "completed" {
+		s.m.noteAuthWorked()
 	}
 	s.state.Compacting = false
 	recap := s.recapping
@@ -1268,7 +1287,7 @@ func (s *session) onExit() {
 // --- helpers --------------------------------------------------------------------
 
 func (s *session) beginTurn() {
-	s.turnActive, s.interrupted = true, false
+	s.turnActive, s.interrupted, s.authFailed = true, false, false
 	s.firstReply = ""
 	s.state.Suggestion = ""
 	s.emit(protocol.AgentEvent{Type: "turn", Status: "started"})
@@ -1290,7 +1309,9 @@ func (s *session) endTurn(ev protocol.AgentEvent) {
 	case "completed":
 		s.notify("done", "")
 	case "error":
-		s.notify("error", "")
+		if ev.Kind != "signedOut" { // noteAuthFailed's notice said so already
+			s.notify("error", "")
+		}
 	}
 }
 
@@ -1420,11 +1441,15 @@ func (s *session) changed() {
 	if prev := s.pub.Swap(next); *prev != *next {
 		s.m.onChange()
 	}
-	// Claude was updated: an idle process makes way for the new build. The
-	// next prompt starts it, resuming the conversation.
+	// Claude was updated or signed in again: an idle process makes way for
+	// one with the new build or credentials. The next prompt starts it,
+	// resuming the conversation.
 	if s.proc != nil && s.state.Status == statusIdle && !s.stopping {
 		if build, _ := s.m.currentBuild(); build != s.procBuild {
 			slog.Info("stopping claude for its new version", "thread", s.threadID)
+			s.closeProc()
+		} else if s.m.authGeneration() != s.procAuth {
+			slog.Info("stopping claude for its new sign-in", "thread", s.threadID)
 			s.closeProc()
 		}
 	}

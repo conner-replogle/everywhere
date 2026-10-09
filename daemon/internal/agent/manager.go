@@ -86,6 +86,9 @@ type Manager struct {
 	// Notify, if set, is told when a thread needs the user or finishes a
 	// turn (for push notifications). It's called on its own goroutine.
 	Notify func(protocol.HubNotify)
+	// AuthChanged, if set, is told when claude is signed out or in, or a
+	// sign-in starts or ends. It's called on its own goroutine.
+	AuthChanged func()
 
 	attachments attachmentStore
 
@@ -115,6 +118,11 @@ type Manager struct {
 	version      string    // that build's version
 	latest       string    // the newest Claude Code release, as of latestAt
 	latestAt     time.Time
+	// authProblem is what claude said when the API last refused its
+	// credentials, until a sign-in or a turn that works.
+	authProblem string
+	authGen     int // sign-ins so far; see authGeneration
+	login       *pendingLogin
 
 	probeMu sync.Mutex // one Info probe at a time
 }

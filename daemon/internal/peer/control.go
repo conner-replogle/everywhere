@@ -51,10 +51,13 @@ func (s *Server) serveControl(p *peer, dc *webrtc.DataChannel) {
 			_ = dc.SendText(string(out))
 		}
 		// Requests are answered in order, except slow ones (GitHub, starting
-		// claude or a desktop capture), which would hold up everything behind them.
-		if req.Method == "device.checkUpdate" || req.Method == "device.update" || req.Method == "agent.info" || req.Method == "agent.claudeVersion" || req.Method == "agent.updateClaude" || req.Method == "desktop.start" {
+		// claude or signing it in, a desktop capture), which would hold up
+		// everything behind them.
+		switch req.Method {
+		case "device.checkUpdate", "device.update", "agent.info", "agent.claudeVersion", "agent.updateClaude",
+			"agent.auth", "agent.login", "agent.loginCode", "agent.loginCancel", "desktop.start":
 			go handle()
-		} else {
+		default:
 			handle()
 		}
 	})
@@ -83,7 +86,11 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		Limit    int    `json:"limit"`
 		Archived bool   `json:"archived"`
 		Force    bool   `json:"force"`
-		URL      string `json:"url"`
+		// agent.login: an Anthropic Console account rather than a subscription.
+		Console bool `json:"console"`
+		// agent.loginCode
+		Code string `json:"code"`
+		URL  string `json:"url"`
 		// A new claude thread or tab's starting permission mode.
 		PermissionMode string `json:"permissionMode"`
 	}
@@ -109,6 +116,17 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		return s.agents.ClaudeVersion(context.Background(), params.Force)
 	case "agent.updateClaude":
 		return s.agents.UpdateClaude(context.Background())
+	case "agent.auth":
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		return s.agents.ClaudeAuth(ctx)
+	case "agent.login":
+		return s.agents.StartLogin(context.Background(), params.Console)
+	case "agent.loginCode":
+		return s.agents.FinishLogin(context.Background(), params.Code)
+	case "agent.loginCancel":
+		s.agents.CancelLogin()
+		return empty{}, nil
 	case "device.checkUpdate":
 		return s.checkUpdate(params.Force)
 	case "device.update":
