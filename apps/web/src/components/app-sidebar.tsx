@@ -99,6 +99,8 @@ const ARCHIVED_OPEN_KEY = "ew:archived-open";
 const DEVICES_COLLAPSED_KEY = "ew:devices-collapsed";
 /** How many Scratch threads a device shows in the sidebar; the rest are on its page. */
 const SCRATCH_SHOWN = 5;
+/** The Scratch section as a whole, in the same collapsed set as its devices. */
+const SCRATCH_SECTION_KEY = "scratch";
 const VIEW_KEY = "ew:sidebar-view";
 
 interface SidebarView {
@@ -944,106 +946,120 @@ function ScratchSection({
     }
   }
 
+  const sectionCollapsed = collapsed.has(SCRATCH_SECTION_KEY);
+  const threadCount = rows.reduce((n, e) => n + scratchThreads(e).length, 0);
+
   return (
     <div className="max-h-[40%] shrink-0 overflow-y-auto border-b px-1.5 pt-1 pb-1.5">
-      <div className="flex h-7 items-center pl-1.5 text-xs font-medium text-muted-foreground">Scratch</div>
-      <ul className="flex flex-col gap-px">
-        {rows.map((entry) => {
-          const key = `scratch:${entry.deviceId}`;
-          const isCollapsed = collapsed.has(key);
-          const threads = scratchThreads(entry);
-          const live = canScratch(entry);
-          const onPage = entry.deviceId === activeDeviceId && !activeThreadId;
-          return (
-            <li key={key} className={cn(!connected(entry) && "opacity-50")}>
-              <div
-                className={cn(
-                  "group flex h-7 items-center rounded-md pr-1 pointer-coarse:h-10",
-                  onPage ? "bg-accent text-accent-foreground" : "hover:bg-accent/60",
-                )}
-              >
-                <button
-                  type="button"
-                  onClick={() => toggle(key)}
-                  className="flex h-full shrink-0 items-center rounded-md pl-1.5 focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none"
-                  aria-expanded={!isCollapsed}
-                  aria-label={isCollapsed ? `Show ${deviceName(entry)}'s Scratch threads` : `Hide ${deviceName(entry)}'s Scratch threads`}
-                >
-                  <ChevronRightIcon
-                    className={cn("size-3 shrink-0 text-muted-foreground transition-transform", !isCollapsed && "rotate-90")}
-                  />
-                </button>
-                <Link
-                  to="/d/$deviceId"
-                  params={{ deviceId: entry.deviceId }}
-                  className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-md pl-1.5 focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none"
-                  title={`${deviceName(entry)}: Scratch, home and projects`}
-                >
-                  <MonitorIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                  <span className="truncate">{deviceName(entry)}</span>
-                  {isCollapsed && threads.length > 0 && (
-                    <span className="text-xs text-muted-foreground tabular-nums">{threads.length}</span>
+      <button
+        type="button"
+        onClick={() => toggle(SCRATCH_SECTION_KEY)}
+        className="flex h-7 w-full items-center gap-1.5 rounded-md pl-1.5 text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none pointer-coarse:h-9"
+        aria-expanded={!sectionCollapsed}
+      >
+        <ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", !sectionCollapsed && "rotate-90")} />
+        Scratch
+        {sectionCollapsed && threadCount > 0 && <span className="tabular-nums">{threadCount}</span>}
+      </button>
+      {!sectionCollapsed && (
+        <ul className="flex flex-col gap-px">
+          {rows.map((entry) => {
+            const key = `scratch:${entry.deviceId}`;
+            const isCollapsed = collapsed.has(key);
+            const threads = scratchThreads(entry);
+            const live = canScratch(entry);
+            const onPage = entry.deviceId === activeDeviceId && !activeThreadId;
+            return (
+              <li key={key} className={cn(!connected(entry) && "opacity-50")}>
+                <div
+                  className={cn(
+                    "group flex h-7 items-center rounded-md pr-1 pointer-coarse:h-10",
+                    onPage ? "bg-accent text-accent-foreground" : "hover:bg-accent/60",
                   )}
-                </Link>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon-sm"
-                      disabled={!live}
-                      className="hidden group-hover:inline-flex focus-visible:inline-flex data-[state=open]:inline-flex pointer-coarse:inline-flex pointer-coarse:size-8"
-                      aria-label={`New Scratch thread on ${deviceName(entry)}`}
-                      title="New Scratch thread"
-                    >
-                      <PlusIcon />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="start">
-                    <DropdownMenuLabel>New in a fresh Scratch folder</DropdownMenuLabel>
-                    <NewThreadItems claude={hasFeature(entry, "claude")} onPick={(kind) => void start(entry, kind)} />
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-              {!isCollapsed && (
-                <ul className="flex flex-col gap-px pb-1">
-                  {threads.slice(0, SCRATCH_SHOWN).map((t) => (
-                    <ThreadRow
-                      key={t.id}
-                      deviceId={entry.deviceId}
-                      thread={t}
-                      active={isActive(entry, t)}
-                      actions={threadActions(entry, t)}
+                >
+                  <button
+                    type="button"
+                    onClick={() => toggle(key)}
+                    className="flex h-full shrink-0 items-center rounded-md pl-1.5 focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none"
+                    aria-expanded={!isCollapsed}
+                    aria-label={isCollapsed ? `Show ${deviceName(entry)}'s Scratch threads` : `Hide ${deviceName(entry)}'s Scratch threads`}
+                  >
+                    <ChevronRightIcon
+                      className={cn("size-3 shrink-0 text-muted-foreground transition-transform", !isCollapsed && "rotate-90")}
                     />
-                  ))}
-                  {threads.length > SCRATCH_SHOWN && (
-                    <li>
-                      <Link
-                        to="/d/$deviceId"
-                        params={{ deviceId: entry.deviceId }}
-                        className="flex h-6 items-center pl-7 text-xs text-muted-foreground hover:text-foreground pointer-coarse:h-9"
+                  </button>
+                  <Link
+                    to="/d/$deviceId"
+                    params={{ deviceId: entry.deviceId }}
+                    className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-md pl-1.5 focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none"
+                    title={`${deviceName(entry)}: Scratch, home and projects`}
+                  >
+                    <MonitorIcon className="size-3.5 shrink-0 text-muted-foreground" />
+                    <span className="truncate">{deviceName(entry)}</span>
+                    {isCollapsed && threads.length > 0 && (
+                      <span className="text-xs text-muted-foreground tabular-nums">{threads.length}</span>
+                    )}
+                  </Link>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        disabled={!live}
+                        className="hidden group-hover:inline-flex focus-visible:inline-flex data-[state=open]:inline-flex pointer-coarse:inline-flex pointer-coarse:size-8"
+                        aria-label={`New Scratch thread on ${deviceName(entry)}`}
+                        title="New Scratch thread"
                       >
-                        All {threads.length} on {deviceName(entry)}
-                      </Link>
-                    </li>
-                  )}
-                  {threads.length === 0 && live && (
-                    <li>
-                      <Link
-                        to="/d/$deviceId"
-                        params={{ deviceId: entry.deviceId }}
-                        className="flex h-6 items-center gap-1.5 pl-7 text-xs text-muted-foreground hover:text-foreground pointer-coarse:h-9"
-                      >
-                        <PlusIcon className="size-3" />
-                        Start something on {deviceName(entry)}
-                      </Link>
-                    </li>
-                  )}
-                </ul>
-              )}
-            </li>
-          );
-        })}
-      </ul>
+                        <PlusIcon />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="start">
+                      <DropdownMenuLabel>New in a fresh Scratch folder</DropdownMenuLabel>
+                      <NewThreadItems claude={hasFeature(entry, "claude")} onPick={(kind) => void start(entry, kind)} />
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+                {!isCollapsed && (
+                  <ul className="flex flex-col gap-px pb-1">
+                    {threads.slice(0, SCRATCH_SHOWN).map((t) => (
+                      <ThreadRow
+                        key={t.id}
+                        deviceId={entry.deviceId}
+                        thread={t}
+                        active={isActive(entry, t)}
+                        actions={threadActions(entry, t)}
+                      />
+                    ))}
+                    {threads.length > SCRATCH_SHOWN && (
+                      <li>
+                        <Link
+                          to="/d/$deviceId"
+                          params={{ deviceId: entry.deviceId }}
+                          className="flex h-6 items-center pl-7 text-xs text-muted-foreground hover:text-foreground pointer-coarse:h-9"
+                        >
+                          All {threads.length} on {deviceName(entry)}
+                        </Link>
+                      </li>
+                    )}
+                    {threads.length === 0 && live && (
+                      <li>
+                        <Link
+                          to="/d/$deviceId"
+                          params={{ deviceId: entry.deviceId }}
+                          className="flex h-6 items-center gap-1.5 pl-7 text-xs text-muted-foreground hover:text-foreground pointer-coarse:h-9"
+                        >
+                          <PlusIcon className="size-3" />
+                          Start something on {deviceName(entry)}
+                        </Link>
+                      </li>
+                    )}
+                  </ul>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }
