@@ -15,6 +15,8 @@ export class CursorRenderer {
   private overlayScale = 1;
   /** Where the host last put the pointer on this picture, 0..1. */
   hostPosition: { x: number; y: number } | null = null;
+  /** Pinned: the overlay goes wherever the host says the pointer is (the viewer only sends motion). */
+  followHost = false;
   /** Pinned: the host moved the pointer itself (someone at the machine). */
   onHostMove?: (pos: { x: number; y: number }) => void;
   private overlay: HTMLCanvasElement;
@@ -84,7 +86,10 @@ export class CursorRenderer {
   setPosition(pos: CursorPosition) {
     if (pos.inside) this.hostPosition = { x: pos.x, y: pos.y };
     if (this.pinned) {
-      if (pos.inside && performance.now() - this.lastPinMove > 300) {
+      if (pos.inside && this.followHost) {
+        this.pinned = { x: pos.x, y: pos.y };
+        this.place(this.pinned);
+      } else if (pos.inside && performance.now() - this.lastPinMove > 300) {
         this.pinned = { x: pos.x, y: pos.y };
         this.place(this.pinned);
         this.onHostMove?.(this.pinned);

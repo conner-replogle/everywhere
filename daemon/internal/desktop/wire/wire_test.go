@@ -66,7 +66,7 @@ func TestShortStringUTF8(t *testing.T) {
 
 func TestHello(t *testing.T) {
 	got := Hello{Width: 2, Height: 1, Output: "DP-1", Window: "9", Class: "foot", Title: "t"}.Marshal()
-	want := []byte{TypeHello, 2, 0, 1, 0, 4, 'D', 'P', '-', '1', 1, '9', 4, 'f', 'o', 'o', 't', 1, 't'}
+	want := []byte{TypeHello, 2, 0, 1, 0, 4, 'D', 'P', '-', '1', 1, '9', 4, 'f', 'o', 'o', 't', 1, 't', HelloMoveBy}
 	if string(got) != string(want) {
 		t.Fatalf("got %v", got)
 	}

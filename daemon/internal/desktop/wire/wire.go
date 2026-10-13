@@ -32,6 +32,7 @@ const (
 	TypeClipboard    byte = 0x0d // the viewer's clipboard text
 	TypeSetClipSync  byte = 0x0e // exchange clipboard text or not
 	TypeText         byte = 0x0f // text to type, from a keyboard with no physical keys
+	TypeMoveBy       byte = 0x10 // relative motion, with the mouse captured (control channel)
 )
 
 // Host → viewer.
@@ -72,6 +73,13 @@ var le = binary.LittleEndian
 type Move struct {
 	Seq  uint16
 	X, Y uint16 // 0..65535 across the video frame
+}
+
+// MoveBy moves the pointer by DX, DY host pixels, as a mouse does: what
+// games that capture the pointer read. Buttons after it press where the
+// pointer is, until the next Move.
+type MoveBy struct {
+	DX, DY float32
 }
 
 type Button struct {
@@ -172,7 +180,7 @@ func Parse(b []byte) (any, error) {
 	need := map[byte]int{
 		TypeMove: 7, TypeButton: 7, TypeScroll: 10, TypeKey: 4, TypeReleaseAll: 1, TypePing: 13, TypeSelectOutput: 2,
 		TypeSetMode: 2, TypeWorkspace: 5, TypeSetFollow: 2, TypeSelectWindow: 2, TypeFocusWindow: 2, TypeClipboard: 5,
-		TypeSetClipSync: 2, TypeText: 3,
+		TypeSetClipSync: 2, TypeText: 3, TypeMoveBy: 9,
 	}
 	n, known := need[b[0]]
 	if !known {
@@ -184,6 +192,8 @@ func Parse(b []byte) (any, error) {
 	switch b[0] {
 	case TypeMove:
 		return Move{Seq: le.Uint16(b[1:]), X: le.Uint16(b[3:]), Y: le.Uint16(b[5:])}, nil
+	case TypeMoveBy:
+		return MoveBy{DX: math.Float32frombits(le.Uint32(b[1:])), DY: math.Float32frombits(le.Uint32(b[5:]))}, nil
 	case TypeButton:
 		return Button{Button: b[1], Pressed: b[2] != 0, X: le.Uint16(b[3:]), Y: le.Uint16(b[5:])}, nil
 	case TypeScroll:
@@ -243,6 +253,9 @@ type Hello struct {
 	Window, Class, Title string
 }
 
+// HelloMoveBy flags a host that takes MoveBy.
+const HelloMoveBy = 1
+
 func (h Hello) Marshal() []byte {
 	b := []byte{TypeHello}
 	b = le.AppendUint16(b, h.Width)
@@ -250,7 +263,8 @@ func (h Hello) Marshal() []byte {
 	b = append(b, shortString(h.Output)...)
 	b = append(b, shortString(h.Window)...)
 	b = append(b, shortString(h.Class)...)
-	return append(b, shortString(h.Title)...)
+	b = append(b, shortString(h.Title)...)
+	return append(b, HelloMoveBy)
 }
 
 // WindowInfo is one of the host's windows.

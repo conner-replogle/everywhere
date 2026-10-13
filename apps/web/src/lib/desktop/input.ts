@@ -27,6 +27,8 @@ export class InputForwarder {
   /** Where the host pointer goes when the lock takes hold. */
   private lockStart: [number, number] = [0.5, 0.5];
   private wasLocked = false;
+  /** The host takes relative motion: sent while the mouse is captured, for games. */
+  relativeMotion = false;
   onLockChange?: (locked: boolean) => void;
   private pressedKeys = new Set<number>();
   private detach: (() => void)[] = [];
@@ -63,6 +65,7 @@ export class InputForwarder {
     const locked = this.locked;
     if (locked === this.wasLocked) return;
     this.wasLocked = locked;
+    this.opts.cursor.followHost = locked && this.relativeMotion;
     if (locked) {
       const [x, y] = this.lockStart;
       this.opts.cursor.pin({ x, y });
@@ -132,8 +135,15 @@ export class InputForwarder {
     if (p) this.moveTo(p[0], p[1]);
   }
 
-  /** Moves the host pointer by the mouse's motion, at the picture's scale. */
+  /**
+   * Moves the host pointer by the mouse's motion: as a mouse would on the host
+   * when it can take that, otherwise at the picture's scale.
+   */
   private moveLocked(e: MouseEvent) {
+    if (this.relativeMotion) {
+      if (e.movementX || e.movementY) this.send(this.conn.control, proto.moveBy(e.movementX, e.movementY));
+      return;
+    }
     const at = this.opts.cursor.pinnedAt;
     const r = this.opts.cursor.contentRect();
     if (!at || !r) return;
@@ -157,8 +167,12 @@ export class InputForwarder {
     e.preventDefault();
     if (pressed && this.captureMouse && !this.touchTrackpad && e.pointerType === "mouse") {
       this.lockStart = p;
-      // Rejected without a user gesture or after a recent Esc; the click still goes through.
-      Promise.resolve(this.video.requestPointerLock()).catch(() => {});
+      // Raw mouse counts where the browser has them, for games; rejected
+      // without a user gesture or after a recent Esc, but the click still goes through.
+      const lock = (o?: PointerLockOptions) => Promise.resolve(this.video.requestPointerLock(o));
+      lock({ unadjustedMovement: true })
+        .catch(() => lock())
+        .catch(() => {});
     } else if (pressed) this.video.setPointerCapture(e.pointerId);
     this.send(this.conn.control, proto.button(e.button, pressed, p[0], p[1]));
   }

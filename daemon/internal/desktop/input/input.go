@@ -60,6 +60,11 @@ func (d *Device) Motion(x, y uint16) error {
 	return check(C.oi_motion(d.d, C.uint32_t(x), C.uint32_t(y)))
 }
 
+// MotionBy moves the pointer by dx, dy output pixels, as a mouse does.
+func (d *Device) MotionBy(dx, dy float64) error {
+	return check(C.oi_motion_by(d.d, C.double(dx), C.double(dy)))
+}
+
 func (d *Device) Button(code uint32, pressed bool) error {
 	return check(C.oi_button(d.d, C.uint32_t(code), cbool(pressed)))
 }

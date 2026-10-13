@@ -2,6 +2,7 @@ package input
 
 import (
 	"errors"
+	"math"
 	"sync"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/desktop/ipc"
@@ -33,6 +34,7 @@ type Device struct {
 	mon win32.Rect
 
 	mu      sync.Mutex
+	rest    [2]float64 // MotionBy's fractions of a pixel, carried over
 	keys    map[uint32]bool
 	buttons map[uint32]bool
 }
@@ -52,6 +54,19 @@ func (d *Device) Motion(x, y uint16) error {
 	px := float64(d.mon.Left) + float64(x)/MotionMax*float64(d.mon.Width()-1)
 	py := float64(d.mon.Top) + float64(y)/MotionMax*float64(d.mon.Height()-1)
 	return win32.MoveTo(px, py)
+}
+
+// MotionBy moves the pointer by dx, dy pixels, as a mouse does.
+func (d *Device) MotionBy(dx, dy float64) error {
+	d.mu.Lock()
+	x, y := d.rest[0]+dx, d.rest[1]+dy
+	ix, iy := math.Trunc(x), math.Trunc(y)
+	d.rest = [2]float64{x - ix, y - iy}
+	d.mu.Unlock()
+	if ix == 0 && iy == 0 {
+		return nil
+	}
+	return win32.MoveBy(int32(ix), int32(iy))
 }
 
 var buttons = map[uint32]int{

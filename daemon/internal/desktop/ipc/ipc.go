@@ -44,6 +44,8 @@ const (
 	CmdScroll     = 'S' // u8 continuous, f64 dx, f64 dy
 	CmdKey        = 'Y' // u32 linux KEY_* code, u8 pressed
 	CmdReleaseAll = 'R' // —
+	CmdMotionBy   = 'm' // f32 dx, f32 dy (output pixels)
+	CmdButtonHere = 'p' // u32 linux BTN_* code, u8 pressed; where the pointer is
 	CmdStill      = 'G' // — (agent worker); replies MsgStill
 	CmdType       = 'T' // u32 Unicode code point (agent worker); replies MsgTyped
 )
@@ -51,7 +53,7 @@ const (
 // CommandLen is each command's payload size after the command byte.
 var CommandLen = map[byte]int{
 	CmdKeyframe: 0, CmdBitrate: 4, CmdQuit: 0, CmdMotion: 4, CmdButton: 9,
-	CmdScroll: 17, CmdKey: 5, CmdReleaseAll: 0, CmdStill: 0, CmdType: 4,
+	CmdScroll: 17, CmdKey: 5, CmdReleaseAll: 0, CmdStill: 0, CmdType: 4, CmdMotionBy: 8, CmdButtonHere: 5,
 }
 
 // CursorHeaderLen is the fixed part of a cursor message: u64 image generation,

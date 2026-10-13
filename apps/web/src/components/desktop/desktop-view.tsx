@@ -330,7 +330,7 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
       forwarder.setCaptureMouse(captureMouseRef.current);
       forwarder.onLockChange = (locked) => {
         setMouseLocked(locked);
-        if (locked) setNotice("Mouse captured. Press Esc to release it.");
+        if (locked) setNotice(`Mouse captured. ${document.fullscreenElement ? "Hold" : "Press"} Esc to release it.`);
       };
       trackpad = trackpadRef.current = new Trackpad(video, stage, forwarder, cur);
       trackpad.setEnabled(touchModeRef.current === "trackpad");
@@ -347,6 +347,7 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
         switch (msg?.type) {
           case Type.Hello: {
             setHello(msg);
+            if (forwarder) forwarder.relativeMotion = msg.moveBy;
             const t = connectRef.current.tab;
             const src = sourceOf(msg, tabSource.current?.desktop);
             if (t && JSON.stringify(src) !== JSON.stringify(tabSource.current)) {

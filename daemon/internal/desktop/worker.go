@@ -300,6 +300,24 @@ func (w *worker) Motion(x, y uint16) {
 	w.send(b)
 }
 
+// MotionBy moves the pointer by dx, dy output pixels, as a mouse does.
+func (w *worker) MotionBy(dx, dy float32) {
+	b := make([]byte, 9)
+	b[0] = ipc.CmdMotionBy
+	ipc.LE.PutUint32(b[1:], math.Float32bits(dx))
+	ipc.LE.PutUint32(b[5:], math.Float32bits(dy))
+	w.send(b)
+}
+
+// ButtonHere presses or releases a linux BTN_* button where the pointer is.
+func (w *worker) ButtonHere(code uint32, pressed bool) {
+	b := make([]byte, 6)
+	b[0] = ipc.CmdButtonHere
+	ipc.LE.PutUint32(b[1:], code)
+	b[5] = boolByte(pressed)
+	w.send(b)
+}
+
 // Button moves to x, y, then presses or releases a linux BTN_* button.
 func (w *worker) Button(code uint32, pressed bool, x, y uint16) {
 	b := make([]byte, 10)

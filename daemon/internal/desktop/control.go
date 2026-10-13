@@ -32,7 +32,10 @@ type controller struct {
 	sess  *session
 	mu    sync.Mutex
 	moved bool
-	seq   uint16
+	// relative: the viewer moves the pointer by MoveBy, so buttons press
+	// where it is rather than moving it (a game would see the jump).
+	relative bool
+	seq      uint16
 	// held is the keys the viewer holds down. A capture restart (another
 	// monitor, a resize) brings a new virtual keyboard that knows nothing of
 	// them, so they're pressed on it again: Super held across a
@@ -129,12 +132,19 @@ func (c *controller) apply(msg any) {
 		if c.moved && !wire.Newer(m.Seq, c.seq) {
 			return
 		}
-		c.moved, c.seq = true, m.Seq
+		c.moved, c.seq, c.relative = true, m.Seq, false
 		w.Motion(at(m.X, m.Y))
+	case wire.MoveBy:
+		c.relative = true
+		w.MotionBy(m.DX, m.DY)
 	case wire.Button:
 		if code, ok := domButtons[m.Button]; ok {
 			if win != nil && m.Pressed {
 				c.sess.focusCaptured(win)
+			}
+			if c.relative {
+				w.ButtonHere(code, m.Pressed)
+				return
 			}
 			x, y := at(m.X, m.Y)
 			w.Button(code, m.Pressed, x, y)

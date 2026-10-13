@@ -87,6 +87,14 @@ func MoveTo(x, y float64) error {
 	return send(in)
 }
 
+// MoveBy moves the pointer by dx, dy pixels, as a mouse does: raw input
+// sees the motion, which games that capture the pointer read.
+func MoveBy(dx, dy int32) error {
+	in := mouse(mouseMove, 0)
+	in.Mi.Dx, in.Mi.Dy = dx, dy
+	return send(in)
+}
+
 // Mouse buttons, as Button takes them.
 const (
 	ButtonLeft = iota

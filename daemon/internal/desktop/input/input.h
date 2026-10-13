@@ -14,6 +14,7 @@ typedef struct {
 oi_input *oi_open(const oi_config *cfg, char *err, size_t errlen);
 /* All calls return 0, or -1 once the Wayland connection is unusable. */
 int oi_motion(oi_input *in, uint32_t x, uint32_t y); /* 0..65535 across the output */
+int oi_motion_by(oi_input *in, double dx, double dy); /* relative, in output pixels */
 int oi_button(oi_input *in, uint32_t button, int pressed); /* linux BTN_* code */
 int oi_axis(oi_input *in, int continuous, double dx, double dy);
 int oi_key(oi_input *in, uint32_t key, int pressed); /* linux KEY_* code */

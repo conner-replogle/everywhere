@@ -248,6 +248,12 @@ func (in *injector) apply(cmd byte, p []byte) {
 	switch cmd {
 	case ipc.CmdMotion:
 		err = in.dev.Motion(le.Uint16(p[0:]), le.Uint16(p[2:]))
+	case ipc.CmdMotionBy:
+		dx := math.Float32frombits(le.Uint32(p[0:]))
+		dy := math.Float32frombits(le.Uint32(p[4:]))
+		err = in.dev.MotionBy(float64(dx), float64(dy))
+	case ipc.CmdButtonHere:
+		err = in.dev.Button(le.Uint32(p[0:]), p[4] != 0)
 	case ipc.CmdButton:
 		if err = in.dev.Motion(le.Uint16(p[5:]), le.Uint16(p[7:])); err == nil {
 			err = in.dev.Button(le.Uint32(p[0:]), p[4] != 0)

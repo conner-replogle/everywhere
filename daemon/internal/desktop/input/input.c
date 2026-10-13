@@ -194,6 +194,15 @@ int oi_motion(oi_input *in, uint32_t x, uint32_t y) {
 	return r;
 }
 
+int oi_motion_by(oi_input *in, double dx, double dy) {
+	pthread_mutex_lock(&in->mu);
+	zwlr_virtual_pointer_v1_motion(in->pointer, now_ms(), wl_fixed_from_double(dx), wl_fixed_from_double(dy));
+	zwlr_virtual_pointer_v1_frame(in->pointer);
+	int r = sync_out(in);
+	pthread_mutex_unlock(&in->mu);
+	return r;
+}
+
 int oi_button(oi_input *in, uint32_t button, int pressed) {
 	if (button < BTN_MOUSE || button >= BTN_MOUSE + BUTTON_SLOTS) return 0;
 	pthread_mutex_lock(&in->mu);

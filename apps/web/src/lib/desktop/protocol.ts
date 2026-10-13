@@ -22,6 +22,7 @@ export const Type = {
   Clipboard: 0x0d,
   SetClipSync: 0x0e,
   Text: 0x0f,
+  MoveBy: 0x10,
   // host → viewer
   Hello: 0x80,
   CursorImage: 0x81,
@@ -63,6 +64,8 @@ export interface Hello {
   window: string;
   class: string;
   title: string;
+  /** The host takes moveBy. */
+  moveBy: boolean;
 }
 
 export interface Pong {
@@ -210,6 +213,18 @@ export function move(seq: number, x: number, y: number): ArrayBuffer {
   return b.buffer;
 }
 
+/**
+ * Moves the host pointer by dx, dy pixels, as a mouse does: what games that
+ * capture the pointer read. Buttons then press where it is, until the next move.
+ */
+export function moveBy(dx: number, dy: number): ArrayBuffer {
+  const b = new DataView(new ArrayBuffer(9));
+  b.setUint8(0, Type.MoveBy);
+  b.setFloat32(1, dx, true);
+  b.setFloat32(5, dy, true);
+  return b.buffer;
+}
+
 /** btn is a DOM MouseEvent.button value. */
 export function button(btn: number, pressed: boolean, x: number, y: number): ArrayBuffer {
   const b = new DataView(new ArrayBuffer(7));
@@ -344,8 +359,18 @@ export function parseHost(data: ArrayBuffer): HostMessage | null {
       const [output, o1] = shortString(data, 5);
       const [window, o2] = shortString(data, o1);
       const [cls, o3] = shortString(data, o2);
-      const [title] = shortString(data, o3);
-      return { type: Type.Hello, width: b.getUint16(1, true), height: b.getUint16(3, true), output, window, class: cls, title };
+      const [title, o4] = shortString(data, o3);
+      const flags = o4 < b.byteLength ? b.getUint8(o4) : 0;
+      return {
+        type: Type.Hello,
+        width: b.getUint16(1, true),
+        height: b.getUint16(3, true),
+        output,
+        window,
+        class: cls,
+        title,
+        moveBy: (flags & 1) !== 0,
+      };
     }
     case Type.Windows: {
       if (b.byteLength < 2) return null;
