@@ -33,7 +33,7 @@ export class CursorRenderer {
   }
 
   private onLocalMove = (e: PointerEvent) => {
-    if (this.pinned && e.pointerType === "touch") return;
+    if (this.pinned && (e.pointerType === "touch" || document.pointerLockElement === this.video)) return;
     this.lastLocalMove = performance.now();
     this.overlay.hidden = true;
   };
@@ -59,6 +59,11 @@ export class CursorRenderer {
     }
     if (!was) this.render();
     this.place(pos);
+  }
+
+  /** Where the overlay pointer is, when pinned. */
+  get pinnedAt(): { x: number; y: number } | null {
+    return this.pinned;
   }
 
   /** Marks a held button (a trackpad drag). */

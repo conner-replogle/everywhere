@@ -1,5 +1,6 @@
 import { viewerIsMac } from "../browser-input";
 import type { DesktopConnection } from "./connection";
+import type { CursorRenderer } from "./cursor";
 import { EVDEV, KEY_LEFTMETA } from "./keycodes";
 import * as proto from "./protocol";
 
@@ -8,6 +9,8 @@ export interface InputOptions {
   superSubstitute: string | null;
   /** Keys are forwarded while focus is inside this element. */
   keyTarget: HTMLElement;
+  /** Draws the pointer while the mouse is captured. */
+  cursor: CursorRenderer;
 }
 
 /**
@@ -19,6 +22,12 @@ export class InputForwarder {
   private seq = 0;
   /** Touches go to the Trackpad instead of pointing directly. */
   touchTrackpad = false;
+  /** A click locks the mouse to the picture (pointer lock) until Esc: motion is relative and has no edges. */
+  private captureMouse = false;
+  /** Where the host pointer goes when the lock takes hold. */
+  private lockStart: [number, number] = [0.5, 0.5];
+  private wasLocked = false;
+  onLockChange?: (locked: boolean) => void;
   private pressedKeys = new Set<number>();
   private detach: (() => void)[] = [];
 
@@ -38,15 +47,40 @@ export class InputForwarder {
     this.listen(opts.keyTarget, "focusout", () => this.releaseAll());
     this.listen(window, "blur", () => this.releaseAll());
     this.listen(document, "visibilitychange", () => document.hidden && this.releaseAll());
+    this.listen(document, "pointerlockchange", () => this.onLockChanged());
+  }
+
+  private get locked() {
+    return document.pointerLockElement === this.video;
+  }
+
+  setCaptureMouse(on: boolean) {
+    this.captureMouse = on;
+    if (!on && this.locked) document.exitPointerLock();
+  }
+
+  private onLockChanged() {
+    const locked = this.locked;
+    if (locked === this.wasLocked) return;
+    this.wasLocked = locked;
+    if (locked) {
+      const [x, y] = this.lockStart;
+      this.opts.cursor.pin({ x, y });
+    } else {
+      this.opts.cursor.pin(null);
+      this.releaseAll();
+    }
+    this.onLockChange?.(locked);
   }
 
   dispose() {
+    if (this.locked) document.exitPointerLock();
     this.releaseAll();
     this.detach.forEach((f) => f());
     this.detach = [];
   }
 
-  private listen<K extends keyof HTMLElementEventMap | "visibilitychange">(
+  private listen<K extends keyof HTMLElementEventMap | "visibilitychange" | "pointerlockchange">(
     target: HTMLElement | Window | Document,
     type: K,
     fn: (e: K extends keyof HTMLElementEventMap ? HTMLElementEventMap[K] : Event) => void,
@@ -90,16 +124,42 @@ export class InputForwarder {
 
   private onMove(e: PointerEvent) {
     if (this.touchTrackpad && e.pointerType === "touch") return;
+    if (this.locked) {
+      this.moveLocked(e);
+      return;
+    }
     const p = this.normalize(e);
     if (p) this.moveTo(p[0], p[1]);
   }
 
+  /** Moves the host pointer by the mouse's motion, at the picture's scale. */
+  private moveLocked(e: MouseEvent) {
+    const at = this.opts.cursor.pinnedAt;
+    const r = this.opts.cursor.contentRect();
+    if (!at || !r) return;
+    const x = Math.max(0, Math.min(1, at.x + e.movementX / r.width));
+    const y = Math.max(0, Math.min(1, at.y + e.movementY / r.height));
+    this.opts.cursor.pin({ x, y });
+    this.moveTo(x, y);
+  }
+
   private onButton(e: PointerEvent, pressed: boolean) {
     if (this.touchTrackpad && e.pointerType === "touch") return;
+    if (this.locked) {
+      const at = this.opts.cursor.pinnedAt;
+      if (!at) return;
+      e.preventDefault();
+      this.send(this.conn.control, proto.button(e.button, pressed, at.x, at.y));
+      return;
+    }
     const p = this.normalize(e);
     if (!p) return;
     e.preventDefault();
-    if (pressed) this.video.setPointerCapture(e.pointerId);
+    if (pressed && this.captureMouse && !this.touchTrackpad && e.pointerType === "mouse") {
+      this.lockStart = p;
+      // Rejected without a user gesture or after a recent Esc; the click still goes through.
+      Promise.resolve(this.video.requestPointerLock()).catch(() => {});
+    } else if (pressed) this.video.setPointerCapture(e.pointerId);
     this.send(this.conn.control, proto.button(e.button, pressed, p[0], p[1]));
   }
 

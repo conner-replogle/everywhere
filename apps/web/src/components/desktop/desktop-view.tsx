@@ -10,6 +10,7 @@ import {
   MinimizeIcon,
   MonitorIcon,
   MonitorOffIcon,
+  MouseIcon,
   MousePointer2Icon,
   PauseIcon,
   PointerIcon,
@@ -82,6 +83,8 @@ interface Prefs {
   clipboard: boolean;
   /** What a finger does: steer the pointer like a laptop trackpad, or point where it touches. Unset: by device. */
   touch?: TouchMode;
+  /** A click locks the mouse to the picture until Esc. */
+  captureMouse?: boolean;
 }
 
 type TouchMode = "trackpad" | "direct";
@@ -90,6 +93,13 @@ const hasTouch = typeof navigator !== "undefined" && navigator.maxTouchPoints > 
 /** Phones and tablets get the trackpad; a touchscreen laptop points directly. */
 const defaultTouch = (): TouchMode =>
   typeof matchMedia !== "undefined" && matchMedia("(pointer: coarse)").matches ? "trackpad" : "direct";
+
+/** A mouse or touchpad that pointer lock can capture. */
+const canCaptureMouse =
+  typeof matchMedia !== "undefined" &&
+  matchMedia("(any-pointer: fine)").matches &&
+  typeof HTMLElement !== "undefined" &&
+  "requestPointerLock" in HTMLElement.prototype;
 
 const DEFAULT_PREFS: Prefs = { mode: "sharp", follow: true, stats: false, superSub: true, clipboard: true };
 
@@ -225,6 +235,11 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
   const touchModeRef = useRef(touchMode);
   touchModeRef.current = touchMode;
   const trackpadRef = useRef<Trackpad | null>(null);
+  const captureMouse = canCaptureMouse && !!prefs.captureMouse && touchMode !== "trackpad";
+  const captureMouseRef = useRef(captureMouse);
+  captureMouseRef.current = captureMouse;
+  const forwarderRef = useRef<InputForwarder | null>(null);
+  const [mouseLocked, setMouseLocked] = useState(false);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -306,8 +321,17 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
       }
       connRef.current = conn;
       video.srcObject = conn.stream;
-      forwarder = new InputForwarder(video, conn, { superSubstitute: superSub ? "AltRight" : null, keyTarget: stage });
       const cur = (cursor = new CursorRenderer(video));
+      forwarder = forwarderRef.current = new InputForwarder(video, conn, {
+        superSubstitute: superSub ? "AltRight" : null,
+        keyTarget: stage,
+        cursor: cur,
+      });
+      forwarder.setCaptureMouse(captureMouseRef.current);
+      forwarder.onLockChange = (locked) => {
+        setMouseLocked(locked);
+        if (locked) setNotice("Mouse captured. Press Esc to release it.");
+      };
       trackpad = trackpadRef.current = new Trackpad(video, stage, forwarder, cur);
       trackpad.setEnabled(touchModeRef.current === "trackpad");
       stage.focus({ preventScroll: true });
@@ -411,6 +435,8 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
       trackpad?.dispose();
       trackpadRef.current = null;
       forwarder?.dispose();
+      forwarderRef.current = null;
+      setMouseLocked(false);
       cursor?.dispose();
       connRef.current?.close();
       connRef.current = null;
@@ -419,6 +445,7 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
   }, [peer, attempt, superSub, reconnect, visible]);
 
   useEffect(() => trackpadRef.current?.setEnabled(touchMode === "trackpad"), [touchMode]);
+  useEffect(() => forwarderRef.current?.setCaptureMouse(captureMouse), [captureMouse]);
 
   const sendControl = useCallback((msg: ArrayBuffer) => {
     const c = connRef.current?.control;
@@ -697,6 +724,28 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
               onClick={() => updatePrefs({ touch: touchMode === "trackpad" ? "direct" : "trackpad" })}
             >
               {touchMode === "trackpad" ? <MousePointer2Icon /> : <PointerIcon />}
+            </Button>
+          )}
+          {canCaptureMouse && touchMode !== "trackpad" && (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className={cn(iconBtn, captureMouse && "text-primary")}
+              aria-label="Capture mouse"
+              aria-pressed={captureMouse}
+              title={
+                captureMouse
+                  ? mouseLocked
+                    ? "Mouse captured: press Esc to release it. Click to stop capturing."
+                    : "Clicking the desktop captures the mouse until you press Esc. Click to stop capturing."
+                  : "Capture the mouse: clicking the desktop locks it there until you press Esc."
+              }
+              onClick={() => {
+                updatePrefs({ captureMouse: !captureMouse });
+                focusStage();
+              }}
+            >
+              <MouseIcon />
             </Button>
           )}
           <DropdownMenu>
