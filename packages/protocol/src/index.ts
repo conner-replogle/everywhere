@@ -366,7 +366,7 @@ export interface Process {
   statusText?: string;
   /** The terminal progress (OSC 9;4) it last reported. */
   progress?: ProcessProgress;
-  /** Local URLs seen in its output. */
+  /** Its web UI link the model chose, or else local URLs seen in its output. */
   urls?: string[];
   lastLine?: string;
   logPath?: string;

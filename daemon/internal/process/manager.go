@@ -62,6 +62,9 @@ type Spec struct {
 	Env         map[string]string `json:"env,omitempty"`
 	Checkpoints []CheckpointSpec  `json:"checkpoints,omitempty"`
 	Stats       []StatSpec        `json:"stats,omitempty"`
+	// URL is the web UI link the user is shown, in place of the localhost
+	// ones seen in its output.
+	URL string `json:"url,omitempty"`
 	// Notify: tell the model when it ends, even if that wakes it.
 	Notify bool `json:"notify,omitempty"`
 }
@@ -222,6 +225,12 @@ func (m *Manager) Start(threadID, agentThreadID, name string, spec Spec, replace
 	prog, err := newProgress(now, spec.Checkpoints, spec.Stats, prevTimings)
 	if err != nil {
 		return protocol.Process{}, err
+	}
+	if spec.URL != "" {
+		if err := checkURL(spec.URL); err != nil {
+			return protocol.Process{}, err
+		}
+		prog.url = spec.URL
 	}
 	p := &proc{
 		m: m, id: row.ID, threadID: threadID, agentThreadID: agentThreadID, name: name,
@@ -428,7 +437,15 @@ func (m *Manager) Report(threadID, name string, r report, done bool) (protocol.P
 	if r.Stat != "" && !validKey(r.Stat) {
 		return protocol.Process{}, fmt.Errorf("stat key %q: use letters, digits, - and _", r.Stat)
 	}
+	if r.URL != "" {
+		if err := checkURL(r.URL); err != nil {
+			return protocol.Process{}, err
+		}
+	}
 	p.mu.Lock()
+	if r.URL != "" {
+		p.spec.URL = r.URL // so a tracker keeps it across restarts
+	}
 	p.prog.apply(r, p.logSize+p.logBase, time.Now()) // the model reported it, so no need to tell it
 	p.bump()
 	p.mu.Unlock()
@@ -769,6 +786,7 @@ func (m *Manager) loadTracker(r store.Process) *proc {
 		prog.stats = append(prog.stats, x)
 	}
 	prog.statusText = s.StatusText
+	prog.url = spec.URL
 	p := &proc{
 		m: m, id: r.ID, threadID: r.ThreadID, agentThreadID: r.AgentThreadID, name: r.Name,
 		spec: spec, cwd: r.Cwd, started: started, prev: r.Prev, done: make(chan struct{}),

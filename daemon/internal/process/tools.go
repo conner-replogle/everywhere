@@ -72,6 +72,8 @@ var (
 
 const nameProp = `"name": {"type": "string", "description": "The process's name, as given to process_start."}`
 
+const urlHelp = "The link the user opens its web UI with, shown on the process in place of the localhost links seen in its output. Prefer this machine's Tailscale address when Tailscale is up (its MagicDNS name, or the 100.x IP from tailscale ip -4), so the user can open it from their other devices too; the server must then listen on all interfaces (e.g. --host 0.0.0.0), not only localhost. Otherwise use localhost."
+
 const reportHelp = `
 
 The process can report progress by printing lines that start with "::ew " (hidden from the user's log view; flush stdout, e.g. print(..., flush=True)):
@@ -89,7 +91,7 @@ var toolDefs = []toolDef{
 		description: "Start a long-running command in the background for this thread: a dev server, watcher, build, test run, migration or script. The user sees it, with live progress and its log, in the everywhere app's processes tab, and it keeps running across your turns. Use this instead of a backgrounded shell command (never append & or use nohup). " +
 			"It runs in the user's login shell in the thread's directory (or cwd) on a terminal. Returns its status, progress and recent output once wait_for happens, the process exits, or timeout_s passes (default 5s, enough to catch a crash on startup). " +
 			"Declare checkpoints (milestones, optionally matched by a regex on output lines, e.g. {label:'Ready', pattern:'Local:.*http'}) and stats (counters with a total get a progress bar; notify_when like '> 0' tells you when it becomes true). " +
-			"When it exits you're told: right away if notify is set (even if that starts a turn), otherwise with your next message. Leave out command to make a tracker: a progress bar you update with process_report while you work through a long task yourself." + reportHelp,
+			"When it exits you're told: right away if notify is set (even if that starts a turn), otherwise with your next message. Set url to the link for its web UI, if it has one. Leave out command to make a tracker: a progress bar you update with process_report while you work through a long task yourself." + reportHelp,
 		schema: `{"type": "object", "required": ["name"], "properties": {
     "name": {"type": "string", "description": "Short name, unique in this thread, e.g. dev, tests, migrate. Starting a name again starts a new run of it."},
     "command": {"type": "string", "description": "Shell command line. Leave out for a tracker."},
@@ -108,7 +110,8 @@ var toolDefs = []toolDef{
     "notify": {"type": "boolean", "description": "Tell you as soon as it exits, starting a turn if you're idle. Use it for builds and test runs you're waiting on."},
     "wait_for": {"type": "string", "description": "A checkpoint label to wait for (e.g. the server's Ready), or 'exit' to wait for it to finish."},
     "timeout_s": {"type": "number", "minimum": 0, "maximum": 600, "description": "Longest to wait, in seconds. Default 5, or 120 with wait_for."},
-    "replace": {"type": "boolean", "description": "If a process with this name is running, stop it first."}
+    "replace": {"type": "boolean", "description": "If a process with this name is running, stop it first."},
+    "url": {"type": "string", "description": "` + urlHelp + `"}
   }}`,
 		run: func(ctx context.Context, m *Manager, c mcp.Caller, args json.RawMessage) (*mcp.Result, error) {
 			var a struct {
@@ -122,11 +125,12 @@ var toolDefs = []toolDef{
 				WaitFor     string            `json:"wait_for"`
 				TimeoutS    *float64          `json:"timeout_s"`
 				Replace     bool              `json:"replace"`
+				URL         string            `json:"url"`
 			}
 			if err := decode(args, &a); err != nil {
 				return nil, err
 			}
-			spec := Spec{Command: strings.TrimSpace(a.Command), Cwd: a.Cwd, Env: a.Env, Checkpoints: a.Checkpoints, Stats: a.Stats, Notify: a.Notify}
+			spec := Spec{Command: strings.TrimSpace(a.Command), Cwd: a.Cwd, Env: a.Env, Checkpoints: a.Checkpoints, Stats: a.Stats, URL: strings.TrimSpace(a.URL), Notify: a.Notify}
 			v, err := m.Start(c.Browser, c.ThreadID, a.Name, spec, a.Replace)
 			if err != nil {
 				return nil, err
@@ -310,7 +314,7 @@ var toolDefs = []toolDef{
 	},
 	{
 		name: "process_report", title: "Report progress", annotations: changes,
-		description: "Update a tracker's (or a running process's) progress yourself: set or increment a stat, reach a checkpoint, set the status text, or mark a tracker done. Use it to show the user how far along a long multi-step task is.",
+		description: "Update a tracker's (or a running process's) progress yourself: set or increment a stat, reach a checkpoint, set the status text, set the web UI link, or mark a tracker done. Use it to show the user how far along a long multi-step task is.",
 		schema: `{"type": "object", "required": ["name"], "properties": {` + nameProp + `,
     "stat": {"type": "string", "description": "Stat key to update."},
     "value": {"type": "number", "description": "The stat's new value."},
@@ -320,7 +324,8 @@ var toolDefs = []toolDef{
     "label": {"type": "string", "description": "The stat's label."},
     "checkpoint": {"type": "string", "description": "Reach this checkpoint (added if it wasn't declared)."},
     "status": {"type": "string", "description": "Status text, e.g. the step you're on."},
-    "done": {"type": "boolean", "description": "Finish the tracker."}
+    "done": {"type": "boolean", "description": "Finish the tracker."},
+    "url": {"type": "string", "description": "Set or change the web UI link, e.g. once you know its port. ` + urlHelp + `"}
   }}`,
 		run: func(_ context.Context, m *Manager, c mcp.Caller, args json.RawMessage) (*mcp.Result, error) {
 			var a struct {

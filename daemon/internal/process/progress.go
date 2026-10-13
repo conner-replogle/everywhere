@@ -3,6 +3,7 @@ package process
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -102,6 +103,7 @@ type progress struct {
 	stats       []*stat
 	statusText  string
 	osc         *protocol.ProcessProgress
+	url         string // the web UI link the model chose; replaces urls
 	urls        []string
 	lastLine    string
 }
@@ -246,6 +248,7 @@ type report struct {
 	Checkpoint string   `json:"checkpoint,omitempty"`
 	Status     *string  `json:"status,omitempty"`
 	Notify     string   `json:"notify,omitempty"`
+	URL        string   `json:"url,omitempty"`
 }
 
 // parseReport parses what follows "::ew ".
@@ -402,7 +405,19 @@ func (p *progress) apply(r report, off int64, now time.Time) []event {
 	if r.Notify != "" {
 		evs = append(evs, event{attrs: `kind="notify"`, text: clip(r.Notify, 2000)})
 	}
+	if r.URL != "" && checkURL(r.URL) == nil {
+		p.url = r.URL
+	}
 	return evs
+}
+
+// checkURL checks a web UI link the model chose.
+func checkURL(s string) error {
+	u, err := url.Parse(s)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return fmt.Errorf("url %q: give an http:// or https:// link", s)
+	}
+	return nil
 }
 
 // record samples the stat's value, at most once a second.
@@ -460,7 +475,11 @@ func (p *progress) fill(v *protocol.Process, now time.Time) {
 		o := *p.osc
 		v.Progress = &o
 	}
-	v.URLs = append([]string(nil), p.urls...)
+	if p.url != "" {
+		v.URLs = []string{p.url}
+	} else {
+		v.URLs = append([]string(nil), p.urls...)
+	}
 	v.LastLine = p.lastLine
 }
 
