@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf16"
@@ -99,16 +100,38 @@ type monitorInfoEx struct {
 	Device  [32]uint16
 }
 
-// Monitors lists the displays, the primary one first.
-func Monitors() ([]Monitor, error) {
-	var mons []Monitor
-	cb := syscall.NewCallback(func(h, _ uintptr, _ *Rect, _ uintptr) uintptr {
+// Enumeration callbacks are made once: Go never frees one, and a process
+// gets about 2000 before syscall.NewCallback panics. Each collects into a
+// slice its mutex guards for the length of one enumeration.
+var (
+	enumMonitorsMu sync.Mutex
+	enumMonitors   []Monitor
+	enumMonitorsCB = syscall.NewCallback(func(h, _ uintptr, _ *Rect, _ uintptr) uintptr {
 		if m, ok := monitorInfo(h); ok {
-			mons = append(mons, m)
+			enumMonitors = append(enumMonitors, m)
 		}
 		return 1
 	})
-	if r, _, err := procEnumDisplayMonitors.Call(0, 0, cb, 0); r == 0 {
+
+	enumWindowsMu sync.Mutex
+	enumWindows   []Window
+	enumWindowsCB = syscall.NewCallback(func(h windows.HWND, _ uintptr) uintptr {
+		if w, ok := appWindow(h); ok {
+			enumWindows = append(enumWindows, w)
+		}
+		return 1
+	})
+)
+
+// Monitors lists the displays, the primary one first.
+func Monitors() ([]Monitor, error) {
+	enumMonitorsMu.Lock()
+	enumMonitors = nil
+	r, _, err := procEnumDisplayMonitors.Call(0, 0, enumMonitorsCB, 0)
+	mons := enumMonitors
+	enumMonitors = nil
+	enumMonitorsMu.Unlock()
+	if r == 0 {
 		return nil, fmt.Errorf("EnumDisplayMonitors: %w", err)
 	}
 	for i, m := range mons {
@@ -186,14 +209,13 @@ const (
 
 // Windows lists the windows Alt+Tab would, in z-order (frontmost first).
 func Windows() ([]Window, error) {
-	var out []Window
-	cb := syscall.NewCallback(func(h windows.HWND, _ uintptr) uintptr {
-		if w, ok := appWindow(h); ok {
-			out = append(out, w)
-		}
-		return 1
-	})
-	if err := windows.EnumWindows(cb, nil); err != nil {
+	enumWindowsMu.Lock()
+	enumWindows = nil
+	err := windows.EnumWindows(enumWindowsCB, nil)
+	out := enumWindows
+	enumWindows = nil
+	enumWindowsMu.Unlock()
+	if err != nil {
 		return nil, fmt.Errorf("EnumWindows: %w", err)
 	}
 	return out, nil
