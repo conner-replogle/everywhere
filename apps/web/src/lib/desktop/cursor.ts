@@ -15,8 +15,6 @@ export class CursorRenderer {
   private overlayScale = 1;
   /** Where the host last put the pointer on this picture, 0..1. */
   hostPosition: { x: number; y: number } | null = null;
-  /** Pinned: the overlay goes wherever the host says the pointer is (the viewer only sends motion). */
-  followHost = false;
   /** Pinned: the host moved the pointer itself (someone at the machine). */
   onHostMove?: (pos: { x: number; y: number }) => void;
   private overlay: HTMLCanvasElement;
@@ -35,7 +33,7 @@ export class CursorRenderer {
   }
 
   private onLocalMove = (e: PointerEvent) => {
-    if (this.pinned && (e.pointerType === "touch" || document.pointerLockElement === this.video)) return;
+    if (this.pinned && e.pointerType === "touch") return;
     this.lastLocalMove = performance.now();
     this.overlay.hidden = true;
   };
@@ -63,11 +61,6 @@ export class CursorRenderer {
     this.place(pos);
   }
 
-  /** Where the overlay pointer is, when pinned. */
-  get pinnedAt(): { x: number; y: number } | null {
-    return this.pinned;
-  }
-
   /** Marks a held button (a trackpad drag). */
   setPressed(on: boolean) {
     this.overlay.style.filter = on ? "drop-shadow(0 0 3px var(--color-primary)) drop-shadow(0 0 1px var(--color-primary))" : "";
@@ -86,10 +79,7 @@ export class CursorRenderer {
   setPosition(pos: CursorPosition) {
     if (pos.inside) this.hostPosition = { x: pos.x, y: pos.y };
     if (this.pinned) {
-      if (pos.inside && this.followHost) {
-        this.pinned = { x: pos.x, y: pos.y };
-        this.place(this.pinned);
-      } else if (pos.inside && performance.now() - this.lastPinMove > 300) {
+      if (pos.inside && performance.now() - this.lastPinMove > 300) {
         this.pinned = { x: pos.x, y: pos.y };
         this.place(this.pinned);
         this.onHostMove?.(this.pinned);

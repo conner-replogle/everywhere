@@ -1,6 +1,6 @@
 import { viewerIsMac } from "../browser-input";
 import type { DesktopConnection } from "./connection";
-import type { CursorRenderer } from "./cursor";
+import { GrabDetector } from "./grab";
 import { EVDEV, KEY_LEFTMETA } from "./keycodes";
 import * as proto from "./protocol";
 
@@ -9,25 +9,37 @@ export interface InputOptions {
   superSubstitute: string | null;
   /** Keys are forwarded while focus is inside this element. */
   keyTarget: HTMLElement;
-  /** Draws the pointer while the mouse is captured. */
-  cursor: CursorRenderer;
 }
+
+/** Once the mouse is captured, the host pointer going this far (0..1 of the picture) means the game let it go. */
+const RELEASED = 0.03;
+/** ...counting from where it settles this long after the capture. */
+const SETTLE_MS = 300;
 
 /**
  * Forwards pointer and keyboard events on the video element to the host.
  * Keys go by physical position (KeyboardEvent.code → evdev), so the host's
  * layout decides the character. Elements marked `data-local-keys` keep their keys.
+ *
+ * The mouse follows the host, as game streaming does: while an app there
+ * (a game) has grabbed the pointer, a click captures the mouse (pointer lock)
+ * and sends its motion rather than positions, until Esc or the app lets go.
  */
 export class InputForwarder {
   private seq = 0;
   /** Touches go to the Trackpad instead of pointing directly. */
   touchTrackpad = false;
-  /** A click locks the mouse to the picture (pointer lock) until Esc: motion is relative and has no edges. */
-  private captureMouse = false;
-  /** Where the host pointer goes when the lock takes hold. */
-  private lockStart: [number, number] = [0.5, 0.5];
+  /** Nothing reaches the host: the Trackpad zooms the picture instead. */
+  private viewOnly = false;
+  /** Tells when an app on the host has grabbed the pointer. */
+  readonly grab = new GrabDetector();
+  /** Where the click that captured the mouse was, sent with its buttons. */
+  private lockAt: [number, number] = [0.5, 0.5];
+  private lockedSince = 0;
+  /** Where the host pointer settled after the capture. */
+  private lockAnchor: { x: number; y: number } | null = null;
   private wasLocked = false;
-  /** The host takes relative motion: sent while the mouse is captured, for games. */
+  /** The host takes relative motion, so the mouse can be captured for a game. */
   relativeMotion = false;
   onLockChange?: (locked: boolean) => void;
   private pressedKeys = new Set<number>();
@@ -56,23 +68,46 @@ export class InputForwarder {
     return document.pointerLockElement === this.video;
   }
 
-  setCaptureMouse(on: boolean) {
-    this.captureMouse = on;
-    if (!on && this.locked) document.exitPointerLock();
+  setViewOnly(on: boolean) {
+    if (on === this.viewOnly) return;
+    this.viewOnly = on;
+    if (on) {
+      if (this.locked) document.exitPointerLock();
+      this.releaseAll();
+    }
+  }
+
+  /** Where the host says its pointer is: whether the game has it, or let it go. */
+  hostPosition(pos: { inside: boolean; x: number; y: number }) {
+    const at = pos.inside ? { x: pos.x, y: pos.y } : null;
+    this.grab.hostAt(at);
+    if (!this.locked || !at) return;
+    if (!this.lockAnchor || performance.now() - this.lockedSince < SETTLE_MS) this.lockAnchor = at;
+    else if (Math.hypot(at.x - this.lockAnchor.x, at.y - this.lockAnchor.y) > RELEASED) {
+      // It follows the mouse's motion: the game let go (a menu, or it lost focus).
+      this.grab.reset();
+      document.exitPointerLock();
+    }
+  }
+
+  /** Captures the mouse for a game, from a click. */
+  private capture(at: [number, number]) {
+    this.lockAt = at;
+    // Raw mouse counts where the browser has them; rejected without a user
+    // gesture or after a recent Esc, but the click still goes through.
+    const lock = (o?: PointerLockOptions) => Promise.resolve(this.video.requestPointerLock(o));
+    lock({ unadjustedMovement: true })
+      .catch(() => lock())
+      .catch(() => {});
   }
 
   private onLockChanged() {
     const locked = this.locked;
     if (locked === this.wasLocked) return;
     this.wasLocked = locked;
-    this.opts.cursor.followHost = locked && this.relativeMotion;
-    if (locked) {
-      const [x, y] = this.lockStart;
-      this.opts.cursor.pin({ x, y });
-    } else {
-      this.opts.cursor.pin(null);
-      this.releaseAll();
-    }
+    this.lockedSince = performance.now();
+    this.lockAnchor = null;
+    if (!locked) this.releaseAll();
     this.onLockChange?.(locked);
   }
 
@@ -89,7 +124,12 @@ export class InputForwarder {
     fn: (e: K extends keyof HTMLElementEventMap ? HTMLElementEventMap[K] : Event) => void,
     opts?: AddEventListenerOptions,
   ) {
-    const handler = fn as EventListener;
+    const handler = ((e: Event) => {
+      if (this.viewOnly && e.type !== "visibilitychange" && e.type !== "pointerlockchange" && e.type !== "blur" && e.type !== "focusout") {
+        return;
+      }
+      fn(e as never);
+    }) as EventListener;
     target.addEventListener(type, handler, opts);
     this.detach.push(() => target.removeEventListener(type, handler, opts));
   }
@@ -113,6 +153,7 @@ export class InputForwarder {
   /** Puts the host pointer at x, y (0..1 across the picture). */
   moveTo(x: number, y: number) {
     this.send(this.conn.input, proto.move(this.seq++, x, y));
+    this.grab.sentMove(x, y, performance.now());
   }
 
   /** Presses or releases a DOM-numbered button at x, y. */
@@ -128,52 +169,27 @@ export class InputForwarder {
   private onMove(e: PointerEvent) {
     if (this.touchTrackpad && e.pointerType === "touch") return;
     if (this.locked) {
-      this.moveLocked(e);
+      // The mouse's own motion, as the game would read it from a mouse on the host.
+      if (e.movementX || e.movementY) this.send(this.conn.control, proto.moveBy(e.movementX, e.movementY));
       return;
     }
     const p = this.normalize(e);
     if (p) this.moveTo(p[0], p[1]);
   }
 
-  /**
-   * Moves the host pointer by the mouse's motion: as a mouse would on the host
-   * when it can take that, otherwise at the picture's scale.
-   */
-  private moveLocked(e: MouseEvent) {
-    if (this.relativeMotion) {
-      if (e.movementX || e.movementY) this.send(this.conn.control, proto.moveBy(e.movementX, e.movementY));
-      return;
-    }
-    const at = this.opts.cursor.pinnedAt;
-    const r = this.opts.cursor.contentRect();
-    if (!at || !r) return;
-    const x = Math.max(0, Math.min(1, at.x + e.movementX / r.width));
-    const y = Math.max(0, Math.min(1, at.y + e.movementY / r.height));
-    this.opts.cursor.pin({ x, y });
-    this.moveTo(x, y);
-  }
-
   private onButton(e: PointerEvent, pressed: boolean) {
     if (this.touchTrackpad && e.pointerType === "touch") return;
     if (this.locked) {
-      const at = this.opts.cursor.pinnedAt;
-      if (!at) return;
+      // The host presses where its pointer is, after motion.
       e.preventDefault();
-      this.send(this.conn.control, proto.button(e.button, pressed, at.x, at.y));
+      this.send(this.conn.control, proto.button(e.button, pressed, this.lockAt[0], this.lockAt[1]));
       return;
     }
     const p = this.normalize(e);
     if (!p) return;
     e.preventDefault();
-    if (pressed && this.captureMouse && !this.touchTrackpad && e.pointerType === "mouse") {
-      this.lockStart = p;
-      // Raw mouse counts where the browser has them, for games; rejected
-      // without a user gesture or after a recent Esc, but the click still goes through.
-      const lock = (o?: PointerLockOptions) => Promise.resolve(this.video.requestPointerLock(o));
-      lock({ unadjustedMovement: true })
-        .catch(() => lock())
-        .catch(() => {});
-    } else if (pressed) this.video.setPointerCapture(e.pointerId);
+    if (pressed && this.grab.grabbed && this.relativeMotion && e.pointerType === "mouse") this.capture(p);
+    else if (pressed) this.video.setPointerCapture(e.pointerId);
     this.send(this.conn.control, proto.button(e.button, pressed, p[0], p[1]));
   }
 

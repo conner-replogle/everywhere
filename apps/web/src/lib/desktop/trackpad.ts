@@ -15,8 +15,12 @@ const SPEED = 1;
 const SCROLL_GAIN = 1.5;
 /** The view pans to keep the pointer at least this far inside its edges. */
 const FOLLOW_MARGIN = 48;
+/** View only: a second tap this soon after a tap zooms in or back out. */
+const DOUBLE_TAP_MS = 300;
+/** View only: how far a double tap or double click zooms in. */
+const TAP_ZOOM = 2.5;
 
-type Mode = "move" | "drag" | "scroll" | "pinch" | "done";
+type Mode = "move" | "drag" | "scroll" | "pinch" | "pan" | "done";
 
 interface Point {
   x: number;
@@ -29,9 +33,16 @@ interface Point {
  * dragging drags, two fingers scroll or pinch-zoom the view, and a two- or
  * three-finger tap is a right or middle click. Mouse and pen input keep
  * pointing directly.
+ *
+ * View only, nothing reaches the desktop: fingers pinch to zoom and drag to
+ * pan, a mouse wheels to zoom and drags to pan, and a double tap or click
+ * zooms in or back out.
  */
 export class Trackpad {
   private enabled = false;
+  private view = false;
+  private lastTap = 0;
+  private dragging: Point | null = null;
   private pos: Point = { x: 0.5, y: 0.5 };
   private detach: (() => void)[] = [];
 
@@ -64,6 +75,12 @@ export class Trackpad {
     this.listen("touchmove", this.onMove, opts);
     this.listen("touchend", this.onEnd, opts);
     this.listen("touchcancel", this.onCancel, opts);
+    this.listenView("wheel", this.onWheel, opts);
+    this.listenView("pointerdown", this.onPointerDown, opts);
+    this.listenView("pointermove", this.onPointerMove, opts);
+    this.listenView("pointerup", this.onPointerUp, opts);
+    this.listenView("pointercancel", this.onPointerUp, opts);
+    this.listenView("dblclick", this.onDoubleClick, opts);
     cursor.onHostMove = (p) => {
       if (this.mode !== "drag") this.pos = p;
     };
@@ -74,12 +91,31 @@ export class Trackpad {
     this.enabled = on;
     this.input.touchTrackpad = on;
     this.reset();
+    if (this.view) return;
     if (on) {
       this.pos = this.cursor.hostPosition ?? this.pos;
       this.cursor.pin(this.pos);
     } else {
       this.cursor.pin(null);
       this.zoomTo(1, 0, 0);
+    }
+  }
+
+  /** View only: input stops reaching the desktop, and touch and mouse zoom the picture instead. */
+  setView(on: boolean) {
+    if (on === this.view) return;
+    this.view = on;
+    this.input.setViewOnly(on);
+    this.reset();
+    this.dragging = null;
+    if (on) {
+      this.cursor.pin(null);
+    } else {
+      this.zoomTo(1, 0, 0);
+      if (this.enabled) {
+        this.pos = this.cursor.hostPosition ?? this.pos;
+        this.cursor.pin(this.pos);
+      }
     }
   }
 
@@ -92,12 +128,68 @@ export class Trackpad {
 
   private listen(type: "touchstart" | "touchmove" | "touchend" | "touchcancel", fn: (e: TouchEvent) => void, opts: AddEventListenerOptions) {
     const handler = (e: TouchEvent) => {
-      if (!this.enabled) return;
+      if (!this.enabled && !this.view) return;
       e.preventDefault();
       fn.call(this, e);
     };
     this.video.addEventListener(type, handler, opts);
     this.detach.push(() => this.video.removeEventListener(type, handler, opts));
+  }
+
+  /** Listens only while view only. */
+  private listenView<K extends "wheel" | "pointerdown" | "pointermove" | "pointerup" | "pointercancel" | "dblclick">(
+    type: K,
+    fn: (e: HTMLElementEventMap[K]) => void,
+    opts: AddEventListenerOptions,
+  ) {
+    const handler = (e: HTMLElementEventMap[K]) => {
+      if (this.view) fn.call(this, e);
+    };
+    this.video.addEventListener(type, handler, opts);
+    this.detach.push(() => this.video.removeEventListener(type, handler, opts));
+  }
+
+  private onWheel(e: WheelEvent) {
+    e.preventDefault();
+    const dy = e.deltaMode === WheelEvent.DOM_DELTA_PIXEL ? e.deltaY : e.deltaY * 40;
+    this.zoomAt(this.scale * Math.exp(-dy * 0.002), e.clientX, e.clientY);
+  }
+
+  private onPointerDown(e: PointerEvent) {
+    if (e.pointerType === "touch" || e.button !== 0) return;
+    e.preventDefault();
+    this.video.setPointerCapture(e.pointerId);
+    this.dragging = { x: e.clientX, y: e.clientY };
+  }
+
+  private onPointerMove(e: PointerEvent) {
+    if (!this.dragging || e.pointerType === "touch") return;
+    this.zoomTo(this.scale, this.tx + e.clientX - this.dragging.x, this.ty + e.clientY - this.dragging.y);
+    this.dragging = { x: e.clientX, y: e.clientY };
+  }
+
+  private onPointerUp(e: PointerEvent) {
+    if (e.pointerType !== "touch") this.dragging = null;
+  }
+
+  private onDoubleClick(e: MouseEvent) {
+    e.preventDefault();
+    this.toggleZoom(e.clientX, e.clientY);
+  }
+
+  /** Zooms in about a point of the screen, or back out to the whole picture. */
+  private toggleZoom(x: number, y: number) {
+    if (this.scale > 1) this.zoomTo(1, 0, 0);
+    else this.zoomAt(TAP_ZOOM, x, y);
+  }
+
+  /** Zooms to `scale`, keeping the picture under a point of the screen where it is. */
+  private zoomAt(scale: number, x: number, y: number) {
+    const box = this.stage.getBoundingClientRect();
+    const lx = x - box.left, ly = y - box.top;
+    const next = clamp(scale, 1, MAX_ZOOM);
+    const k = next / this.scale;
+    this.zoomTo(next, lx - (lx - this.tx) * k, ly - (ly - this.ty) * k);
   }
 
   private onStart(e: TouchEvent) {
@@ -113,7 +205,9 @@ export class Trackpad {
     this.fingers = Math.max(this.fingers, e.touches.length);
     this.baseline(e.touches, now);
     clearTimeout(this.hold);
-    if (e.touches.length === 1 && this.mode === null) {
+    if (this.view) {
+      this.mode = e.touches.length > 1 ? "pinch" : this.mode === "pinch" ? "done" : "pan";
+    } else if (e.touches.length === 1 && this.mode === null) {
       this.hold = setTimeout(() => {
         if (this.moved || this.fingers !== 1 || this.mode !== null) return;
         this.mode = "drag";
@@ -140,6 +234,10 @@ export class Trackpad {
     }
 
     if (this.mode === "done") return;
+    if (this.mode === "pan") {
+      this.zoomTo(this.scale, this.tx + dx, this.ty + dy);
+      return;
+    }
     if (this.mode === "drag" || e.touches.length === 1) {
       if (this.mode === null && this.moved) this.mode = "move";
       if (this.mode === "move" || this.mode === "drag") this.steer(dx, dy, dt);
@@ -176,7 +274,15 @@ export class Trackpad {
       return;
     }
     clearTimeout(this.hold);
-    if (this.mode === "drag") {
+    if (this.view) {
+      const now = performance.now();
+      if (!this.moved && this.fingers === 1 && now - this.start < TAP_MS) {
+        if (now - this.lastTap < DOUBLE_TAP_MS) {
+          this.toggleZoom(this.last.x, this.last.y);
+          this.lastTap = 0;
+        } else this.lastTap = now;
+      }
+    } else if (this.mode === "drag") {
       this.input.press(0, false, this.pos.x, this.pos.y);
       this.cursor.setPressed(false);
     } else if (!this.moved && performance.now() - this.start < TAP_MS) {

@@ -3,6 +3,7 @@ import {
   ActivityIcon,
   AppWindowIcon,
   CircleHelpIcon,
+  EyeIcon,
   KeyboardIcon,
   LoaderIcon,
   MaximizeIcon,
@@ -10,7 +11,6 @@ import {
   MinimizeIcon,
   MonitorIcon,
   MonitorOffIcon,
-  MouseIcon,
   MousePointer2Icon,
   PauseIcon,
   PointerIcon,
@@ -83,8 +83,8 @@ interface Prefs {
   clipboard: boolean;
   /** What a finger does: steer the pointer like a laptop trackpad, or point where it touches. Unset: by device. */
   touch?: TouchMode;
-  /** A click locks the mouse to the picture until Esc. */
-  captureMouse?: boolean;
+  /** Nothing reaches the desktop; touch and the mouse zoom the picture instead. */
+  viewOnly?: boolean;
 }
 
 type TouchMode = "trackpad" | "direct";
@@ -94,7 +94,7 @@ const hasTouch = typeof navigator !== "undefined" && navigator.maxTouchPoints > 
 const defaultTouch = (): TouchMode =>
   typeof matchMedia !== "undefined" && matchMedia("(pointer: coarse)").matches ? "trackpad" : "direct";
 
-/** A mouse or touchpad that pointer lock can capture. */
+/** A mouse or touchpad that pointer lock can capture for a game. */
 const canCaptureMouse =
   typeof matchMedia !== "undefined" &&
   matchMedia("(any-pointer: fine)").matches &&
@@ -235,11 +235,14 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
   const touchModeRef = useRef(touchMode);
   touchModeRef.current = touchMode;
   const trackpadRef = useRef<Trackpad | null>(null);
-  const captureMouse = canCaptureMouse && !!prefs.captureMouse && touchMode !== "trackpad";
-  const captureMouseRef = useRef(captureMouse);
-  captureMouseRef.current = captureMouse;
-  const forwarderRef = useRef<InputForwarder | null>(null);
+  const viewOnly = !!prefs.viewOnly;
+  const viewOnlyRef = useRef(viewOnly);
+  viewOnlyRef.current = viewOnly;
   const [mouseLocked, setMouseLocked] = useState(false);
+  /** An app on the desktop (a game) has grabbed the pointer, and this mouse can be captured for it. */
+  const [grabbed, setGrabbed] = useState(false);
+  /** Window ids, most recently focused first: where "Use the desktop" goes back to. */
+  const focusHistory = useRef<string[]>([]);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -322,18 +325,16 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
       connRef.current = conn;
       video.srcObject = conn.stream;
       const cur = (cursor = new CursorRenderer(video));
-      forwarder = forwarderRef.current = new InputForwarder(video, conn, {
-        superSubstitute: superSub ? "AltRight" : null,
-        keyTarget: stage,
-        cursor: cur,
-      });
-      forwarder.setCaptureMouse(captureMouseRef.current);
+      forwarder = new InputForwarder(video, conn, { superSubstitute: superSub ? "AltRight" : null, keyTarget: stage });
+      const fwd = forwarder;
       forwarder.onLockChange = (locked) => {
         setMouseLocked(locked);
-        if (locked) setNotice(`Mouse captured. ${document.fullscreenElement ? "Hold" : "Press"} Esc to release it.`);
+        if (locked) setNotice(`Mouse captured for the game. ${document.fullscreenElement ? "Hold" : "Press"} Esc to let go.`);
       };
+      forwarder.grab.onChange = (on) => setGrabbed(on && canCaptureMouse && fwd.relativeMotion);
       trackpad = trackpadRef.current = new Trackpad(video, stage, forwarder, cur);
       trackpad.setEnabled(touchModeRef.current === "trackpad");
+      trackpad.setView(viewOnlyRef.current);
       stage.focus({ preventScroll: true });
       const onOpen = () => {
         conn.control.send(setFollow(connectRef.current.follow));
@@ -358,12 +359,14 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
           }
           case Type.Pong:
             setInputRtt(performance.now() - msg.clientMs);
+            if (forwarder) forwarder.grab.rtt = performance.now() - msg.clientMs;
             break;
           case Type.CursorImage:
             cur.setImage(msg);
             break;
           case Type.CursorPosition:
             cur.setPosition(msg);
+            forwarder?.hostPosition(msg);
             break;
           case Type.Outputs:
             setOutputs(msg.outputs);
@@ -373,6 +376,11 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
             break;
           case Type.Windows:
             setWindows(msg.windows);
+            {
+              const focused = msg.windows.find((w) => w.focused)?.id;
+              const h = focusHistory.current;
+              if (focused && h[0] !== focused) focusHistory.current = [focused, ...h.filter((id) => id !== focused)].slice(0, 20);
+            }
             break;
           case Type.HostClipboard:
             clip.current.last = msg.text;
@@ -436,8 +444,8 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
       trackpad?.dispose();
       trackpadRef.current = null;
       forwarder?.dispose();
-      forwarderRef.current = null;
       setMouseLocked(false);
+      setGrabbed(false);
       cursor?.dispose();
       connRef.current?.close();
       connRef.current = null;
@@ -446,7 +454,7 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
   }, [peer, attempt, superSub, reconnect, visible]);
 
   useEffect(() => trackpadRef.current?.setEnabled(touchMode === "trackpad"), [touchMode]);
-  useEffect(() => forwarderRef.current?.setCaptureMouse(captureMouse), [captureMouse]);
+  useEffect(() => trackpadRef.current?.setView(viewOnly), [viewOnly]);
 
   const sendControl = useCallback((msg: ArrayBuffer) => {
     const c = connRef.current?.control;
@@ -612,6 +620,11 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
   };
 
   const focusStage = () => stageRef.current?.focus({ preventScroll: true });
+  // The window to go back to from a game that has the pointer: it lets go once it loses focus.
+  const gameWindow = windows.find((w) => w.focused);
+  const previousWindow = focusHistory.current
+    .map((id) => windows.find((w) => w.id === id))
+    .find((w) => w && !w.focused);
   // Where the picture sits in the stage (object-contain), for marks over it.
   const picture = annotating && frameSize ? frameSize : hello;
   const box = picture && stageSize.width ? containBox(stageSize, picture) : null;
@@ -696,7 +709,26 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
             </span>
           )}
           <div className="flex-1" />
-          {hasTouch && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            className={cn(iconBtn, viewOnly && "text-primary")}
+            aria-label="View only"
+            aria-pressed={viewOnly}
+            title={
+              viewOnly
+                ? "View only: pinch or scroll to zoom, drag to pan, double-tap to zoom in or out. Click to control the desktop again."
+                : "View only: nothing reaches the desktop, and you can zoom in on it"
+            }
+            onClick={() => {
+              if (!viewOnly) kb.close();
+              updatePrefs({ viewOnly: !viewOnly });
+              focusStage();
+            }}
+          >
+            <EyeIcon />
+          </Button>
+          {hasTouch && !viewOnly && (
             <Button
               variant="ghost"
               size="icon-sm"
@@ -710,7 +742,7 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
               <KeyboardIcon />
             </Button>
           )}
-          {hasTouch && (
+          {hasTouch && !viewOnly && (
             <Button
               variant="ghost"
               size="icon-sm"
@@ -725,28 +757,6 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
               onClick={() => updatePrefs({ touch: touchMode === "trackpad" ? "direct" : "trackpad" })}
             >
               {touchMode === "trackpad" ? <MousePointer2Icon /> : <PointerIcon />}
-            </Button>
-          )}
-          {canCaptureMouse && touchMode !== "trackpad" && (
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className={cn(iconBtn, captureMouse && "text-primary")}
-              aria-label="Capture mouse"
-              aria-pressed={captureMouse}
-              title={
-                captureMouse
-                  ? mouseLocked
-                    ? "Mouse captured: press Esc to release it. Click to stop capturing."
-                    : "Clicking the desktop captures the mouse until you press Esc. Click to stop capturing."
-                  : "Capture the mouse: clicking the desktop locks it there until you press Esc."
-              }
-              onClick={() => {
-                updatePrefs({ captureMouse: !captureMouse });
-                focusStage();
-              }}
-            >
-              <MouseIcon />
             </Button>
           )}
           <DropdownMenu>
@@ -961,14 +971,35 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
             />
           </div>
         )}
+        {grabbed && !mouseLocked && !viewOnly && !annotating && status.kind === "live" && (
+          <div className="absolute bottom-2 left-1/2 z-30 flex max-w-[calc(100%-1rem)] -translate-x-1/2 items-center gap-2 rounded-md bg-background/90 py-1 pr-1 pl-3 text-xs shadow">
+            <span className="truncate">
+              {gameWindow?.title || gameWindow?.class || "An app"} has the mouse. Click the picture to play.
+            </span>
+            {previousWindow && !streamingWindow && (
+              <Button
+                variant="secondary"
+                size="sm"
+                className="h-6 shrink-0 text-xs"
+                title={`Focus ${previousWindow.title || previousWindow.class}, so the game lets go of the mouse`}
+                onClick={() => {
+                  sendControl(focusWindow(previousWindow.id));
+                  focusStage();
+                }}
+              >
+                Use the desktop
+              </Button>
+            )}
+          </div>
+        )}
         {notice && (
           <div className="pointer-events-none absolute bottom-2 left-1/2 z-30 -translate-x-1/2 rounded-md bg-background/90 px-3 py-1.5 text-xs shadow">
             {notice}
           </div>
         )}
         {hasTouch && <TouchKeyboardInput kb={kb} />}
-        {status.kind === "live" && !annotating && <TouchKeyboardBar kb={kb} />}
-        {touchMode === "trackpad" && status.kind === "live" && !kb.open && <TrackpadHelp />}
+        {status.kind === "live" && !annotating && !viewOnly && <TouchKeyboardBar kb={kb} />}
+        {touchMode === "trackpad" && status.kind === "live" && !kb.open && !viewOnly && <TrackpadHelp />}
         {prefs.stats && stats && (
           <pre className="pointer-events-none absolute top-2 left-2 rounded bg-black/70 px-2 py-1.5 font-mono text-[11px] leading-snug text-white/90">
             {formatStats(stats, inputRtt)}
