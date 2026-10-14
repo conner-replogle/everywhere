@@ -15,6 +15,8 @@ export class CursorRenderer {
   private overlayScale = 1;
   /** Where the host last put the pointer on this picture, 0..1. */
   hostPosition: { x: number; y: number } | null = null;
+  /** The mouse is captured: the overlay is the pointer, wherever the host says it is. */
+  private following = false;
   /** Pinned: the host moved the pointer itself (someone at the machine). */
   onHostMove?: (pos: { x: number; y: number }) => void;
   private overlay: HTMLCanvasElement;
@@ -33,6 +35,7 @@ export class CursorRenderer {
   }
 
   private onLocalMove = (e: PointerEvent) => {
+    if (this.following) return;
     if (this.pinned && e.pointerType === "touch") return;
     this.lastLocalMove = performance.now();
     this.overlay.hidden = true;
@@ -61,6 +64,13 @@ export class CursorRenderer {
     this.place(pos);
   }
 
+  /** Shows the host pointer where the host puts it, while the mouse is captured and the local cursor hidden. */
+  follow(on: boolean) {
+    this.following = on;
+    if (on && this.hostPosition) this.place(this.hostPosition);
+    else this.overlay.hidden = true;
+  }
+
   /** Marks a held button (a trackpad drag). */
   setPressed(on: boolean) {
     this.overlay.style.filter = on ? "drop-shadow(0 0 3px var(--color-primary)) drop-shadow(0 0 1px var(--color-primary))" : "";
@@ -78,6 +88,12 @@ export class CursorRenderer {
 
   setPosition(pos: CursorPosition) {
     if (pos.inside) this.hostPosition = { x: pos.x, y: pos.y };
+    if (this.following) {
+      // Hidden while it's elsewhere, or while a game hides it.
+      if (pos.inside) this.place(pos);
+      else this.overlay.hidden = true;
+      return;
+    }
     if (this.pinned) {
       if (pos.inside && performance.now() - this.lastPinMove > 300) {
         this.pinned = { x: pos.x, y: pos.y };

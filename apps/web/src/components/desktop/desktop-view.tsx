@@ -4,6 +4,7 @@ import {
   AppWindowIcon,
   CircleHelpIcon,
   EyeIcon,
+  Gamepad2Icon,
   KeyboardIcon,
   LoaderIcon,
   MaximizeIcon,
@@ -41,7 +42,7 @@ import {
 import type { ComposerDraft } from "@/lib/composer-inbox";
 import { type DesktopConnection, connectDesktop } from "@/lib/desktop/connection";
 import { CursorRenderer } from "@/lib/desktop/cursor";
-import { InputForwarder } from "@/lib/desktop/input";
+import { InputForwarder, type MouseMode } from "@/lib/desktop/input";
 import { Trackpad } from "@/lib/desktop/trackpad";
 import {
   type AgentAction,
@@ -85,6 +86,8 @@ interface Prefs {
   touch?: TouchMode;
   /** Nothing reaches the desktop; touch and the mouse zoom the picture instead. */
   viewOnly?: boolean;
+  /** Point at the desktop, or capture the mouse for a game. */
+  mouse?: MouseMode;
 }
 
 type TouchMode = "trackpad" | "direct";
@@ -93,6 +96,17 @@ const hasTouch = typeof navigator !== "undefined" && navigator.maxTouchPoints > 
 /** Phones and tablets get the trackpad; a touchscreen laptop points directly. */
 const defaultTouch = (): TouchMode =>
   typeof matchMedia !== "undefined" && matchMedia("(pointer: coarse)").matches ? "trackpad" : "direct";
+
+/**
+ * Fullscreen with Keyboard Lock (Chromium, secure contexts), so every key
+ * reaches the page: Super, Alt+Tab, Esc (held, it leaves fullscreen), and
+ * keys the viewer's own desktop binds, like an F-key shortcut.
+ */
+async function enterFullscreen(el: HTMLElement | null): Promise<void> {
+  await el?.requestFullscreen({ navigationUI: "hide" }).catch(() => {});
+  const kb = (navigator as Navigator & { keyboard?: { lock?: () => Promise<void> } }).keyboard;
+  await kb?.lock?.().catch(() => {});
+}
 
 /** A mouse or touchpad that pointer lock can capture for a game. */
 const canCaptureMouse =
@@ -239,17 +253,26 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
   const viewOnlyRef = useRef(viewOnly);
   viewOnlyRef.current = viewOnly;
   const [mouseLocked, setMouseLocked] = useState(false);
-  /** An app on the desktop (a game) has grabbed the pointer, and this mouse can be captured for it. */
-  const [grabbed, setGrabbed] = useState(false);
-  /** Window ids, most recently focused first: where "Use the desktop" goes back to. */
-  const focusHistory = useRef<string[]>([]);
+  const forwarderRef = useRef<InputForwarder | null>(null);
+  const [hello, setHello] = useState<Hello | null>(null);
+  // Game mode needs a host that takes relative motion (v0.22.1 on).
+  const gameMouse = canCaptureMouse && !!hello?.moveBy;
+  const mouseMode: MouseMode = gameMouse && prefs.mouse === "game" && !viewOnly ? "game" : "desktop";
+  const mouseModeRef = useRef(mouseMode);
+  mouseModeRef.current = mouseMode;
+  const toggleMouseModeRef = useRef(() => {});
+  toggleMouseModeRef.current = () => {
+    if (!gameMouse || viewOnly) return;
+    const next: MouseMode = mouseMode === "game" ? "desktop" : "game";
+    updatePrefs({ mouse: next });
+    setNotice(next === "game" ? "Game mouse: click the picture to capture it." : "Desktop mouse: it points where you point.");
+  };
 
   const rootRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const connRef = useRef<DesktopConnection | null>(null);
   const [status, setStatus] = useState<Status>({ kind: "connecting" });
-  const [hello, setHello] = useState<Hello | null>(null);
   const [outputs, setOutputs] = useState<OutputInfo[]>([]);
   const [workspaces, setWorkspaces] = useState<WorkspaceInfo[]>([]);
   const [windows, setWindows] = useState<WindowInfo[]>([]);
@@ -325,13 +348,21 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
       connRef.current = conn;
       video.srcObject = conn.stream;
       const cur = (cursor = new CursorRenderer(video));
-      forwarder = new InputForwarder(video, conn, { superSubstitute: superSub ? "AltRight" : null, keyTarget: stage });
-      const fwd = forwarder;
+      forwarder = forwarderRef.current = new InputForwarder(video, conn, {
+        superSubstitute: superSub ? "AltRight" : null,
+        keyTarget: stage,
+      });
+      forwarder.setMode(mouseModeRef.current);
+      // A game gets every key, as in Moonlight: only fullscreen can take them from the browser and the viewer's desktop.
+      forwarder.beforeCapture = () => (document.fullscreenElement ? Promise.resolve() : enterFullscreen(rootRef.current));
       forwarder.onLockChange = (locked) => {
         setMouseLocked(locked);
-        if (locked) setNotice(`Mouse captured for the game. ${document.fullscreenElement ? "Hold" : "Press"} Esc to let go.`);
+        cur.follow(locked);
+        if (locked) setNotice("Mouse captured. Ctrl+Alt+Shift+Z lets it go; hold Esc to leave fullscreen.");
       };
-      forwarder.grab.onChange = (on) => setGrabbed(on && canCaptureMouse && fwd.relativeMotion);
+      forwarder.onCombo = (combo) => {
+        if (combo === "mode") toggleMouseModeRef.current();
+      };
       trackpad = trackpadRef.current = new Trackpad(video, stage, forwarder, cur);
       trackpad.setEnabled(touchModeRef.current === "trackpad");
       trackpad.setView(viewOnlyRef.current);
@@ -348,7 +379,6 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
         switch (msg?.type) {
           case Type.Hello: {
             setHello(msg);
-            if (forwarder) forwarder.relativeMotion = msg.moveBy;
             const t = connectRef.current.tab;
             const src = sourceOf(msg, tabSource.current?.desktop);
             if (t && JSON.stringify(src) !== JSON.stringify(tabSource.current)) {
@@ -359,14 +389,12 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
           }
           case Type.Pong:
             setInputRtt(performance.now() - msg.clientMs);
-            if (forwarder) forwarder.grab.rtt = performance.now() - msg.clientMs;
             break;
           case Type.CursorImage:
             cur.setImage(msg);
             break;
           case Type.CursorPosition:
             cur.setPosition(msg);
-            forwarder?.hostPosition(msg);
             break;
           case Type.Outputs:
             setOutputs(msg.outputs);
@@ -376,11 +404,6 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
             break;
           case Type.Windows:
             setWindows(msg.windows);
-            {
-              const focused = msg.windows.find((w) => w.focused)?.id;
-              const h = focusHistory.current;
-              if (focused && h[0] !== focused) focusHistory.current = [focused, ...h.filter((id) => id !== focused)].slice(0, 20);
-            }
             break;
           case Type.HostClipboard:
             clip.current.last = msg.text;
@@ -444,8 +467,8 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
       trackpad?.dispose();
       trackpadRef.current = null;
       forwarder?.dispose();
+      forwarderRef.current = null;
       setMouseLocked(false);
-      setGrabbed(false);
       cursor?.dispose();
       connRef.current?.close();
       connRef.current = null;
@@ -455,6 +478,7 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
 
   useEffect(() => trackpadRef.current?.setEnabled(touchMode === "trackpad"), [touchMode]);
   useEffect(() => trackpadRef.current?.setView(viewOnly), [viewOnly]);
+  useEffect(() => forwarderRef.current?.setMode(mouseMode), [mouseMode]);
 
   const sendControl = useCallback((msg: ArrayBuffer) => {
     const c = connRef.current?.control;
@@ -612,19 +636,11 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
       await document.exitFullscreen().catch(() => {});
       return;
     }
-    await rootRef.current?.requestFullscreen({ navigationUI: "hide" }).catch(() => {});
-    // Keyboard Lock sends Super, Alt+Tab and Esc to the page (Chromium, secure contexts).
-    const kb = (navigator as Navigator & { keyboard?: { lock?: () => Promise<void> } }).keyboard;
-    await kb?.lock?.().catch(() => {});
+    await enterFullscreen(rootRef.current);
     stageRef.current?.focus({ preventScroll: true });
   };
 
   const focusStage = () => stageRef.current?.focus({ preventScroll: true });
-  // The window to go back to from a game that has the pointer: it lets go once it loses focus.
-  const gameWindow = windows.find((w) => w.focused);
-  const previousWindow = focusHistory.current
-    .map((id) => windows.find((w) => w.id === id))
-    .find((w) => w && !w.focused);
   // Where the picture sits in the stage (object-contain), for marks over it.
   const picture = annotating && frameSize ? frameSize : hello;
   const box = picture && stageSize.width ? containBox(stageSize, picture) : null;
@@ -709,6 +725,29 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
             </span>
           )}
           <div className="flex-1" />
+          {canCaptureMouse && !viewOnly && (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className={cn(iconBtn, mouseMode === "game" && "text-primary")}
+              aria-label="Game mouse"
+              aria-pressed={mouseMode === "game"}
+              disabled={!gameMouse}
+              title={
+                !gameMouse
+                  ? "Game mouse needs everywhere 0.22.1 or later on this device"
+                  : mouseMode === "game"
+                    ? "Game mouse: a click captures the mouse and sends its motion, for games. Ctrl+Alt+Shift+Z lets it go; click (or Ctrl+Alt+Shift+M) to point at the desktop instead."
+                    : "Desktop mouse: points where you point. Click (or Ctrl+Alt+Shift+M) for the game mouse, which captures it and sends its motion."
+              }
+              onClick={() => {
+                toggleMouseModeRef.current();
+                focusStage();
+              }}
+            >
+              <Gamepad2Icon />
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="icon-sm"
@@ -971,25 +1010,9 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
             />
           </div>
         )}
-        {grabbed && !mouseLocked && !viewOnly && !annotating && status.kind === "live" && (
-          <div className="absolute bottom-2 left-1/2 z-30 flex max-w-[calc(100%-1rem)] -translate-x-1/2 items-center gap-2 rounded-md bg-background/90 py-1 pr-1 pl-3 text-xs shadow">
-            <span className="truncate">
-              {gameWindow?.title || gameWindow?.class || "An app"} has the mouse. Click the picture to play.
-            </span>
-            {previousWindow && !streamingWindow && (
-              <Button
-                variant="secondary"
-                size="sm"
-                className="h-6 shrink-0 text-xs"
-                title={`Focus ${previousWindow.title || previousWindow.class}, so the game lets go of the mouse`}
-                onClick={() => {
-                  sendControl(focusWindow(previousWindow.id));
-                  focusStage();
-                }}
-              >
-                Use the desktop
-              </Button>
-            )}
+        {mouseMode === "game" && !mouseLocked && !annotating && status.kind === "live" && !notice && (
+          <div className="pointer-events-none absolute bottom-2 left-1/2 z-30 max-w-[calc(100%-1rem)] -translate-x-1/2 truncate rounded-md bg-background/90 px-3 py-1.5 text-xs shadow">
+            Click the picture to play: fullscreen, with the mouse and every key · Ctrl+Alt+Shift+Z lets the mouse go · Ctrl+Alt+Shift+M for the desktop mouse
           </div>
         )}
         {notice && (

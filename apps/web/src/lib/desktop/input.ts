@@ -1,6 +1,5 @@
 import { viewerIsMac } from "../browser-input";
 import type { DesktopConnection } from "./connection";
-import { GrabDetector } from "./grab";
 import { EVDEV, KEY_LEFTMETA } from "./keycodes";
 import * as proto from "./protocol";
 
@@ -11,19 +10,24 @@ export interface InputOptions {
   keyTarget: HTMLElement;
 }
 
-/** Once the mouse is captured, the host pointer going this far (0..1 of the picture) means the game let it go. */
-const RELEASED = 0.03;
-/** ...counting from where it settles this long after the capture. */
-const SETTLE_MS = 300;
+/**
+ * How the mouse drives the host pointer, as in Moonlight: "desktop" sends
+ * where it points (absolute); "game" captures it with a click and sends its
+ * motion (relative), which is what games that grab the pointer read.
+ */
+export type MouseMode = "desktop" | "game";
+
+/** Local shortcuts, with Ctrl+Alt+Shift (Moonlight's): release or capture the mouse, and switch modes. */
+export type MouseCombo = "capture" | "mode";
+const COMBOS: Record<string, MouseCombo> = { KeyZ: "capture", KeyM: "mode" };
 
 /**
  * Forwards pointer and keyboard events on the video element to the host.
  * Keys go by physical position (KeyboardEvent.code → evdev), so the host's
  * layout decides the character. Elements marked `data-local-keys` keep their keys.
  *
- * The mouse follows the host, as game streaming does: while an app there
- * (a game) has grabbed the pointer, a click captures the mouse (pointer lock)
- * and sends its motion rather than positions, until Esc or the app lets go.
+ * In game mode a click captures the mouse (pointer lock) and its motion goes
+ * to the host until Esc, Ctrl+Alt+Shift+Z, or the page loses focus.
  */
 export class InputForwarder {
   private seq = 0;
@@ -31,17 +35,13 @@ export class InputForwarder {
   touchTrackpad = false;
   /** Nothing reaches the host: the Trackpad zooms the picture instead. */
   private viewOnly = false;
-  /** Tells when an app on the host has grabbed the pointer. */
-  readonly grab = new GrabDetector();
-  /** Where the click that captured the mouse was, sent with its buttons. */
-  private lockAt: [number, number] = [0.5, 0.5];
-  private lockedSince = 0;
-  /** Where the host pointer settled after the capture. */
-  private lockAnchor: { x: number; y: number } | null = null;
+  private mode: MouseMode = "desktop";
   private wasLocked = false;
-  /** The host takes relative motion, so the mouse can be captured for a game. */
-  relativeMotion = false;
   onLockChange?: (locked: boolean) => void;
+  /** Runs, in the capturing gesture, before the mouse is captured (going fullscreen, so every key comes too). */
+  beforeCapture?: () => Promise<void>;
+  /** A local shortcut was pressed: "mode" asks to switch modes. */
+  onCombo?: (combo: MouseCombo) => void;
   private pressedKeys = new Set<number>();
   private detach: (() => void)[] = [];
 
@@ -77,37 +77,34 @@ export class InputForwarder {
     }
   }
 
-  /** Where the host says its pointer is: whether the game has it, or let it go. */
-  hostPosition(pos: { inside: boolean; x: number; y: number }) {
-    const at = pos.inside ? { x: pos.x, y: pos.y } : null;
-    this.grab.hostAt(at);
-    if (!this.locked || !at) return;
-    if (!this.lockAnchor || performance.now() - this.lockedSince < SETTLE_MS) this.lockAnchor = at;
-    else if (Math.hypot(at.x - this.lockAnchor.x, at.y - this.lockAnchor.y) > RELEASED) {
-      // It follows the mouse's motion: the game let go (a menu, or it lost focus).
-      this.grab.reset();
-      document.exitPointerLock();
-    }
+  /** Game mode needs a host that takes relative motion. */
+  setMode(mode: MouseMode) {
+    this.mode = mode;
+    if (mode === "desktop" && this.locked) document.exitPointerLock();
   }
 
-  /** Captures the mouse for a game, from a click. */
-  private capture(at: [number, number]) {
-    this.lockAt = at;
-    // Raw mouse counts where the browser has them; rejected without a user
-    // gesture or after a recent Esc, but the click still goes through.
+  /** Captures the mouse for a game. Needs a user gesture (a click or key press). */
+  capture() {
+    if (this.mode !== "game" || this.viewOnly || this.locked) return;
+    // Raw mouse counts where the browser has them, as a game reads a mouse.
+    // Fullscreen needs no gesture for the lock, so it can come after.
     const lock = (o?: PointerLockOptions) => Promise.resolve(this.video.requestPointerLock(o));
-    lock({ unadjustedMovement: true })
+    (this.beforeCapture?.() ?? Promise.resolve())
+      .catch(() => {})
+      .then(() => lock({ unadjustedMovement: true }))
       .catch(() => lock())
       .catch(() => {});
+  }
+
+  release() {
+    if (this.locked) document.exitPointerLock();
   }
 
   private onLockChanged() {
     const locked = this.locked;
     if (locked === this.wasLocked) return;
     this.wasLocked = locked;
-    this.lockedSince = performance.now();
-    this.lockAnchor = null;
-    if (!locked) this.releaseAll();
+    this.releaseAll();
     this.onLockChange?.(locked);
   }
 
@@ -153,7 +150,6 @@ export class InputForwarder {
   /** Puts the host pointer at x, y (0..1 across the picture). */
   moveTo(x: number, y: number) {
     this.send(this.conn.input, proto.move(this.seq++, x, y));
-    this.grab.sentMove(x, y, performance.now());
   }
 
   /** Presses or releases a DOM-numbered button at x, y. */
@@ -173,6 +169,7 @@ export class InputForwarder {
       if (e.movementX || e.movementY) this.send(this.conn.control, proto.moveBy(e.movementX, e.movementY));
       return;
     }
+    if (this.mode === "game" && e.pointerType === "mouse") return; // until a click captures it
     const p = this.normalize(e);
     if (p) this.moveTo(p[0], p[1]);
   }
@@ -180,16 +177,21 @@ export class InputForwarder {
   private onButton(e: PointerEvent, pressed: boolean) {
     if (this.touchTrackpad && e.pointerType === "touch") return;
     if (this.locked) {
-      // The host presses where its pointer is, after motion.
+      // The host presses where its pointer is (it ignores the position after motion).
       e.preventDefault();
-      this.send(this.conn.control, proto.button(e.button, pressed, this.lockAt[0], this.lockAt[1]));
+      this.send(this.conn.control, proto.button(e.button, pressed, 0.5, 0.5));
+      return;
+    }
+    if (this.mode === "game" && e.pointerType === "mouse") {
+      // The click that captures the mouse is the page's, not the game's.
+      e.preventDefault();
+      if (pressed && e.button === 0) this.capture();
       return;
     }
     const p = this.normalize(e);
     if (!p) return;
     e.preventDefault();
-    if (pressed && this.grab.grabbed && this.relativeMotion && e.pointerType === "mouse") this.capture(p);
-    else if (pressed) this.video.setPointerCapture(e.pointerId);
+    if (pressed) this.video.setPointerCapture(e.pointerId);
     this.send(this.conn.control, proto.button(e.button, pressed, p[0], p[1]));
   }
 
@@ -211,6 +213,20 @@ export class InputForwarder {
   private onKey(e: KeyboardEvent, pressed: boolean) {
     const target = e.target as HTMLElement | null;
     if (target?.closest?.("[data-local-keys]")) return;
+    const combo = e.ctrlKey && e.altKey && e.shiftKey ? COMBOS[e.code] : undefined;
+    if (combo) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (!pressed || e.repeat) return;
+      // Ctrl, Alt and Shift already went down on the host; let them go.
+      this.releaseAll();
+      if (combo === "capture") {
+        if (this.locked) this.release();
+        else this.capture();
+      }
+      this.onCombo?.(combo);
+      return;
+    }
     const code = e.code === this.opts.superSubstitute ? KEY_LEFTMETA : EVDEV[e.code];
     if (code === undefined) return;
     e.preventDefault();
