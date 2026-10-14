@@ -54,7 +54,7 @@ export function useAutoRecap({
     const e = events[i]!.event;
     if (!lastAt && e.type === "turn" && e.status !== "started") lastAt = events[i]!.at;
     if (e.type === "user" && !e.parentId) {
-      lastWasRecap = e.text.trim() === RECAP_PROMPT;
+      lastWasRecap = e.text?.trim() === RECAP_PROMPT;
       if (lastAt) break;
     }
   }

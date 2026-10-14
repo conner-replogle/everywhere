@@ -962,7 +962,8 @@ interface AgentEventBase {
 /** One persisted entry in a claude thread's log. */
 export type AgentEvent = AgentEventBase &
   (
-    | { type: "user"; id: string; text: string; attachments?: AgentAttachment[] }
+    /** text is absent when the prompt was only attachments. */
+    | { type: "user"; id: string; text?: string; attachments?: AgentAttachment[] }
     | { type: "assistant" | "thinking"; id: string; text: string; streamKey?: string }
     /** id is the tool_use id; a toolResult with the same id follows. */
     | { type: "tool"; id: string; name: string; input: unknown }

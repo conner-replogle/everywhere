@@ -124,8 +124,8 @@ export function changeItems(items: Item[], cwd: string | undefined): Item[] {
 /** The prompt an automatic (or typed) recap sends. */
 export const RECAP_PROMPT = "/recap";
 
-function isRecapPrompt(text: string): boolean {
-  return text.trim() === RECAP_PROMPT;
+function isRecapPrompt(text: string | undefined): boolean {
+  return text?.trim() === RECAP_PROMPT;
 }
 
 export const Timeline = memo(function Timeline({
