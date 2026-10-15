@@ -72,7 +72,7 @@ var (
 
 const nameProp = `"name": {"type": "string", "description": "The process's name, as given to process_start."}`
 
-const urlHelp = "The link the user opens its web UI with, shown on the process in place of the localhost links seen in its output. Prefer this machine's Tailscale address when Tailscale is up (its MagicDNS name, or the 100.x IP from tailscale ip -4), so the user can open it from their other devices too; the server must then listen on all interfaces (e.g. --host 0.0.0.0), not only localhost. Otherwise use localhost."
+const urlHelp = "The link the user opens its web UI with, shown on the process in place of the localhost links seen in its output; the everywhere app opens it in a tab, inside its own https page. Prefer an https Tailscale address when Tailscale is up: run tailscale serve --bg <port> and use the https://<machine>.<tailnet>.ts.net URL it prints, which opens from the user's other devices and inside that tab. A plain http address other than localhost (http://100.x...) is blocked inside the tab by the browser (it still opens in a browser tab of its own). Without Tailscale use localhost."
 
 const reportHelp = `
 
