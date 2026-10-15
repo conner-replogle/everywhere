@@ -47,7 +47,7 @@ export function ProcessesView({
   generation: number;
   initialState?: string;
   onStateChange?: (state: string) => void;
-  /** Opens a URL a process printed in the thread's browser. */
+  /** Opens a URL a process printed as a web tab. */
   onOpenUrl?: (url: string) => void;
   /** A process to select (e.g. picked in the claude tab's overview); at makes picking it again count. */
   show?: { id: string; at: number };
@@ -254,7 +254,7 @@ function ProcessCard({
               variant="secondary"
               size="sm"
               className="h-6 font-mono text-[11px]"
-              title="Open in this thread's browser"
+              title="Open as a tab here"
               onClick={(e) => {
                 e.stopPropagation();
                 onOpenUrl(u);

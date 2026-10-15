@@ -12,7 +12,7 @@ const MAX_ROWS = 3;
 /**
  * The thread's processes at a glance, for the claude tab: what's running and
  * what just finished, one line each. A row opens the process in the
- * processes tab; a running one's web UI link opens in the thread's browser.
+ * processes tab; a running one's web UI link opens as a web tab.
  */
 export function ProcessesOverview({
   peer,
@@ -25,7 +25,7 @@ export function ProcessesOverview({
   threadId: string;
   /** Opens the processes tab, on this process if given. */
   onOpen: (processId?: string) => void;
-  /** Opens a process's web UI in the thread's browser. */
+  /** Opens a process's web UI as a web tab. */
   onOpenUrl?: (url: string) => void;
 }) {
   const list = useProcesses(peer, threadId);
@@ -98,7 +98,7 @@ function OverviewRow({
         <button
           type="button"
           onClick={() => onOpenUrl?.(url)}
-          title={`Open ${url} in this thread's browser`}
+          title={`Open ${url} as a tab here`}
           className="flex max-w-[40%] shrink-0 items-center gap-1 border-l px-2 font-mono text-[11px] text-muted-foreground hover:bg-accent/40 hover:text-foreground"
         >
           <GlobeIcon className="size-3 shrink-0" />

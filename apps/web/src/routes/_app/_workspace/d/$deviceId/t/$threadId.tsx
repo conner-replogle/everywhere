@@ -2,6 +2,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import type { AgentStatus, DesktopSource, Tab, TabKind, Thread } from "@everywhere/protocol";
 import {
   ActivityIcon,
+  AppWindowIcon,
   ArchiveRestoreIcon,
   FolderInputIcon,
   FolderPlusIcon,
@@ -18,7 +19,7 @@ import {
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { CenteredMessage } from "@/components/centered-message";
 import { ConfirmDialog } from "@/components/confirm-dialog";
-import { RunInTerminalContext } from "@/components/agent/markdown";
+import { OpenLinkContext, RunInTerminalContext } from "@/components/agent/markdown";
 import { useDevice } from "@/components/device-context";
 import { ContinueDialog, PromoteDialog } from "@/components/scratch-actions";
 import { RenameDialog } from "@/components/rename-dialog";
@@ -39,6 +40,7 @@ import { useRpc } from "@/lib/peer";
 import { getPrefs } from "@/lib/prefs";
 import { touchThread } from "@/lib/idle-threads";
 import { isInputKey, retainThread, visitThread } from "@/lib/recent-threads";
+import { closeWebTab, openWebTab, renameWebTab, useWebTabs } from "@/lib/web-tabs";
 import { cn, errorMessage } from "@/lib/utils";
 
 // Loaded on demand so terminal-only use skips the markdown stack.
@@ -46,30 +48,50 @@ const AgentView = lazy(() => import("@/components/agent/agent-view").then((m) =>
 const BrowserView = lazy(() => import("@/components/browser/browser-view").then((m) => ({ default: m.BrowserView })));
 const FilesView = lazy(() => import("@/components/files/files-view").then((m) => ({ default: m.FilesView })));
 const DesktopView = lazy(() => import("@/components/desktop/desktop-view").then((m) => ({ default: m.DesktopView })));
+const WebView = lazy(() => import("@/components/web/web-view").then((m) => ({ default: m.WebView })));
 const ProcessesView = lazy(() =>
   import("@/components/processes/processes-view").then((m) => ({ default: m.ProcessesView })),
 );
 
-const KIND_ICON: Record<TabKind, LucideIcon> = {
+/** A tab kind, or a web tab: a page shown in this browser, which only this browser knows of. */
+type PaneKind = TabKind | "web";
+
+const KIND_ICON: Record<PaneKind, LucideIcon> = {
   terminal: SquareTerminalIcon,
   claude: SparklesIcon,
   browser: GlobeIcon,
   files: FolderTreeIcon,
   desktop: MonitorIcon,
   processes: ActivityIcon,
+  web: AppWindowIcon,
 };
 
-const KIND_LABEL: Record<TabKind, string> = {
+const KIND_LABEL: Record<PaneKind, string> = {
   terminal: "Terminal",
   claude: "Claude",
-  browser: "Browser",
+  browser: "Browser (device)",
   files: "Files",
   desktop: "Desktop",
   processes: "Processes",
+  web: "Web page",
 };
 
-/** The thread itself, or one of its tabs. */
-type Pane = (Thread & { parentId?: undefined; tabState?: undefined }) | Tab;
+/**
+ * A web tab as a pane: a page loaded here in an iframe (links from processes
+ * and Claude open in one). Unlike the browser tab, it runs in this browser
+ * and Claude can't see or drive it.
+ */
+interface WebPane {
+  id: string;
+  kind: "web";
+  name: string;
+  url: string;
+  parentId: string;
+  tabState?: undefined;
+}
+
+/** The thread itself, one of its tabs, or a web tab. */
+type Pane = (Thread & { parentId?: undefined; tabState?: undefined }) | Tab | WebPane;
 
 export const Route = createFileRoute("/_app/_workspace/d/$deviceId/t/$threadId")({
   validateSearch: (search: Record<string, unknown>): { tab?: string } =>
@@ -99,8 +121,12 @@ function ThreadPage() {
     legacyBrowser && thread
       ? { ...thread, id: `${thread.id}:browser`, kind: "browser", name: "Browser", parentId: thread.id }
       : undefined;
+  const webTabs = useWebTabs(deviceId, threadId);
+  const webPanes: WebPane[] = archived
+    ? []
+    : webTabs.map((t) => ({ id: t.id, kind: "web", name: t.name, url: t.url, parentId: threadId }));
   const panes: Pane[] = thread
-    ? [thread, ...(canTab ? (tabs.data ?? []) : []), ...(legacyTab ? [legacyTab] : [])]
+    ? [thread, ...(canTab ? (tabs.data ?? []) : []), ...(legacyTab ? [legacyTab] : []), ...webPanes]
     : [];
   // A tab that's gone (closed elsewhere) falls back to the thread.
   const active = panes.find((p) => p.id === tabParam) ?? thread;
@@ -135,7 +161,9 @@ function ThreadPage() {
 
   const [writers, setWriters] = useState<Record<string, WriterState>>({});
   const [error, setError] = useState<string | null>(null);
-  const [renaming, setRenaming] = useState<Tab | null>(null);
+  const [renaming, setRenaming] = useState<Tab | WebPane | null>(null);
+  // Asking for an address for a new web tab.
+  const [askingUrl, setAskingUrl] = useState(false);
   const [closing, setClosing] = useState<Tab | null>(null);
   const [moving, setMoving] = useState<"promote" | "continue" | "toScratch" | null>(null);
   const browserClosedAt = useRef(0);
@@ -143,8 +171,6 @@ function ThreadPage() {
   const processesClosedAt = useRef(0);
   // A process for the processes tab to show (picked in a claude tab's overview).
   const [processShow, setProcessShow] = useState<{ id: string; at: number } | undefined>();
-  // A page for the browser tab to open (a URL a process printed).
-  const [browserOpen, setBrowserOpen] = useState<{ url: string; at: number } | undefined>();
   const creatingDesktop = useRef(false);
   // What the thread's claude opened on the desktop, for its Desktop tab to show.
   const [desktopShow, setDesktopShow] = useState<{ tabId: string; source: DesktopSource; at: number } | null>(null);
@@ -200,7 +226,15 @@ function ThreadPage() {
         }
       : null;
 
-  const closeTab = async (t: Tab) => {
+  const closeTab = async (t: Tab | WebPane) => {
+    if (t.kind === "web") {
+      if (active?.id === t.id) {
+        const i = panes.findIndex((p) => p.id === t.id);
+        setActive((panes[i + 1] ?? panes[i - 1] ?? thread!).id);
+      }
+      closeWebTab(deviceId, threadId, t.id);
+      return;
+    }
     if (t.kind === "browser") browserClosedAt.current = Date.now();
     if (t.kind === "desktop") desktopClosedAt.current = Date.now();
     if (t.kind === "processes") processesClosedAt.current = Date.now();
@@ -245,9 +279,12 @@ function ThreadPage() {
     void openTab("processes");
   };
 
+  // Links (a process's web UI, one in Claude's reply) open as a web tab here,
+  // not in the device's browser: you're the one looking.
   const openUrl = (url: string) => {
-    setBrowserOpen({ url, at: Date.now() });
-    void openTab("browser");
+    const t = openWebTab(deviceId, threadId, url);
+    keep();
+    setActive(t.id);
   };
 
   // source: what claude opened, if it did; fallback: what a new tab shows otherwise.
@@ -344,7 +381,6 @@ function ThreadPage() {
               threadId={legacyBrowser ? thread.projectId : threadId}
               generation={conn.generation}
               remoteOs={info.data?.os}
-              open={browserOpen}
               onAnnotate={
                 claudeTarget
                   ? (draft) => {
@@ -396,6 +432,12 @@ function ThreadPage() {
             />
           </Suspense>
         );
+      case "web":
+        return (
+          <Suspense>
+            <WebView url={p.url} />
+          </Suspense>
+        );
       case "processes":
         return (
           <Suspense>
@@ -405,7 +447,7 @@ function ThreadPage() {
               generation={conn.generation}
               initialState={p.tabState}
               onStateChange={(state) => void peer.call("tabs.setState", { id: p.id, state }).catch(() => {})}
-              onOpenUrl={canTab ? openUrl : undefined}
+              onOpenUrl={openUrl}
               show={processShow}
             />
           </Suspense>
@@ -494,12 +536,12 @@ function ThreadPage() {
                 active={p.id === active?.id}
                 running={p.kind === "processes" ? thread?.processes : undefined}
                 onSelect={() => setActive(p.id)}
-                onRename={p.parentId && canTab ? () => (keep(), setRenaming(p as Tab)) : undefined}
+                onRename={p.parentId && (canTab || p.kind === "web") ? () => (keep(), setRenaming(p)) : undefined}
                 onClose={
-                  p.parentId && canTab
+                  p.parentId && (canTab || p.kind === "web")
                     ? () => {
                         keep();
-                        const t = p as Tab;
+                        const t = p;
                         // Closing a claude tab deletes its conversation.
                         if (t.kind === "claude" && t.lastOpenedAt) setClosing(t);
                         else void closeTab(t).catch((e: unknown) => setError(errorMessage(e)));
@@ -528,6 +570,10 @@ function ThreadPage() {
                       </DropdownMenuItem>
                     );
                   })}
+                <DropdownMenuItem onSelect={() => setAskingUrl(true)}>
+                  <AppWindowIcon />
+                  {KIND_LABEL.web}…
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           )}
@@ -538,6 +584,7 @@ function ThreadPage() {
           )}
         </div>
       )}
+      <OpenLinkContext.Provider value={thread && !archived ? openUrl : null}>
       <RunInTerminalContext.Provider value={runInTerminal}>
       <div className="relative min-h-0 flex-1">
         {/* Panes wait for the thread list, so a claude thread never flashes a terminal. */}
@@ -556,6 +603,7 @@ function ThreadPage() {
           ))}
       </div>
       </RunInTerminalContext.Provider>
+      </OpenLinkContext.Provider>
       {thread && (
         <>
           <PromoteDialog entry={entry} thread={thread} open={moving === "promote"} onOpenChange={(o) => !o && setMoving(null)} />
@@ -574,8 +622,25 @@ function ThreadPage() {
         title="Rename tab"
         initial={renaming?.name ?? ""}
         onSubmit={async (name) => {
+          if (renaming?.kind === "web") {
+            renameWebTab(deviceId, threadId, renaming.id, name);
+            return;
+          }
           await peer.call("threads.rename", { id: renaming!.id, name });
           tabs.refetch();
+        }}
+      />
+      <RenameDialog
+        open={askingUrl}
+        onOpenChange={setAskingUrl}
+        title="Open a web page"
+        initial=""
+        label="Address"
+        placeholder="https://example.com"
+        submitLabel="Open"
+        onSubmit={async (address) => {
+          const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(address.trim()) ? address.trim() : `https://${address.trim()}`;
+          openUrl(url);
         }}
       />
       <ConfirmDialog

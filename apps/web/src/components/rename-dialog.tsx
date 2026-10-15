@@ -10,12 +10,19 @@ export function RenameDialog({
   title,
   initial,
   onSubmit,
+  label = "Name",
+  submitLabel = "Save",
+  placeholder,
 }: {
   open: boolean;
   onOpenChange: (o: boolean) => void;
   title: string;
   initial: string;
   onSubmit: (name: string) => Promise<void>;
+  /** The field's accessible name. */
+  label?: string;
+  submitLabel?: string;
+  placeholder?: string;
 }) {
   const [name, setName] = useState(initial);
   const [error, setError] = useState<string | null>(null);
@@ -56,7 +63,8 @@ export function RenameDialog({
             value={name}
             onChange={(e) => setName(e.target.value)}
             onFocus={(e) => e.currentTarget.select()}
-            aria-label="Name"
+            aria-label={label}
+            placeholder={placeholder}
           />
           {error && <p className="text-destructive">{error}</p>}
           <DialogFooter>
@@ -64,7 +72,7 @@ export function RenameDialog({
               Cancel
             </Button>
             <Button type="submit" disabled={busy || !name.trim()}>
-              Save
+              {submitLabel}
             </Button>
           </DialogFooter>
         </form>

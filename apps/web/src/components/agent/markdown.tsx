@@ -11,6 +11,34 @@ import { cn } from "@/lib/utils";
  */
 export const RunInTerminalContext = createContext<((command: string) => void) | null>(null);
 
+/**
+ * Opens a web link as a tab of the thread (a web tab, in this browser).
+ * Absent where there are no tabs: links then open in a new browser tab.
+ */
+export const OpenLinkContext = createContext<((url: string) => void) | null>(null);
+
+function Link({ href, children }: { href?: string; children: React.ReactNode }) {
+  const open = useContext(OpenLinkContext);
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer noopener"
+      className="text-primary underline-offset-2 hover:underline"
+      onClick={(e) => {
+        // A modified or middle click still opens a browser tab, as links do.
+        if (!open || !href || !/^https?:/i.test(href) || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) {
+          return;
+        }
+        e.preventDefault();
+        open(href);
+      }}
+    >
+      {children}
+    </a>
+  );
+}
+
 type HastNode = NonNullable<ExtraProps["node"]>;
 
 function hastText(node: HastNode | { type: string; value?: string; children?: unknown[] } | undefined): string {
@@ -72,11 +100,7 @@ function CodeBlock({ node, children }: { node: HastNode | undefined; children: R
 // shown as text, never injected.
 const components: Components = {
   p: ({ children }) => <p className="my-2 first:mt-0 last:mb-0">{children}</p>,
-  a: ({ children, href }) => (
-    <a href={href} target="_blank" rel="noreferrer noopener" className="text-primary underline-offset-2 hover:underline">
-      {children}
-    </a>
-  ),
+  a: ({ children, href }) => <Link href={href}>{children}</Link>,
   ul: ({ children }) => <ul className="my-2 list-disc space-y-0.5 pl-5">{children}</ul>,
   ol: ({ children }) => <ol className="my-2 list-decimal space-y-0.5 pl-5">{children}</ol>,
   h1: ({ children }) => <h3 className="mt-4 mb-2 text-[15px] font-semibold first:mt-0">{children}</h3>,
