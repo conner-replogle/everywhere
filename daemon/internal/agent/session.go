@@ -85,15 +85,20 @@ type session struct {
 	procVersion string
 	procAuth    int  // the sign-in it started under (Manager.authGeneration)
 	authFailed  bool // claude's credentials were refused this turn
-	clients     map[Client]bool
-	state       protocol.AgentState
-	pending     map[string]*claude.PermissionRequest
-	turnActive  bool
-	interrupted bool // the user stopped the current turn
-	stopping    bool // we're closing the process on purpose
-	msgID       string
-	idle        *time.Timer
-	titled      bool
+	// refreshBusy: this turn lost the race to renew claude's sign-in, and is
+	// retried by refreshRetry after refreshRetries tries so far.
+	refreshBusy    bool
+	refreshRetries int
+	refreshRetry   *time.Timer
+	clients        map[Client]bool
+	state          protocol.AgentState
+	pending        map[string]*claude.PermissionRequest
+	turnActive     bool
+	interrupted    bool // the user stopped the current turn
+	stopping      bool // we're closing the process on purpose
+	msgID         string
+	idle          *time.Timer
+	titled        bool
 	// autoName is the name the daemon gave the thread, while it has it. A
 	// generated title only replaces this, never a name the user chose.
 	autoName string
@@ -255,6 +260,7 @@ func (s *session) handle(c Client, msg protocol.AgentClientMsg) {
 		s.history(c, msg.BeforeSeq, msg.Limit)
 		return
 	case "send":
+		s.refreshRetries = 0 // the user's prompt gets retries of its own
 		err = s.send(msg.Text, msg.Attachments)
 	case "interrupt":
 		s.interrupt()
@@ -1119,12 +1125,13 @@ func (s *session) onAssistant(msg claude.Message) {
 		s.beginTurn()
 	}
 	if f.Error == authFailed {
-		s.authFailed = true
 		var text string
 		for _, b := range f.Message.Content {
 			text += b.Text
 		}
-		if s.m.noteAuthFailed(signInProblem(text)) {
+		if refreshContended(text) && s.refreshRetries < maxRefreshRetries {
+			s.refreshBusy = true
+		} else if s.authFailed = true; s.m.noteAuthFailed(signInProblem(text)) {
 			s.notify("signedOut", "")
 		}
 	}
@@ -1213,6 +1220,9 @@ func (s *session) onResult(msg claude.Message) {
 		if s.authFailed {
 			ev.Kind, ev.Text = "signedOut", signInProblem(ev.Text)
 		}
+		if s.refreshBusy && !s.authFailed {
+			ev.Kind, ev.Text = "refreshBusy", signInProblem(ev.Text)
+		}
 		if contextFull(e.TerminalReason, ev.Text) {
 			ev.Kind = "contextFull"
 			if e.TerminalReason == "rapid_refill_breaker" {
@@ -1224,10 +1234,14 @@ func (s *session) onResult(msg claude.Message) {
 	}
 	if ev.Status == "completed" {
 		s.m.noteAuthWorked()
+		s.refreshRetries = 0
 	}
 	s.state.Compacting = false
 	recap := s.recapping
 	s.endTurn(ev)
+	if ev.Kind == "refreshBusy" {
+		s.scheduleRefreshRetry(recap)
+	}
 	if !recap {
 		s.maybeRefineTitle(ev.Status == "completed")
 	}
@@ -1284,10 +1298,57 @@ func (s *session) onExit() {
 	s.changed()
 }
 
+// scheduleRefreshRetry retries a turn that lost the race to renew claude's
+// sign-in, once the claude that won has had time to finish. A /recap is
+// sent again; anything else is continued, since the failed prompt is already
+// in the conversation.
+func (s *session) scheduleRefreshRetry(recap bool) {
+	s.refreshRetries++
+	wait := s.m.RefreshRetryWait * time.Duration(s.refreshRetries)
+	slog.Info("claude's sign-in is being renewed elsewhere; retrying", "thread", s.threadID, "in", wait)
+	s.emit(protocol.AgentEvent{Type: "notice", Text: fmt.Sprintf(
+		"Another Claude Code process was renewing the sign-in. Retrying in %s.", wait)})
+	s.changed()
+	var t *time.Timer
+	t = time.AfterFunc(wait, func() {
+		s.do(func() {
+			if s.refreshRetry != t {
+				return // canceled, or a turn started meanwhile
+			}
+			s.refreshRetry = nil
+			if recap {
+				if err := s.send(recapPrompt, nil); err != nil {
+					slog.Warn("retrying claude recap", "thread", s.threadID, "err", err)
+				}
+				return
+			}
+			if err := s.ensureProc(); err != nil {
+				s.emit(protocol.AgentEvent{Type: "notice", Text: "Couldn't retry: " + err.Error()})
+				s.changed()
+				return
+			}
+			s.beginTurn()
+			if err := s.proc.Send(claude.UserMessage{Content: []claude.ContentBlock{claude.Text(continuePrompt)}}); err != nil {
+				slog.Warn("retrying claude turn", "thread", s.threadID, "err", err)
+			}
+			s.changed()
+		})
+	})
+	s.refreshRetry = t
+}
+
+func (s *session) cancelRefreshRetry() {
+	if s.refreshRetry != nil {
+		s.refreshRetry.Stop()
+		s.refreshRetry = nil
+	}
+}
+
 // --- helpers --------------------------------------------------------------------
 
 func (s *session) beginTurn() {
-	s.turnActive, s.interrupted, s.authFailed = true, false, false
+	s.turnActive, s.interrupted, s.authFailed, s.refreshBusy = true, false, false, false
+	s.cancelRefreshRetry() // whatever starts a turn retries it
 	s.firstReply = ""
 	s.state.Suggestion = ""
 	s.emit(protocol.AgentEvent{Type: "turn", Status: "started"})
@@ -1309,7 +1370,8 @@ func (s *session) endTurn(ev protocol.AgentEvent) {
 	case "completed":
 		s.notify("done", "")
 	case "error":
-		if ev.Kind != "signedOut" { // noteAuthFailed's notice said so already
+		// noteAuthFailed's notice said so already, and refreshBusy is retried.
+		if ev.Kind != "signedOut" && ev.Kind != "refreshBusy" {
 			s.notify("error", "")
 		}
 	}

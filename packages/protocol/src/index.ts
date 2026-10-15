@@ -985,9 +985,10 @@ export type AgentEvent = AgentEventBase &
         text?: string;
         /**
          * contextFull: an error because the conversation outgrew the context
-         * window. signedOut: claude's credentials were refused.
+         * window. signedOut: claude's credentials were refused. refreshBusy:
+         * another claude was renewing the sign-in; the daemon retries the turn.
          */
-        kind?: "contextFull" | "signedOut";
+        kind?: "contextFull" | "signedOut" | "refreshBusy";
         costUsd?: number;
         durationMs?: number;
       }

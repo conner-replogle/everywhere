@@ -698,6 +698,8 @@ type AgentAccount struct {
 //     completed | interrupted | error
 //   - notice {text, kind?}: e.g. compaction (kind "compact"), claude exiting
 //   - turn errors carry kind "contextFull" when the context window overflowed
+//     and "refreshBusy" when another claude was renewing the sign-in (the
+//     daemon retries the turn)
 //   - commandOutput {text}: what a local slash command printed
 //
 // ParentID is set on events from a subagent: the id of the tool call that

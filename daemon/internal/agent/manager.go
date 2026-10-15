@@ -77,6 +77,9 @@ type Manager struct {
 	// IdleTimeout stops a claude process after this long without a turn.
 	// The next prompt resumes the conversation.
 	IdleTimeout time.Duration
+	// RefreshRetryWait is the first wait before retrying a turn that lost
+	// the race to renew claude's sign-in (see maxRefreshRetries).
+	RefreshRetryWait time.Duration
 	// WorktreeDir holds the worktrees of threads that run in one.
 	WorktreeDir string
 	// ThreadArgs, if set, gives a thread's claude process extra CLI flags,
@@ -133,12 +136,13 @@ const infoTTL = 10 * time.Minute
 // NewManager keeps worktrees and attachments under dataDir.
 func NewManager(st Store, dataDir string, onChange func()) *Manager {
 	m := &Manager{
-		IdleTimeout: 30 * time.Minute,
-		WorktreeDir: filepath.Join(dataDir, "worktrees"),
-		attachments: attachmentStore{root: filepath.Join(dataDir, "attachments")},
-		store:       st,
-		onChange:    onChange,
-		sessions:    map[string]*session{},
+		IdleTimeout:      30 * time.Minute,
+		RefreshRetryWait: 20 * time.Second,
+		WorktreeDir:      filepath.Join(dataDir, "worktrees"),
+		attachments:      attachmentStore{root: filepath.Join(dataDir, "attachments")},
+		store:            st,
+		onChange:         onChange,
+		sessions:         map[string]*session{},
 	}
 	m.start = m.startClaude
 	m.forkPoint = m.transcriptForkPoint

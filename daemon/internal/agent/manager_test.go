@@ -1320,6 +1320,65 @@ func TestSignedOut(t *testing.T) {
 	}
 }
 
+// Losing the race to renew claude's sign-in to another claude is retried,
+// not reported as signed out, until the retries run out.
+func TestRefreshContended(t *testing.T) {
+	h := newHarness(t)
+	h.m.RefreshRetryWait = 10 * time.Millisecond
+	var mu sync.Mutex
+	var notified []string
+	h.m.Notify = func(n protocol.HubNotify) {
+		mu.Lock()
+		defer mu.Unlock()
+		notified = append(notified, n.Kind)
+	}
+	problem := func() string {
+		h.m.mu.Lock()
+		defer h.m.mu.Unlock()
+		return h.m.authProblem
+	}
+	const busy = "Failed to refresh OAuth token: another Claude Code process is refreshing it or exited mid-refresh. This is usually transient; retry in a minute, and if it persists close other Claude Code processes or sign in again"
+	fail := func(p *fakeProc) {
+		p.emit(`{"type":"assistant","uuid":"u1","error":"authentication_failed","message":{"id":"m1","content":[{"type":"text","text":"` + busy + `"}]}}`)
+		p.emit(`{"type":"result","subtype":"success","is_error":true,"result":"` + busy + `"}`)
+	}
+	c := h.attach(0)
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "hi"})
+	p := h.proc(0)
+	fail(p)
+
+	eventually(t, "the turn continued", func() bool {
+		sent := p.sentMessages()
+		return len(sent) == 2 && sent[1].Content[0].Text == continuePrompt
+	})
+	if got := problem(); got != "" {
+		t.Fatalf("auth problem = %q", got)
+	}
+	p.emit(`{"type":"result","subtype":"success"}`)
+	h.waitStatus(c, "idle")
+	eventually(t, "only the done notice", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return strings.Join(notified, " ") == "done"
+	})
+
+	// It keeps failing: after the retries, it's signed out.
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "again"})
+	for i := 0; i <= maxRefreshRetries; i++ {
+		eventually(t, "a try", func() bool { return len(p.sentMessages()) == 3+i })
+		fail(p)
+	}
+	eventually(t, "signed out", func() bool { return problem() != "" })
+	time.Sleep(50 * time.Millisecond)
+	if n := len(p.sentMessages()); n != 3+maxRefreshRetries {
+		t.Fatalf("sent %d messages, want %d", n, 3+maxRefreshRetries)
+	}
+	evs := c.events()
+	if last := evs[len(evs)-1]; last.Kind != "signedOut" {
+		t.Fatalf("turn end = %+v", last)
+	}
+}
+
 func TestSignInProblem(t *testing.T) {
 	for in, want := range map[string]string{
 		"Not logged in · Please run /login":                       "Not logged in",

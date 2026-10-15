@@ -23,6 +23,18 @@ const loginTimeout = 15 * time.Minute
 // credentials, or it has none.
 const authFailed = "authentication_failed"
 
+// Claude Code renews its OAuth token under a lock shared by every claude on
+// the machine. One that finds another renewing it (or a stale lock from one
+// killed mid-renewal) fails its request with authentication_failed, though
+// the credentials are fine. Such a turn is retried, after a growing wait, up
+// to maxRefreshRetries times before it counts as signed out.
+const maxRefreshRetries = 3
+
+// refreshContended reports whether claude's complaint is losing that race.
+func refreshContended(text string) bool {
+	return strings.Contains(text, "another Claude Code process is refreshing")
+}
+
 // signInProblem is claude's complaint about its credentials without its
 // advice to run /login, which only its own terminal UI offers.
 func signInProblem(text string) string {
