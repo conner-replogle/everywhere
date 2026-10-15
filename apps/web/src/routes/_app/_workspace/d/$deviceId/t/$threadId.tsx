@@ -309,7 +309,7 @@ function ThreadPage() {
               onProcessUse={onProcessUse}
               onInteract={keep}
               processes={
-                canTab && features.includes("processes") ? { threadId, onOpen: openProcess } : undefined
+                canTab && features.includes("processes") ? { threadId, onOpen: openProcess, onOpenUrl: openUrl } : undefined
               }
             />
           </Suspense>

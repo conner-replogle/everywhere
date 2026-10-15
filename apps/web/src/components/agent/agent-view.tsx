@@ -112,7 +112,7 @@ export function AgentView({
   /** Called when the user acts in the thread: sends a prompt, answers claude, interrupts, changes a setting. */
   onInteract?: () => void;
   /** Shows the thread's processes above the composer; absent when the device has none. */
-  processes?: { threadId: string; onOpen: (processId?: string) => void };
+  processes?: { threadId: string; onOpen: (processId?: string) => void; onOpenUrl?: (url: string) => void };
   /** Set while the thread is archived: its history shows, with a way back instead of the composer. */
   archived?: { onRestore: () => void; error: string | null };
   /** A Scratch thread: it works in a folder of its own, and its changes to the computer can be listed. */
@@ -359,7 +359,14 @@ export function AgentView({
             ))}
             {claudeAuth.data && onSignIn && <SignedOutBanner auth={claudeAuth.data} onSignIn={onSignIn} />}
             <ResumeBanner threadId={threadId} context={state?.context} canCompact={canCompact} onCompact={compact} />
-            {processes && <ProcessesOverview peer={peer} threadId={processes.threadId} onOpen={processes.onOpen} />}
+            {processes && (
+              <ProcessesOverview
+                peer={peer}
+                threadId={processes.threadId}
+                onOpen={processes.onOpen}
+                onOpenUrl={processes.onOpenUrl}
+              />
+            )}
             <StatusBar agent={agent} />
             <Composer
               agent={user}
