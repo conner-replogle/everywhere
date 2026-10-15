@@ -39,6 +39,7 @@ type Store interface {
 	AgentThread(threadID string) (store.AgentThread, error)
 	SetAgentSessionID(threadID, sessionID string) error
 	TouchThread(threadID string) error
+	SetThreadDone(id string, done bool) error
 	SetAgentResumeAt(threadID, entry string) error
 	SetAgentModel(threadID, model string) error
 	SetAgentPermissionMode(threadID, mode string) error
@@ -190,6 +191,30 @@ func (m *Manager) ProcessEvent(threadID, name, text, prompt string, wake bool) {
 		return
 	}
 	s.do(func() { s.processEvent(name, text, prompt, wake) })
+}
+
+// MarkDone marks a thread done for its agent (thread_done): when its turn
+// completes if one is running, else now. A turn that fails or is stopped,
+// or a prompt sent during it, leaves the thread open. It reports whether it
+// waits for the turn.
+func (m *Manager) MarkDone(threadID string) (afterTurn bool, err error) {
+	s, err := m.session(threadID)
+	if err != nil {
+		return false, err
+	}
+	ran := false
+	s.call(func() {
+		ran = true
+		if s.turnActive {
+			s.doneAfterTurn, afterTurn = true, true
+			return
+		}
+		err = s.setDone()
+	})
+	if !ran {
+		return false, errClosed
+	}
+	return afterTurn, err
 }
 
 // Request runs a request other than attach for a caller with no channel

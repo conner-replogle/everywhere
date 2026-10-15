@@ -8,6 +8,8 @@ import { useSyncExternalStore } from "react";
 
 /** How long a thread goes untouched before the sidebar hides it. */
 export const IDLE_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
+/** Scratch threads are quick one-offs, so they go idle sooner. */
+export const SCRATCH_IDLE_AFTER_MS = 24 * 60 * 60 * 1000;
 
 /**
  * When the thread was last touched: a prompt sent or keys typed (the daemon's
@@ -33,10 +35,21 @@ export function isBusy(t: Pick<Thread, "running" | "agentStatus" | "processes">)
 }
 
 /** Whether the sidebar hides the thread by default. A thread with no usable time is never hidden. */
-export function isIdle(t: Thread, now: number, local?: number): boolean {
+export function isIdle(t: Thread, now: number, local?: number, after = IDLE_AFTER_MS): boolean {
   if (t.archivedAt || isBusy(t)) return false;
   const at = lastTouched(t, local);
-  return at !== undefined && now - at >= IDLE_AFTER_MS;
+  return at !== undefined && now - at >= after;
+}
+
+/**
+ * Whether the thread's agent said its work is done (or the user marked it),
+ * so the sidebar puts it away until someone works in it again. Looking at it
+ * doesn't bring it back: that's what reading the result is. A process left
+ * running (a dev server for the user) doesn't keep it out either.
+ */
+export function isDone(t: Thread): boolean {
+  if (t.archivedAt || !t.doneAt) return false;
+  return t.agentStatus !== "working" && t.agentStatus !== "starting" && t.agentStatus !== "waiting";
 }
 
 // --- touches in this browser ------------------------------------------------

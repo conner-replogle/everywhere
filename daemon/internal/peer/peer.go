@@ -153,6 +153,7 @@ func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string) *Serve
 		s.desktop = d
 	}
 	tools := append(browser.Tools(s.browsers), process.Tools(s.procs)...)
+	tools = append(tools, s.doneTools()...)
 	if s.desktop != nil && (runtime.GOOS == "linux" || runtime.GOOS == "windows") {
 		tools = append(tools, desktop.Tools(s.desktop)...)
 	}

@@ -119,6 +119,10 @@ CREATE TABLE processes (
 ALTER TABLE projects ADD COLUMN is_scratch INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE threads ADD COLUMN scratch_dir TEXT;
 `,
+	// 10: threads their agent marked done, until someone touches them again.
+	`
+ALTER TABLE threads ADD COLUMN done_at INTEGER;
+`,
 }
 
 type Store struct {
@@ -304,19 +308,22 @@ func (s *Store) DeleteProject(id string) error {
 
 // --- threads ----------------------------------------------------------------
 
-const threadCols = "id, project_id, kind, name, created_at, last_opened_at, agent_worktree, archived_at, parent_id, tab_state, scratch_dir"
+const threadCols = "id, project_id, kind, name, created_at, last_opened_at, agent_worktree, archived_at, parent_id, tab_state, scratch_dir, done_at"
 
 func scanThread(sc interface{ Scan(...any) error }) (protocol.Thread, error) {
 	var t protocol.Thread
-	var opened, archived sql.NullInt64
+	var opened, archived, done sql.NullInt64
 	var worktree, parent, state, scratch sql.NullString
-	err := sc.Scan(&t.ID, &t.ProjectID, &t.Kind, &t.Name, &t.CreatedAt, &opened, &worktree, &archived, &parent, &state, &scratch)
+	err := sc.Scan(&t.ID, &t.ProjectID, &t.Kind, &t.Name, &t.CreatedAt, &opened, &worktree, &archived, &parent, &state, &scratch, &done)
 	t.Worktree, t.ParentID, t.TabState, t.ScratchDir = worktree.String, parent.String, state.String, scratch.String
 	if opened.Valid {
 		t.LastOpenedAt = &opened.Int64
 	}
 	if archived.Valid {
 		t.ArchivedAt = &archived.Int64
+	}
+	if done.Valid {
+		t.DoneAt = &done.Int64
 	}
 	return t, err
 }
@@ -513,6 +520,17 @@ func (s *Store) SetThreadArchived(id string, archived bool) (protocol.Thread, er
 	return s.GetThread(id)
 }
 
+// SetThreadDone marks a thread done, or not: for a tab, the thread it
+// belongs to.
+func (s *Store) SetThreadDone(id string, done bool) error {
+	var at any
+	if done {
+		at = now()
+	}
+	return s.execOne(`UPDATE threads SET done_at = ?1
+WHERE id = (SELECT COALESCE(parent_id, id) FROM threads WHERE id = ?2)`, at, id)
+}
+
 // ReplaceThreadName renames a thread only if its name is still from, so a
 // generated name never overwrites one the user chose. It reports whether it
 // renamed.
@@ -581,8 +599,9 @@ func (s *Store) MarkSpawned(threadID string) error {
 
 // TouchThread records someone interacting with a thread (a prompt sent,
 // keys typed), and with the thread a tab belongs to, for sorting by recent.
+// Either is no longer done: someone is working in it again.
 func (s *Store) TouchThread(threadID string) error {
-	_, err := s.db.Exec(`UPDATE threads SET last_opened_at = ?1
+	_, err := s.db.Exec(`UPDATE threads SET last_opened_at = ?1, done_at = NULL
 WHERE id = ?2 OR id = (SELECT parent_id FROM threads WHERE id = ?2)`, now(), threadID)
 	return err
 }

@@ -85,7 +85,9 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		Query    string `json:"query"`
 		Limit    int    `json:"limit"`
 		Archived bool   `json:"archived"`
-		Force    bool   `json:"force"`
+		// threads.done: mark it done, or reopen it.
+		Done  bool `json:"done"`
+		Force bool `json:"force"`
 		// agent.login: an Anthropic Console account rather than a subscription.
 		Console bool `json:"console"`
 		// agent.loginCode
@@ -205,6 +207,16 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		return t, err
 	case "threads.rename":
 		t, err := s.store.RenameThread(params.ID, params.Name)
+		if err == nil {
+			s.fillStatus(&t)
+			s.broadcast(protocol.EventThreadsChanged)
+		}
+		return t, err
+	case "threads.done":
+		if err := s.store.SetThreadDone(params.ID, params.Done); err != nil {
+			return nil, err
+		}
+		t, err := s.store.GetThread(params.ID)
 		if err == nil {
 			s.fillStatus(&t)
 			s.broadcast(protocol.EventThreadsChanged)

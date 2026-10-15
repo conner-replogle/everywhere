@@ -127,6 +127,7 @@ const (
 	// removeScratch, tabs.create's input and threads.create's prompt.
 	FeatureScratch    = "scratch"
 	FeatureClaudeAuth = "claudeAuth" // agent.auth, agent.login*, claude.auth and kind signedOut
+	FeatureDone       = "done"       // Thread.doneAt, threads.done and the thread_done tool
 )
 
 // DesktopInfo is the result of desktop.info.
@@ -279,6 +280,9 @@ type Thread struct {
 	Processes int `json:"processes,omitempty"`
 	// ScratchDir is a Scratch thread's own folder, where it works.
 	ScratchDir string `json:"scratchDir,omitempty"`
+	// DoneAt is when the thread's agent said its work was done (thread_done),
+	// until someone works in it again.
+	DoneAt *int64 `json:"doneAt,omitempty"`
 }
 
 // ScratchUsage is the result of scratch.usage: how much the Scratch

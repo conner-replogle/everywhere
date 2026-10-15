@@ -154,7 +154,8 @@ export interface DeviceInfo {
  * threads.search, scratch.usage, threads.delete's removeScratch,
  * tabs.create's input and threads.create's prompt. claudeAuth:
  * agent.auth, agent.login, agent.loginCode, agent.loginCancel, claude.auth
- * and the signedOut turn kind.
+ * and the signedOut turn kind. done: Thread.doneAt, threads.done and the
+ * agent's thread_done tool.
  */
 export type DeviceFeature =
   | "claude"
@@ -173,7 +174,8 @@ export type DeviceFeature =
   | "mkdir"
   | "processes"
   | "scratch"
-  | "claudeAuth";
+  | "claudeAuth"
+  | "done";
 
 /**
  * What desktop.start captures: a monitor by name, or a window by id
@@ -308,6 +310,8 @@ export interface Thread {
   processes?: number;
   /** scratch: a Scratch thread's own folder, where it works; kept until deleted. */
   scratchDir?: string;
+  /** done: when its agent said the work was done (thread_done), until someone works in it again. */
+  doneAt?: number;
 }
 
 /** scratch.usage: what the Scratch folders hold, in all and per thread folder (by path). */
@@ -487,6 +491,8 @@ export interface RpcMethods {
   "threads.rename": [{ id: string; name: string }, Thread];
   /** archive: archiving stops the thread's shell or claude; history and worktree stay. */
   "threads.archive": [{ id: string; archived: boolean }, Thread];
+  /** done: mark a thread done (put away in the sidebar), or reopen it. */
+  "threads.done": [{ id: string; done: boolean }, Thread];
   /**
    * keepWorktree: leave a claude thread's worktree on disk (its branch is always kept).
    * removeScratch (scratch): also delete a Scratch thread's folder, which otherwise stays.

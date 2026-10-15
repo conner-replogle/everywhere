@@ -633,8 +633,21 @@ its tabs), its `createdAt`, and when it was last opened or "kept in list" in
 this browser. A thread is never tucked away while it's open, running (live
 shell or claude process), working, starting, waiting on the user, or has
 processes running, or when it has no usable timestamp. Opening an idle thread,
-or its "Keep in list" action, puts it back; "Hide idle threads" in the
-sidebar's sort menu turns the whole thing off (per browser).
+or its "Keep in list" action, puts it back; "Hide done and idle threads" in
+the sidebar's sort menu turns the whole thing off (per browser). Scratch
+threads go idle after 1 day rather than 3, to keep that section short.
+
+A thread can also be done (as T3 Code's "settled"): its `doneAt` is set, and
+the sidebar tucks it under a "N done" row next to the idle one, however
+recently it was used. A claude thread's agent marks it with the MCP tool
+`thread_done` (allowed without asking). During a turn that waits for the turn
+to end, and only a completed turn counts: one that fails or is interrupted,
+or a prompt the user sends while it runs, leaves the thread open. The
+sidebar's "Mark done" and "Reopen" set and clear it (`threads.done`). Any
+touch on the daemon (a prompt, keys typed, in the thread or its tabs) clears
+it; opening it to read the result does not. A thread that is working or
+waiting is listed whatever its `doneAt`; processes left running (a dev
+server for the user) don't keep a done thread listed.
 
 On phones (coarse pointer) a terminal gets a key row: Esc, Tab, sticky Ctrl
 and Alt (applied to the next key from the row or the keyboard), arrows and a

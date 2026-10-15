@@ -461,3 +461,36 @@ func TestScratch(t *testing.T) {
 		t.Errorf("%d Scratch projects after reopening", n)
 	}
 }
+
+func TestThreadDone(t *testing.T) {
+	s := open(t)
+	p, err := s.CreateProject(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	th, err := s.CreateThread(p.ID, "", protocol.ThreadClaude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tab, err := s.CreateTab(th.ID, protocol.ThreadClaude, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A tab's agent marks the thread it belongs to.
+	if err := s.SetThreadDone(tab.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetThread(th.ID); got.DoneAt == nil {
+		t.Fatal("the thread isn't done")
+	}
+	// Working in it again reopens it.
+	if err := s.TouchThread(tab.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetThread(th.ID); got.DoneAt != nil {
+		t.Fatal("touching the thread left it done")
+	}
+	if err := s.SetThreadDone("nope", true); err == nil {
+		t.Fatal("marked a missing thread done")
+	}
+}

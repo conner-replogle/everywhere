@@ -1,6 +1,6 @@
 import type { Thread } from "@everywhere/protocol";
-import { expect, test } from "bun:test";
-import { IDLE_AFTER_MS, isBusy, isIdle, lastTouched } from "../src/lib/idle-threads";
+import { describe, expect, test } from "bun:test";
+import { IDLE_AFTER_MS, isBusy, isDone, isIdle, lastTouched, SCRATCH_IDLE_AFTER_MS } from "../src/lib/idle-threads";
 
 const NOW = Date.UTC(2026, 9, 6);
 const DAY = 24 * 60 * 60 * 1000;
@@ -63,4 +63,29 @@ test("busy threads never go idle", () => {
 
 test("archived threads are left to the Archived section", () => {
   expect(isIdle(thread({ archivedAt: NOW - 9 * DAY }), NOW)).toBe(false);
+});
+
+describe("done threads", () => {
+  const base = thread({ kind: "claude" });
+
+  test("a thread its agent marked done is done", () => {
+    expect(isDone({ ...base, doneAt: 5 })).toBe(true);
+    expect(isDone({ ...base })).toBe(false);
+  });
+
+  test("working again, or archived, isn't done", () => {
+    expect(isDone({ ...base, doneAt: 5, running: true, agentStatus: "working" })).toBe(false);
+    expect(isDone({ ...base, doneAt: 5, archivedAt: 6 })).toBe(false);
+  });
+
+  test("a process left running doesn't keep it out", () => {
+    expect(isDone({ ...base, doneAt: 5, running: true, agentStatus: "idle", processes: 1 })).toBe(true);
+  });
+});
+
+test("Scratch threads go idle after a day", () => {
+  const t = thread({ createdAt: NOW - SCRATCH_IDLE_AFTER_MS - 1 });
+  expect(SCRATCH_IDLE_AFTER_MS).toBe(DAY);
+  expect(isIdle(t, NOW)).toBe(false);
+  expect(isIdle(t, NOW, undefined, SCRATCH_IDLE_AFTER_MS)).toBe(true);
 });

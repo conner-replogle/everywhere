@@ -10,6 +10,7 @@ import {
   ChevronsUpDownIcon,
   FolderIcon,
   FolderPlusIcon,
+  CircleCheckIcon,
   HistoryIcon,
   HomeIcon,
   KeyRoundIcon,
@@ -57,7 +58,16 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { auth, useAuth } from "@/lib/auth";
 import { useDeviceOnline } from "@/lib/hub";
-import { IDLE_AFTER_MS, isIdle, lastTouched, touchKey, touchThread, useThreadTouches } from "@/lib/idle-threads";
+import {
+  IDLE_AFTER_MS,
+  isDone,
+  isIdle,
+  lastTouched,
+  SCRATCH_IDLE_AFTER_MS,
+  touchKey,
+  touchThread,
+  useThreadTouches,
+} from "@/lib/idle-threads";
 import { useInstallApp } from "@/lib/pwa";
 import { getPrefs } from "@/lib/prefs";
 import { useProjectIcon } from "@/lib/project-icons";
@@ -106,7 +116,7 @@ const VIEW_KEY = "ew:sidebar-view";
 interface SidebarView {
   sort: SortBy;
   group: GroupBy;
-  /** Tuck threads untouched for IDLE_AFTER_MS under an "idle" row (on unless turned off). */
+  /** Tuck done threads, and threads untouched for IDLE_AFTER_MS, under "done" and "idle" rows (on unless turned off). */
   hideIdle: boolean;
 }
 
@@ -329,32 +339,76 @@ export function AppSidebar({
 
   const isActive = (entry: Entry, t: Thread) => entry.deviceId === activeDeviceId && t.id === activeThreadId;
 
-  /** Splits threads into those listed and those tucked under the idle row. The open thread is always listed. */
-  const splitIdle = <R,>(rows: R[], of: (r: R) => { entry: Entry; thread: Thread }) => {
-    if (!view.hideIdle) return { listed: rows, idle: [] as R[] };
+  /**
+   * Splits threads into those listed and those tucked under the "done" and
+   * "idle" rows. The open thread is always listed.
+   */
+  const splitIdle = <R,>(rows: R[], of: (r: R) => { entry: Entry; thread: Thread }, after = IDLE_AFTER_MS) => {
     const listed: R[] = [];
+    const done: R[] = [];
     const idle: R[] = [];
+    if (!view.hideIdle) return { listed: rows, done, idle };
     for (const r of rows) {
       const { entry, thread } = of(r);
       const local = touches[touchKey(entry.deviceId, thread.id)];
-      (!isActive(entry, thread) && isIdle(thread, now, local) ? idle : listed).push(r);
+      if (isActive(entry, thread)) listed.push(r);
+      else if (isDone(thread)) done.push(r);
+      else (isIdle(thread, now, local, after) ? idle : listed).push(r);
     }
-    return { listed, idle };
+    return { listed, done, idle };
   };
+  /** The "done" and "idle" rows under a list, and the threads they show when open. */
+  const tucked = <R,>(
+    key: string,
+    part: { done: R[]; idle: R[] },
+    row: (r: R) => React.ReactNode,
+    opts: { flat?: boolean; idleDays?: number } = {},
+  ) => (
+    <>
+      {part.done.length > 0 && (
+        <TuckedThreads
+          kind="done"
+          count={part.done.length}
+          open={idleOpen.has(`done:${key}`)}
+          onToggle={() => toggleIdle(`done:${key}`)}
+          flat={opts.flat}
+        />
+      )}
+      {idleOpen.has(`done:${key}`) && part.done.map(row)}
+      {part.idle.length > 0 && (
+        <TuckedThreads
+          kind="idle"
+          days={opts.idleDays ?? IDLE_DAYS}
+          count={part.idle.length}
+          open={idleOpen.has(key)}
+          onToggle={() => toggleIdle(key)}
+          flat={opts.flat}
+        />
+      )}
+      {idleOpen.has(key) && part.idle.map(row)}
+    </>
+  );
+  async function setDone(entry: Entry, thread: Thread, done: boolean) {
+    await run(async () => {
+      await entry.peer.call("threads.done", { id: thread.id, done });
+      entry.threads.refetch();
+    });
+  }
   const toggleIdle = (key: string) =>
     setIdleOpen((prev) => {
       const next = new Set(prev);
       if (!next.delete(key)) next.add(key);
       return next;
     });
+  /** How long a tucked thread has been done, or untouched. */
   const idleAge = (entry: Entry, t: Thread) => {
-    const at = lastTouched(t, touches[touchKey(entry.deviceId, t.id)]);
+    const at = isDone(t) ? t.doneAt : lastTouched(t, touches[touchKey(entry.deviceId, t.id)]);
     return at === undefined ? undefined : { days: Math.floor((now - at) / DAY_MS), at };
   };
 
   const threadActions = (entry: Entry, t: Thread, idle = false) => (
     <>
-      {idle && (
+      {idle && !isDone(t) && (
         <>
           <DropdownMenuItem onSelect={() => touchThread(entry.deviceId, t.id)}>
             <PinIcon />
@@ -363,6 +417,18 @@ export function AppSidebar({
           <DropdownMenuSeparator />
         </>
       )}
+      {hasFeature(entry, "done") &&
+        (t.doneAt ? (
+          <DropdownMenuItem disabled={!connected(entry)} onSelect={() => setDone(entry, t, false)}>
+            <RotateCcwIcon />
+            Reopen
+          </DropdownMenuItem>
+        ) : (
+          <DropdownMenuItem disabled={!connected(entry)} onSelect={() => setDone(entry, t, true)}>
+            <CircleCheckIcon />
+            Mark done
+          </DropdownMenuItem>
+        ))}
       <DropdownMenuItem onSelect={() => setPending({ kind: "rename-thread", entry, thread: t })}>
         <PencilIcon />
         Rename
@@ -392,7 +458,7 @@ export function AppSidebar({
   function renderProject({ entry, project: p, threads: all }: ProjectRow, showDevice: boolean) {
     const key = projectKey(entry.deviceId, p.id);
     const isCollapsed = collapsed.has(key);
-    const { listed: threads, idle } = splitIdle(all, (thread) => ({ entry, thread }));
+    const { listed: threads, ...part } = splitIdle(all, (thread) => ({ entry, thread }));
     const live = connected(entry);
     const claude = hasFeature(entry, "claude");
     return (
@@ -489,20 +555,16 @@ export function AppSidebar({
                 actions={threadActions(entry, t)}
               />
             ))}
-            {idle.length > 0 && (
-              <IdleThreads count={idle.length} open={idleOpen.has(key)} onToggle={() => toggleIdle(key)} />
-            )}
-            {idleOpen.has(key) &&
-              idle.map((t) => (
-                <ThreadRow
-                  key={t.id}
-                  deviceId={entry.deviceId}
-                  thread={t}
-                  active={isActive(entry, t)}
-                  idle={idleAge(entry, t)}
-                  actions={threadActions(entry, t, true)}
-                />
-              ))}
+            {tucked(key, part, (t) => (
+              <ThreadRow
+                key={t.id}
+                deviceId={entry.deviceId}
+                thread={t}
+                active={isActive(entry, t)}
+                idle={idleAge(entry, t)}
+                actions={threadActions(entry, t, true)}
+              />
+            ))}
             {all.length === 0 && live && (
               <li className="flex gap-1 pl-6">
                 {(claude ? (["terminal", "claude"] as const) : (["terminal"] as const)).map((kind) => (
@@ -538,6 +600,24 @@ export function AppSidebar({
         </span>
       </div>
       <ScratchSection
+        split={(entry, threads) => splitIdle(threads, (thread) => ({ entry, thread }), SCRATCH_IDLE_AFTER_MS)}
+        tucked={(entry, part) =>
+          tucked(
+            `scratch:${entry.deviceId}`,
+            part,
+            (t) => (
+              <ThreadRow
+                key={t.id}
+                deviceId={entry.deviceId}
+                thread={t}
+                active={isActive(entry, t)}
+                idle={idleAge(entry, t)}
+                actions={threadActions(entry, t, true)}
+              />
+            ),
+            { idleDays: Math.round(SCRATCH_IDLE_AFTER_MS / DAY_MS) },
+          )
+        }
         entries={list}
         collapsed={collapsed}
         toggle={toggle}
@@ -581,9 +661,9 @@ export function AppSidebar({
             <DropdownMenuCheckboxItem
               checked={view.hideIdle}
               onCheckedChange={(c) => view.setHideIdle(c === true)}
-              title={`Tuck threads untouched for ${IDLE_DAYS} days under an "idle" row. Nothing in them is stopped or deleted.`}
+              title={`Tuck done threads under a "done" row, and threads untouched for ${IDLE_DAYS} days (a day in Scratch) under an "idle" row. Nothing in them is stopped or deleted.`}
             >
-              Hide idle threads
+              Hide done and idle threads
             </DropdownMenuCheckboxItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -650,7 +730,7 @@ export function AppSidebar({
           })}
         {shown.group === "none" &&
           (() => {
-            const { listed, idle } = splitIdle(shown.threads, (r) => r);
+            const { listed, ...part } = splitIdle(shown.threads, (r) => r);
             const row = ({ entry, project, thread: t }: ThreadListRow, isIdleRow: boolean) => (
               <ThreadRow
                 key={`${entry.deviceId}/${t.id}`}
@@ -667,10 +747,7 @@ export function AppSidebar({
             return (
               <ul className="flex flex-col gap-px">
                 {listed.map((r) => row(r, false))}
-                {idle.length > 0 && (
-                  <IdleThreads count={idle.length} open={idleOpen.has("all")} onToggle={() => toggleIdle("all")} flat />
-                )}
-                {idleOpen.has("all") && idle.map((r) => row(r, true))}
+                {tucked("all", part, (r) => row(r, true), { flat: true })}
                 {!loading && shown.threads.length === 0 && projects.length > 0 && (
                   <li className="px-2 py-1 text-xs text-muted-foreground">No threads yet.</li>
                 )}
@@ -921,6 +998,8 @@ function ScratchSection({
   isActive,
   threadActions,
   onError,
+  split,
+  tucked,
 }: {
   entries: Entry[];
   collapsed: Set<string>;
@@ -928,6 +1007,10 @@ function ScratchSection({
   isActive: (entry: Entry, t: Thread) => boolean;
   threadActions: (entry: Entry, t: Thread) => React.ReactNode;
   onError: (message: string | null) => void;
+  /** Splits a device's Scratch threads into listed, done and idle (after a day). */
+  split: (entry: Entry, threads: Thread[]) => { listed: Thread[]; done: Thread[]; idle: Thread[] };
+  /** The "done" and "idle" rows for a device's tucked Scratch threads. */
+  tucked: (entry: Entry, part: { done: Thread[]; idle: Thread[] }) => React.ReactNode;
 }) {
   const navigate = useNavigate();
   const { deviceId: activeDeviceId, threadId: activeThreadId } = useParams({ strict: false });
@@ -966,7 +1049,8 @@ function ScratchSection({
           {rows.map((entry) => {
             const key = `scratch:${entry.deviceId}`;
             const isCollapsed = collapsed.has(key);
-            const threads = scratchThreads(entry);
+            const all = scratchThreads(entry);
+            const { listed: threads, ...part } = split(entry, all);
             const live = canScratch(entry);
             const onPage = entry.deviceId === activeDeviceId && !activeThreadId;
             return (
@@ -1030,6 +1114,7 @@ function ScratchSection({
                         actions={threadActions(entry, t)}
                       />
                     ))}
+                    {tucked(entry, part)}
                     {threads.length > SCRATCH_SHOWN && (
                       <li>
                         <Link
@@ -1037,11 +1122,11 @@ function ScratchSection({
                           params={{ deviceId: entry.deviceId }}
                           className="flex h-6 items-center pl-7 text-xs text-muted-foreground hover:text-foreground pointer-coarse:h-9"
                         >
-                          All {threads.length} on {deviceName(entry)}
+                          All {all.length} on {deviceName(entry)}
                         </Link>
                       </li>
                     )}
-                    {threads.length === 0 && live && (
+                    {all.length === 0 && live && (
                       <li>
                         <Link
                           to="/d/$deviceId"
@@ -1283,7 +1368,7 @@ function ThreadRow({
           <span className="ml-auto flex shrink-0 items-center gap-1.5 pl-1">
             <span
               className="text-[11px] text-muted-foreground tabular-nums"
-              title={`Last touched ${new Date(idle.at).toLocaleString()}`}
+              title={`${t.doneAt === idle.at ? "Done" : "Last touched"} ${new Date(idle.at).toLocaleString()}`}
             >
               {idle.days}d
             </span>
@@ -1310,33 +1395,43 @@ function ThreadRow({
   );
 }
 
-/** The row that shows or hides a list's idle threads. */
-function IdleThreads({
+/** The row that shows or hides a list's done or idle threads. */
+function TuckedThreads({
+  kind,
+  days = IDLE_DAYS,
   count,
   open,
   onToggle,
   flat,
 }: {
+  kind: "done" | "idle";
+  /** idle: after how many days untouched. */
+  days?: number;
   count: number;
   open: boolean;
   onToggle: () => void;
   flat?: boolean;
 }) {
+  const Icon = kind === "done" ? CircleCheckIcon : HistoryIcon;
   return (
     <li>
       <button
         type="button"
         onClick={onToggle}
         aria-expanded={open}
-        title={`Untouched for ${IDLE_DAYS} days or more. Nothing in them is stopped or deleted; opening one puts it back in the list.`}
+        title={
+          kind === "done"
+            ? "Their work is done, said Claude (or you). Nothing in them is stopped or deleted; writing in one, or Reopen, puts it back in the list."
+            : `Untouched for ${days === 1 ? "a day" : `${days} days`} or more. Nothing in them is stopped or deleted; opening one puts it back in the list.`
+        }
         className={cn(
           "flex h-6 w-full items-center gap-1.5 rounded-md pr-2 text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none pointer-coarse:h-9",
           flat ? "pl-2" : "pl-7",
         )}
       >
-        <HistoryIcon className="size-3.5 shrink-0" />
+        <Icon className="size-3.5 shrink-0" />
         <span className="tabular-nums">
-          {count} idle
+          {count} {kind}
         </span>
         <ChevronRightIcon className={cn("ml-auto size-3 shrink-0 transition-transform", open && "rotate-90")} />
       </button>

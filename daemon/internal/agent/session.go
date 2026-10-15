@@ -95,6 +95,9 @@ type session struct {
 	pending        map[string]*claude.PermissionRequest
 	turnActive     bool
 	interrupted    bool // the user stopped the current turn
+	// doneAfterTurn: the agent called thread_done; the thread is done if
+	// this turn completes and no prompt joined it.
+	doneAfterTurn bool
 	stopping      bool // we're closing the process on purpose
 	msgID         string
 	idle          *time.Timer
@@ -320,6 +323,8 @@ func (s *session) send(text string, attachmentIDs []string) error {
 	id := newUUID()
 	if !s.turnActive {
 		s.beginTurn()
+	} else if !s.recapping {
+		s.doneAfterTurn = false // a new ask: the work isn't done
 	}
 	ev := protocol.AgentEvent{Type: "user", ID: id, Text: text}
 	for _, f := range files {
@@ -1358,9 +1363,15 @@ func (s *session) endTurn(ev protocol.AgentEvent) {
 	for id := range s.pending {
 		s.resolve(id, protocol.AgentEvent{Decision: "canceled"})
 	}
-	s.turnActive, s.interrupted = false, false
+	done := s.doneAfterTurn && ev.Status == "completed"
+	s.turnActive, s.interrupted, s.doneAfterTurn = false, false, false
 	s.state.Streaming = []protocol.AgentStreaming{}
 	s.emit(ev)
+	if done {
+		if err := s.setDone(); err != nil {
+			slog.Warn("mark thread done", "thread", s.threadID, "err", err)
+		}
+	}
 	recap := s.recapping
 	s.recapping, s.state.Recapping = false, false
 	if recap {
@@ -1375,6 +1386,15 @@ func (s *session) endTurn(ev protocol.AgentEvent) {
 			s.notify("error", "")
 		}
 	}
+}
+
+// setDone marks the thread done, for its agent.
+func (s *session) setDone() error {
+	if err := s.m.store.SetThreadDone(s.threadID, true); err != nil {
+		return err
+	}
+	s.m.onChange()
+	return nil
 }
 
 // notify tells the manager's Notify that the thread needs the user (kind

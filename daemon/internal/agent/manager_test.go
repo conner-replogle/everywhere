@@ -1391,3 +1391,80 @@ func TestSignInProblem(t *testing.T) {
 		}
 	}
 }
+
+func TestMarkDone(t *testing.T) {
+	done := func(h *harness) bool {
+		th, err := h.st.GetThread(h.thread)
+		if err != nil {
+			h.t.Fatal(err)
+		}
+		return th.DoneAt != nil
+	}
+	turn := func(h *harness, c *fakeClient, text string) *fakeProc {
+		h.do(c, protocol.AgentClientMsg{T: "send", Text: text})
+		p := h.proc(0)
+		h.waitStatus(c, "working")
+		return p
+	}
+
+	t.Run("when the turn completes", func(t *testing.T) {
+		h := newHarness(t)
+		c := h.attach(0)
+		p := turn(h, c, "fix it")
+		afterTurn, err := h.m.MarkDone(h.thread)
+		if err != nil || !afterTurn || done(h) {
+			t.Fatalf("MarkDone mid-turn = %v, %v; done now = %v", afterTurn, err, done(h))
+		}
+		p.emit(`{"type":"result","subtype":"success","result":"fixed"}`)
+		h.waitStatus(c, "idle")
+		eventually(t, "thread done", func() bool { return done(h) })
+
+		// Writing in it again reopens it.
+		turn(h, c, "one more thing")
+		if done(h) {
+			t.Fatal("a new prompt left the thread done")
+		}
+	})
+
+	t.Run("not when the turn is stopped", func(t *testing.T) {
+		h := newHarness(t)
+		c := h.attach(0)
+		turn(h, c, "fix it")
+		if _, err := h.m.MarkDone(h.thread); err != nil {
+			t.Fatal(err)
+		}
+		h.do(c, protocol.AgentClientMsg{T: "interrupt"})
+		h.waitStatus(c, "idle")
+		if done(h) {
+			t.Fatal("an interrupted turn marked the thread done")
+		}
+	})
+
+	t.Run("not when the user writes during the turn", func(t *testing.T) {
+		h := newHarness(t)
+		c := h.attach(0)
+		p := turn(h, c, "fix it")
+		if _, err := h.m.MarkDone(h.thread); err != nil {
+			t.Fatal(err)
+		}
+		h.do(c, protocol.AgentClientMsg{T: "send", Text: "also the tests"})
+		eventually(t, "second prompt sent", func() bool { p.mu.Lock(); defer p.mu.Unlock(); return len(p.sent) == 2 })
+		p.emit(`{"type":"result","subtype":"success","result":"fixed"}`)
+		h.waitStatus(c, "idle")
+		if done(h) {
+			t.Fatal("a prompt sent during the turn still marked the thread done")
+		}
+	})
+
+	t.Run("now when idle", func(t *testing.T) {
+		h := newHarness(t)
+		c := h.attach(0)
+		p := turn(h, c, "fix it")
+		p.emit(`{"type":"result","subtype":"success","result":"fixed"}`)
+		h.waitStatus(c, "idle")
+		afterTurn, err := h.m.MarkDone(h.thread)
+		if err != nil || afterTurn || !done(h) {
+			t.Fatalf("MarkDone idle = %v, %v; done = %v", afterTurn, err, done(h))
+		}
+	})
+}
