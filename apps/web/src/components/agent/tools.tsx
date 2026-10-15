@@ -4,6 +4,7 @@
 import {
   ActivityIcon,
   BotIcon,
+  CircleCheckIcon,
   ClipboardListIcon,
   FilePenIcon,
   FileTextIcon,
@@ -11,6 +12,7 @@ import {
   ListTodoIcon,
   type LucideIcon,
   MessageCircleQuestionIcon,
+  PaperclipIcon,
   PlugIcon,
   SearchIcon,
   TerminalIcon,
@@ -32,6 +34,8 @@ const PROCESS_TOOL = /^mcp__everywhere__process_(.+)$/;
 
 export function toolIcon(name: string): LucideIcon {
   if (PROCESS_TOOL.test(name)) return ActivityIcon;
+  if (name === "mcp__everywhere__attach_file") return PaperclipIcon;
+  if (name === "mcp__everywhere__thread_done") return CircleCheckIcon;
   if (name.startsWith("mcp__")) return PlugIcon;
   switch (name) {
     case "Bash":
@@ -66,6 +70,8 @@ export function toolIcon(name: string): LucideIcon {
 export function toolLabel(name: string): string {
   const p = PROCESS_TOOL.exec(name);
   if (p) return `Process · ${p[1]}`;
+  if (name === "mcp__everywhere__attach_file") return "Attach files";
+  if (name === "mcp__everywhere__thread_done") return "Mark thread done";
   const m = /^mcp__(.+?)__(.+)$/.exec(name);
   return m ? `${m[1]} · ${m[2]}` : name;
 }

@@ -19,6 +19,8 @@ import { cn } from "@/lib/utils";
 import { SentAttachments } from "./composer-parts";
 import { Markdown } from "./markdown";
 import { asInput, EditPreview, isEdit, machineChange, type ToolInput, toolIcon, toolLabel, toolSummary } from "./tools";
+import type { DevicePeer } from "@/lib/peer";
+import { SharedFiles } from "./shared-files";
 
 type Ev<T extends AgentEvent["type"]> = Extract<AgentEvent, { type: T }>;
 
@@ -40,7 +42,9 @@ type Item =
       kind: "event";
       key: number;
       at: number;
-      event: Ev<"user" | "assistant" | "thinking" | "notice" | "request" | "turn" | "commandOutput" | "rewind" | "process">;
+      event: Ev<
+        "user" | "assistant" | "thinking" | "notice" | "request" | "turn" | "commandOutput" | "rewind" | "process" | "files"
+      >;
     };
 
 /**
@@ -130,6 +134,7 @@ function isRecapPrompt(text: string | undefined): boolean {
 
 export const Timeline = memo(function Timeline({
   items,
+  peer,
   streaming,
   cwd,
   working,
@@ -140,6 +145,8 @@ export const Timeline = memo(function Timeline({
   onSignIn,
 }: {
   items: Item[];
+  /** The device, to fetch files the agent shared. */
+  peer?: DevicePeer;
   streaming: AgentStreaming[];
   cwd?: string;
   working: boolean;
@@ -159,6 +166,7 @@ export const Timeline = memo(function Timeline({
         <ItemView
           key={item.key}
           item={item}
+          peer={peer}
           cwd={cwd}
           onRewind={working ? undefined : onRewind}
           onCompact={onCompact}
@@ -193,12 +201,14 @@ export const Timeline = memo(function Timeline({
 
 function ItemView({
   item,
+  peer,
   cwd,
   onRewind,
   onCompact,
   onSignIn,
 }: {
   item: Item;
+  peer?: DevicePeer;
   cwd?: string;
   onRewind?: (prompt: UserEvent) => void;
   onCompact?: () => void;
@@ -262,6 +272,8 @@ function ItemView({
       return <TurnEnd event={e} onCompact={onCompact} onSignIn={onSignIn} />;
     case "process":
       return <ProcessLine event={e} />;
+    case "files":
+      return <SharedFiles caption={e.text} attachments={e.attachments} peer={peer} />;
   }
 }
 

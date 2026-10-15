@@ -375,6 +375,17 @@ that speaks MCP. `internal/process`.
     `shouldQuery: false` (undocumented; holding events in the daemon does the
     same).
   - The timeline shows these as `process` events, not user messages.
+- **Attaching files** (`mcp__everywhere__attach_file {paths, caption?}`,
+  allowed without asking): shows the user files from the device in the
+  thread's chat, for when a path isn't enough (they're on another device).
+  Up to 10 files of up to 200 MB each, paths absolute or relative to the
+  thread's directory (its worktree, if any). Each is copied to the thread's
+  attachments (deleted with the thread), so the chat keeps what was shared,
+  and logged as a `files` event whose attachments carry the copy's `path`.
+  The timeline fetches them over a file channel (whose cap is 200 MB for
+  this): images inline (up to 15 MB on their own, bigger on a click), videos
+  in a player once clicked, anything else as a card to download. Kind comes
+  from the extension: image, video or file.
 - **MCP tools** (`mcp__everywhere__process_*`). Everything but `start` is
   allowed without asking; `start` runs a command, so it asks like Bash.
   - `process_start {name, command?, cwd?, env?, checkpoints?, stats?,

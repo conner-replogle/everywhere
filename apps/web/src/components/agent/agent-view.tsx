@@ -317,6 +317,7 @@ export function AgentView({
           {agent.synced && agent.events.length === 0 && <EmptyState scratch={scratch} />}
           <Timeline
             items={items}
+            peer={peer}
             streaming={changesOnly ? [] : (state?.streaming ?? [])}
             cwd={workdir}
             working={state?.status === "working"}

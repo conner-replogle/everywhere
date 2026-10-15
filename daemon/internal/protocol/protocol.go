@@ -596,13 +596,17 @@ type AgentContext struct {
 	UpdatedAt int64 `json:"updatedAt,omitempty"`
 }
 
-// AgentAttachment is a file uploaded for a prompt.
+// AgentAttachment is a file uploaded for a prompt, or one an agent shared
+// with attach_file (an AgentEvent of type "files").
 type AgentAttachment struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
-	Kind      string `json:"kind"` // image | file
+	Kind      string `json:"kind"` // image | file, and for shared files video
 	MediaType string `json:"mediaType"`
 	Size      int64  `json:"size"`
+	// Path is where a shared file's copy is on the device, to read it over a
+	// file channel.
+	Path string `json:"path,omitempty"`
 }
 
 // Upload channel upload:<id>, one per file: the client sends UploadStart as
@@ -726,7 +730,8 @@ type AgentEvent struct {
 	Status     string            `json:"status,omitempty"`
 	CostUSD    float64           `json:"costUsd,omitempty"`
 	DurationMS int64             `json:"durationMs,omitempty"`
-	// Attachments are the files sent with a user prompt.
+	// Attachments are the files sent with a user prompt, or (files) the
+	// files an agent shared, with Text its caption.
 	Attachments []AgentAttachment `json:"attachments,omitempty"`
 	// FromSeq (rewind): the events from this seq up to the rewind's own were
 	// removed. ID is the prompt rolled back and Text its text.

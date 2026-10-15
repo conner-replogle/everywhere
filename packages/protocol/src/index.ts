@@ -863,12 +863,16 @@ export interface AgentContext {
   updatedAt?: number;
 }
 
+/** A file uploaded for a prompt, or one an agent shared with attach_file (a "files" event). */
 export interface AgentAttachment {
   id: string;
   name: string;
-  kind: "image" | "file";
+  /** video: only for shared files. */
+  kind: "image" | "video" | "file";
   mediaType: string;
   size: number;
+  /** A shared file's copy on the device, to read over a file channel. */
+  path?: string;
 }
 
 export interface AgentInfo {
@@ -1013,4 +1017,6 @@ export type AgentEvent = AgentEventBase &
      * (in a turn it started), held (with the next prompt).
      */
     | { type: "process"; name: string; text: string; status: "turn" | "wake" | "held" }
+    /** Files the agent showed the user (attach_file), with an optional caption. */
+    | { type: "files"; text?: string; attachments: AgentAttachment[] }
   );

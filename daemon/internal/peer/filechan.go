@@ -9,12 +9,13 @@ import (
 
 	"github.com/pion/webrtc/v4"
 
+	"github.com/conner-replogle/everywhere/daemon/internal/agent"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 )
 
-// maxFileRead caps what a file channel sends; the viewer is for looking at
-// files, not copying big ones off the device.
-const maxFileRead = 25 << 20
+// maxFileRead caps what a file channel sends: the browser holds the whole
+// file. Enough for a video an agent attached to the chat.
+const maxFileRead = agent.MaxSharedBytes
 
 // serveFile sends one file on a file:<id> channel, then leaves the channel
 // for the client to close.

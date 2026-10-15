@@ -1468,3 +1468,51 @@ func TestMarkDone(t *testing.T) {
 		}
 	})
 }
+
+func TestShareFiles(t *testing.T) {
+	h := newHarness(t)
+	c := h.attach(0)
+	src := t.TempDir()
+	write := func(name, body string) string {
+		p := filepath.Join(src, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	paths := []string{write("shot.png", "png"), write("demo.mp4", "mp4"), write("report.pdf", "pdf"), write("notes", "x")}
+	atts, err := h.m.ShareFiles(h.thread, " the results ", paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := []string{}
+	for _, a := range atts {
+		kinds = append(kinds, a.Kind+":"+a.MediaType)
+		if got, err := os.ReadFile(a.Path); err != nil || len(got) == 0 || filepath.Base(a.Path) != a.Name {
+			t.Fatalf("copy of %s at %s: %q, %v", a.Name, a.Path, got, err)
+		}
+	}
+	if got := strings.Join(kinds, " "); got != "image:image/png video:video/mp4 file:application/pdf file:application/octet-stream" {
+		t.Fatalf("kinds = %s", got)
+	}
+	// The copy stays what was shared.
+	write("shot.png", "changed")
+	if got, _ := os.ReadFile(atts[0].Path); string(got) != "png" {
+		t.Fatalf("the copy changed with the original: %q", got)
+	}
+	eventually(t, "files event", func() bool {
+		for _, e := range c.events() {
+			if e.Type == "files" && e.Text == "the results" && len(e.Attachments) == 4 {
+				return true
+			}
+		}
+		return false
+	})
+
+	if _, err := h.m.ShareFiles(h.thread, "", []string{src}); err == nil {
+		t.Fatal("shared a folder")
+	}
+	if _, err := h.m.ShareFiles(h.thread, "", []string{filepath.Join(src, "missing")}); err == nil {
+		t.Fatal("shared a missing file")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -172,4 +173,137 @@ func cleanName(name string) string {
 		name = string(r[len(r)-200:])
 	}
 	return name
+}
+
+// MaxSharedBytes bounds each file an agent shares with attach_file: the
+// browser holds the whole file to show it.
+const MaxSharedBytes = 200 << 20
+
+// maxShared is how many files one attach_file call takes.
+const maxShared = 10
+
+// ShareFiles copies files from the device into a thread's attachments and
+// shows them in its timeline (attach_file): images and videos to look at,
+// anything else to download. The copies outlive the originals, so what the
+// user sees stays what the agent meant, and go when the thread is deleted.
+// paths must be absolute.
+func (m *Manager) ShareFiles(threadID, caption string, paths []string) ([]protocol.AgentAttachment, error) {
+	if len(paths) == 0 {
+		return nil, errors.New("give at least one file")
+	}
+	if len(paths) > maxShared {
+		return nil, fmt.Errorf("at most %d files at a time", maxShared)
+	}
+	s, err := m.session(threadID)
+	if err != nil {
+		return nil, err
+	}
+	base, err := m.attachments.dir(threadID)
+	if err != nil {
+		return nil, err
+	}
+	var atts []protocol.AgentAttachment
+	var made []string
+	ok := false
+	defer func() {
+		if !ok {
+			for _, d := range made {
+				os.RemoveAll(d)
+			}
+		}
+	}()
+	for _, p := range paths {
+		info, err := os.Stat(p)
+		if err != nil {
+			return nil, err
+		}
+		if info.IsDir() {
+			return nil, fmt.Errorf("%s is a folder; attach the files in it, or an archive of it", p)
+		}
+		if info.Size() > MaxSharedBytes {
+			return nil, fmt.Errorf("%s is %d MB; the limit is %d MB", p, info.Size()>>20, MaxSharedBytes>>20)
+		}
+		id := newUploadID()
+		dir := filepath.Join(base, id)
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			return nil, err
+		}
+		made = append(made, dir)
+		name := cleanName(filepath.Base(p))
+		dst := filepath.Join(dir, name)
+		if err := copyFile(p, dst); err != nil {
+			return nil, fmt.Errorf("copy %s: %w", p, err)
+		}
+		mediaType, kind := sharedKind(name)
+		att := protocol.AgentAttachment{ID: id, Name: name, Kind: kind, MediaType: mediaType, Size: info.Size(), Path: dst}
+		meta, _ := json.Marshal(att)
+		if err := os.WriteFile(filepath.Join(dir, "meta.json"), meta, 0o600); err != nil {
+			return nil, err
+		}
+		atts = append(atts, att)
+	}
+	ran := false
+	s.call(func() {
+		ran = true
+		s.emit(protocol.AgentEvent{Type: "files", Text: strings.TrimSpace(caption), Attachments: atts})
+	})
+	if !ran {
+		return nil, errClosed
+	}
+	ok = true
+	return atts, nil
+}
+
+// sharedKind is a shared file's media type, and whether the timeline shows
+// it as an image, plays it as a video, or offers it to download.
+func sharedKind(name string) (mediaType, kind string) {
+	ext := strings.ToLower(filepath.Ext(name))
+	mediaType = mediaTypes[ext]
+	if mediaType == "" {
+		mediaType = mime.TypeByExtension(ext)
+	}
+	if i := strings.IndexByte(mediaType, ';'); i >= 0 {
+		mediaType = mediaType[:i]
+	}
+	switch {
+	case mediaType == "":
+		return "application/octet-stream", "file"
+	case strings.HasPrefix(mediaType, "image/"):
+		return mediaType, "image"
+	case strings.HasPrefix(mediaType, "video/"):
+		return mediaType, "video"
+	}
+	return mediaType, "file"
+}
+
+// mediaTypes are the ones the timeline shows, whatever this machine's own
+// MIME table knows (Go's built-in one lacks video).
+var mediaTypes = map[string]string{
+	".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+	".webp": "image/webp", ".avif": "image/avif", ".svg": "image/svg+xml", ".bmp": "image/bmp",
+	".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime",
+	".mkv": "video/x-matroska", ".ogv": "video/ogg",
+	".pdf": "application/pdf",
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(out, io.LimitReader(in, MaxSharedBytes+1))
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	return err
+}
+
+// newUploadID is an attachment id, as the web app makes for uploads.
+func newUploadID() string {
+	return strings.ReplaceAll(newUUID(), "-", "")
 }
