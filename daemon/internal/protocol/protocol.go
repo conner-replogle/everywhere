@@ -730,8 +730,9 @@ type AgentEvent struct {
 	Status     string            `json:"status,omitempty"`
 	CostUSD    float64           `json:"costUsd,omitempty"`
 	DurationMS int64             `json:"durationMs,omitempty"`
-	// Attachments are the files sent with a user prompt, or (files) the
-	// files an agent shared, with Text its caption.
+	// Attachments are the files sent with a user prompt, (files) the files
+	// an agent shared, with Text its caption, or (toolResult) the images in
+	// a tool's result, as claude saw them.
 	Attachments []AgentAttachment `json:"attachments,omitempty"`
 	// FromSeq (rewind): the events from this seq up to the rewind's own were
 	// removed. ID is the prompt rolled back and Text its text.

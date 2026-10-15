@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -1514,5 +1515,32 @@ func TestShareFiles(t *testing.T) {
 	}
 	if _, err := h.m.ShareFiles(h.thread, "", []string{filepath.Join(src, "missing")}); err == nil {
 		t.Fatal("shared a missing file")
+	}
+}
+
+func TestToolResultImagesKept(t *testing.T) {
+	h := newHarness(t)
+	c := h.attach(0)
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "look at the radar"})
+	p := h.proc(0)
+	png := base64.StdEncoding.EncodeToString([]byte("\x89PNG fake"))
+	p.emit(`{"type":"assistant","uuid":"u1","message":{"id":"m1","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"C:\\radar.png"}}]}}`)
+	p.emit(`{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + png + `"}}]}]}}`)
+	var res protocol.AgentEvent
+	eventually(t, "tool result", func() bool {
+		for _, e := range c.events() {
+			if e.Type == "toolResult" {
+				res = e
+				return true
+			}
+		}
+		return false
+	})
+	if res.Output != "[image]" || len(res.Attachments) != 1 {
+		t.Fatalf("result = %+v", res)
+	}
+	a := res.Attachments[0]
+	if got, err := os.ReadFile(a.Path); err != nil || string(got) != "\x89PNG fake" || a.Kind != "image" || a.Name != "image-1.png" {
+		t.Fatalf("kept %+v: %q, %v", a, got, err)
 	}
 }

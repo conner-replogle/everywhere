@@ -1194,11 +1194,12 @@ func (s *session) onUser(msg claude.Message) {
 			continue
 		}
 		s.emit(protocol.AgentEvent{
-			Type:     "toolResult",
-			ID:       b.ToolUseID,
-			ParentID: msg.ParentToolUseID,
-			Output:   clipText(contentText(b.Content), maxOutputBytes),
-			IsError:  b.IsError,
+			Type:        "toolResult",
+			ID:          b.ToolUseID,
+			ParentID:    msg.ParentToolUseID,
+			Output:      clipText(contentText(b.Content), maxOutputBytes),
+			IsError:     b.IsError,
+			Attachments: s.m.saveResultImages(s.threadID, b.Content),
 		})
 	}
 }

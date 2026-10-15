@@ -977,7 +977,8 @@ export type AgentEvent = AgentEventBase &
     | { type: "assistant" | "thinking"; id: string; text: string; streamKey?: string }
     /** id is the tool_use id; a toolResult with the same id follows. */
     | { type: "tool"; id: string; name: string; input: unknown }
-    | { type: "toolResult"; id: string; output: string; isError?: boolean }
+    /** attachments: images in the result (a Read of an image, a screenshot), as claude saw them. */
+    | { type: "toolResult"; id: string; output: string; isError?: boolean; attachments?: AgentAttachment[] }
     | {
         type: "request";
         id: string;

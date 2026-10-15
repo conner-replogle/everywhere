@@ -12,11 +12,10 @@ const AUTO_IMAGE_BYTES = 15 << 20;
 // so one fetch per path serves every time the timeline draws it.
 const urls = new Map<string, Promise<string>>();
 
-function fileURL(peer: DevicePeer, a: AgentAttachment): Promise<string> {
-  const path = a.path!;
+function fileURL(peer: DevicePeer, path: string, mediaType: string): Promise<string> {
   let url = urls.get(path);
   if (!url) {
-    url = peer.readFile(path).then(({ bytes }) => URL.createObjectURL(new Blob([bytes], { type: a.mediaType })));
+    url = peer.readFile(path).then(({ bytes }) => URL.createObjectURL(new Blob([bytes], { type: mediaType })));
     // A failed read can be tried again.
     url.catch(() => urls.delete(path));
     urls.set(path, url);
@@ -29,14 +28,16 @@ type Load = { state: "idle" } | { state: "loading" } | { state: "ready"; url: st
 /** Fetches a shared file from the device: now if auto, else when load() is called. */
 function useFile(peer: DevicePeer | undefined, a: AgentAttachment, auto: boolean) {
   const [load, setLoad] = useState<Load>({ state: "idle" });
+  // By path, not the object: callers may make a new one each render.
+  const { path, mediaType } = a;
   const start = useCallback(() => {
-    if (!peer || !a.path) return;
+    if (!peer || !path) return;
     setLoad({ state: "loading" });
-    fileURL(peer, a).then(
+    fileURL(peer, path, mediaType).then(
       (url) => setLoad({ state: "ready", url }),
       (e: unknown) => setLoad({ state: "error", message: errorMessage(e) }),
     );
-  }, [peer, a]);
+  }, [peer, path, mediaType]);
   useEffect(() => {
     if (auto) start();
   }, [auto, start]);
@@ -48,10 +49,13 @@ export function SharedFiles({
   caption,
   attachments,
   peer,
+  compact,
 }: {
   caption?: string;
   attachments: AgentAttachment[];
   peer?: DevicePeer;
+  /** Smaller images: what a tool showed claude, under its call. */
+  compact?: boolean;
 }) {
   return (
     <div className="grid gap-2">
@@ -64,7 +68,7 @@ export function SharedFiles({
       <div className="flex flex-wrap gap-2">
         {attachments.map((a) =>
           a.kind === "image" ? (
-            <SharedImage key={a.id} file={a} peer={peer} />
+            <SharedImage key={a.id} file={a} peer={peer} compact={compact} />
           ) : a.kind === "video" ? (
             <SharedVideo key={a.id} file={a} peer={peer} />
           ) : (
@@ -76,7 +80,7 @@ export function SharedFiles({
   );
 }
 
-function SharedImage({ file: a, peer }: { file: AgentAttachment; peer?: DevicePeer }) {
+function SharedImage({ file: a, peer, compact }: { file: AgentAttachment; peer?: DevicePeer; compact?: boolean }) {
   const [load, start] = useFile(peer, a, a.size <= AUTO_IMAGE_BYTES);
   if (load.state !== "ready") return <Placeholder file={a} load={load} onLoad={start} verb="Show" />;
   return (
@@ -87,7 +91,7 @@ function SharedImage({ file: a, peer }: { file: AgentAttachment; peer?: DevicePe
       title={`${a.name} · ${formatBytes(a.size)} — open full size`}
       className="block overflow-hidden rounded-md border bg-muted/30"
     >
-      <img src={load.url} alt={a.name} className="max-h-96 max-w-full object-contain" />
+      <img src={load.url} alt={a.name} className={cn("max-w-full object-contain", compact ? "max-h-48" : "max-h-96")} />
     </a>
   );
 }

@@ -1,4 +1,4 @@
-import type { AgentEvent, AgentStreaming } from "@everywhere/protocol";
+import type { AgentAttachment, AgentEvent, AgentStreaming } from "@everywhere/protocol";
 import {
   ActivityIcon,
   BrainIcon,
@@ -214,7 +214,7 @@ function ItemView({
   onCompact?: () => void;
   onSignIn?: () => void;
 }) {
-  if (item.kind === "tool") return <ToolRow item={item} cwd={cwd} />;
+  if (item.kind === "tool") return <ToolRow item={item} cwd={cwd} peer={peer} />;
   if (item.kind === "recap") return <RecapCard text={item.text} />;
   const e = item.event;
   switch (e.type) {
@@ -337,7 +337,7 @@ function Thinking({ text, live }: { text: string; live?: boolean }) {
   );
 }
 
-function ToolRow({ item, cwd }: { item: ToolItem; cwd?: string }) {
+function ToolRow({ item, cwd, peer }: { item: ToolItem; cwd?: string; peer?: DevicePeer }) {
   const { tool, result, request } = item;
   const input = asInput(tool.input);
   const Icon = toolIcon(tool.name);
@@ -346,6 +346,7 @@ function ToolRow({ item, cwd }: { item: ToolItem; cwd?: string }) {
   // Edits and plans are the point of the call, so they start open.
   const [open, setOpen] = useState(() => isEdit(tool.name) || tool.name === "ExitPlanMode");
   const summary = toolSummary(tool.name, input, cwd);
+  const seen = seenImages(tool.name, input, result);
 
   return (
     <div className="min-w-0">
@@ -373,6 +374,12 @@ function ToolRow({ item, cwd }: { item: ToolItem; cwd?: string }) {
           )}
         </span>
       </button>
+      {/* What claude saw (a Read of an image, a screenshot) shows open or not. */}
+      {seen.length > 0 && (
+        <div className="mt-1.5 ml-5.5">
+          <SharedFiles attachments={seen} peer={peer} compact />
+        </div>
+      )}
       {open && (
         <div className="mt-1.5 ml-5.5 grid gap-2">
           <ToolDetail name={tool.name} input={input} />
@@ -382,7 +389,7 @@ function ToolRow({ item, cwd }: { item: ToolItem; cwd?: string }) {
           {item.children.length > 0 && (
             <div className="flex flex-col gap-2 border-l-2 pl-3">
               {item.children.map((c) => (
-                <ItemView key={c.key} item={c} cwd={cwd} />
+                <ItemView key={c.key} item={c} cwd={cwd} peer={peer} />
               ))}
             </div>
           )}
@@ -400,6 +407,27 @@ function ToolRow({ item, cwd }: { item: ToolItem; cwd?: string }) {
       )}
     </div>
   );
+}
+
+const IMAGE_TYPES: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+};
+
+/**
+ * The images a tool call showed claude: kept by the daemon with its result,
+ * or, from before it kept them, the file a Read of an image opened (read
+ * from the device as it is now).
+ */
+function seenImages(name: string, input: Record<string, unknown>, result: ToolItem["result"]): AgentAttachment[] {
+  if (result?.attachments?.length) return result.attachments;
+  const path = typeof input.file_path === "string" ? input.file_path : "";
+  const type = IMAGE_TYPES[path.split(".").pop()?.toLowerCase() ?? ""];
+  if (name !== "Read" || !type || !result || result.isError || !result.output.includes("[image]")) return [];
+  return [{ id: path, name: path.split(/[\\/]/).pop() ?? path, kind: "image", mediaType: type, size: 0, path }];
 }
 
 /** Edits show their diff and plans/questions their content; a success message adds nothing. */

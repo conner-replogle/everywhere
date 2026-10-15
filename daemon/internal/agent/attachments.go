@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"mime"
 	"os"
 	"path/filepath"
@@ -306,4 +307,77 @@ func copyFile(src, dst string) error {
 // newUploadID is an attachment id, as the web app makes for uploads.
 func newUploadID() string {
 	return strings.ReplaceAll(newUUID(), "-", "")
+}
+
+// maxResultImages bounds the images kept from one tool result.
+const maxResultImages = 8
+
+// saveResultImages keeps the images in a tool result (a Read of an image, a
+// screenshot) as attachments, so the timeline can show what claude saw
+// rather than "[image]". Images that can't be kept are left out.
+func (m *Manager) saveResultImages(threadID string, content json.RawMessage) []protocol.AgentAttachment {
+	var blocks []struct {
+		Type   string `json:"type"`
+		Source struct {
+			Type      string `json:"type"`
+			MediaType string `json:"media_type"`
+			Data      string `json:"data"`
+		} `json:"source"`
+	}
+	if json.Unmarshal(content, &blocks) != nil {
+		return nil
+	}
+	var out []protocol.AgentAttachment
+	for _, b := range blocks {
+		if b.Type != "image" || b.Source.Type != "base64" || len(out) >= maxResultImages {
+			continue
+		}
+		data, err := base64.StdEncoding.DecodeString(b.Source.Data)
+		if err != nil || len(data) == 0 || len(data) > MaxImageBytes {
+			continue
+		}
+		att, err := m.saveImage(threadID, b.Source.MediaType, data, len(out)+1)
+		if err != nil {
+			slog.Warn("keep tool result image", "thread", threadID, "err", err)
+			continue
+		}
+		out = append(out, att)
+	}
+	return out
+}
+
+// saveImage stores image bytes as one of a thread's attachments.
+func (m *Manager) saveImage(threadID, mediaType string, data []byte, n int) (protocol.AgentAttachment, error) {
+	base, err := m.attachments.dir(threadID)
+	if err != nil {
+		return protocol.AgentAttachment{}, err
+	}
+	id := newUploadID()
+	dir := filepath.Join(base, id)
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		return protocol.AgentAttachment{}, err
+	}
+	ext := ".png"
+	if exts, _ := mime.ExtensionsByType(mediaType); len(exts) > 0 {
+		ext = exts[0]
+	}
+	switch mediaType {
+	case "image/jpeg":
+		ext = ".jpg"
+	case "image/png":
+		ext = ".png"
+	}
+	name := fmt.Sprintf("image-%d%s", n, ext)
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		os.RemoveAll(dir)
+		return protocol.AgentAttachment{}, err
+	}
+	att := protocol.AgentAttachment{ID: id, Name: name, Kind: "image", MediaType: mediaType, Size: int64(len(data)), Path: path}
+	meta, _ := json.Marshal(att)
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), meta, 0o600); err != nil {
+		os.RemoveAll(dir)
+		return protocol.AgentAttachment{}, err
+	}
+	return att, nil
 }
