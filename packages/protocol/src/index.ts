@@ -95,8 +95,11 @@ export function notifyText(n: Pick<HubNotify, "kind" | "tool">): string {
   }
 }
 
-/** rpc: the daemon answers rpc requests (see RemoteMethods). */
-export type HubFeature = "rpc";
+/**
+ * rpc: the daemon answers rpc requests (see RemoteMethods). claudeToken: it
+ * takes the account's Claude token (agent.setToken), sent when it connects.
+ */
+export type HubFeature = "rpc" | "claudeToken";
 
 /** Sent by the hub to a daemon. `from` is a browser connection id. */
 export type HubToDaemon =
@@ -238,11 +241,8 @@ export interface ClaudeAuth {
   problem?: string;
   /** An agent.login is waiting for its code. */
   signingIn?: boolean;
-  /**
-   * claudeToken: signed in with a long-lived token (agent.login's longLived),
-   * which lasts until then and is never renewed.
-   */
-  tokenExpiresAt?: number;
+  /** claudeToken: claude uses the account's Claude token (Settings), not its own sign-in. */
+  token?: boolean;
 }
 
 export interface Project {
@@ -569,8 +569,13 @@ export interface RpcMethods {
    * opened anywhere and ends on a code for agent.loginCode; none means claude
    * signed in without one. Replaces a sign-in already waiting.
    */
-  /** longLived (claudeToken): a token that lasts a year (claude setup-token), never renewed. */
-  "agent.login": [{ console?: boolean; longLived?: boolean }, { url?: string }];
+  "agent.login": [{ console?: boolean }, { url?: string }];
+  /**
+   * claudeToken: the account's Claude token (made with `claude setup-token`),
+   * which the daemon gives every claude it starts as CLAUDE_CODE_OAUTH_TOKEN;
+   * "" for none. The hub sends it; Settings is where it's set.
+   */
+  "agent.setToken": [{ token: string }, Record<string, never>];
   /** Finishes the waiting sign-in with the code from its page. Open threads switch over when next idle. */
   "agent.loginCode": [{ code: string }, ClaudeAuth];
   "agent.loginCancel": [Record<string, never>, Record<string, never>];

@@ -269,13 +269,16 @@ same one the Agent SDK uses (`internal/claude`):
   token every 8 hours, and each renewal retires the refresh token; two claude
   processes renewing at once can get the whole sign-in revoked ("OAuth
   session expired and could not be refreshed"), which signs every thread out.
-  `agent.login {longLived: true}` (feature `claudeToken`) avoids renewals:
-  the daemon runs `claude setup-token` on a pseudo terminal (it's a
-  full-screen program), reads the sign-in URL from its hyperlink, types in
-  the pasted code, and keeps the token it prints (valid a year) in
-  `claude-token.json` (0600) in its data directory. Every claude it starts,
-  and `claude auth status`, then get it as `CLAUDE_CODE_OAUTH_TOKEN`; a
-  regular sign-in deletes it. `agent.auth` reports `tokenExpiresAt`.
+  The account's **Claude token** avoids renewals: made once with `claude
+  setup-token` (it lasts a year) and pasted in Settings → Claude, it's kept
+  sealed in the hub's storage (`PUT`/`DELETE /api/claude/token`; the app only
+  sees its last four characters). The hub sends it with `agent.setToken`
+  (`""` for none) to every connected daemon when it changes, and to each
+  daemon that says hello with hub feature `claudeToken`. The daemon keeps it
+  in `claude-token.json` (0600) in its data directory and gives it to every
+  claude it starts, and to `claude auth status`, as `CLAUDE_CODE_OAUTH_TOKEN`;
+  a change moves threads onto it when they're next idle, as a sign-in does.
+  `agent.auth` reports `token` while it's in use.
 - **Event log**: Claude's output becomes a persisted event log (`agent_events`,
   per-thread `seq`) plus live state: status, pending permission prompts,
   streamed text, mode and model.

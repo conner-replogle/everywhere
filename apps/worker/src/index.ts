@@ -6,6 +6,7 @@ import { failingScript, type InstallPlatform, installScript } from "./install";
 import { mcp } from "./mcp";
 import { oauth } from "./oauth";
 import { auth, requireUser } from "./routes/auth";
+import { claude } from "./routes/claude";
 import { github } from "./routes/github";
 import { prefs } from "./routes/prefs";
 import { push } from "./routes/push";
@@ -24,6 +25,7 @@ app.route("/api/auth", auth);
 app.route("/api/push", push);
 app.route("/api/github", github);
 app.route("/api/prefs", prefs);
+app.route("/api/claude", claude);
 // The MCP endpoint for agents, and the OAuth server that authorizes them.
 app.route("/", oauth);
 app.route("/", mcp);

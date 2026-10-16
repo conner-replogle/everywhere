@@ -58,14 +58,10 @@ type Step = { at: "choose" } | { at: "code"; url: string } | { at: "done"; auth?
  */
 const SIGN_IN_TIMEOUT_MS = 90_000;
 
-/** How to sign in: a token that lasts a year, the subscription's renewed sign-in, or a Console account. */
-type Account = "year" | "subscription" | "console";
-
 /**
  * Signs the device's Claude Code in from here. The daemon runs
- * `claude auth login` (or `claude setup-token`, for a token that lasts a
- * year), whose sign-in page opens in this browser and ends on a code to paste
- * back, so it works from any device.
+ * `claude auth login`, whose sign-in page opens in this browser and ends on a
+ * code to paste back, so it works from any device.
  */
 export function ClaudeSignIn({
   auth,
@@ -78,8 +74,7 @@ export function ClaudeSignIn({
 }) {
   const { device, peer, info } = useDevice();
   const [step, setStep] = useState<Step>({ at: "choose" });
-  const canYear = info.data?.features?.includes("claudeToken") ?? false;
-  const [account, setAccount] = useState<Account>("subscription");
+  const [consoleAccount, setConsoleAccount] = useState(false);
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -88,13 +83,12 @@ export function ClaudeSignIn({
   useEffect(() => {
     if (open) {
       setStep({ at: "choose" });
-      // The year's token is the recommended way, where the device offers it.
-      setAccount(auth?.method === "console" ? "console" : canYear ? "year" : "subscription");
+      setConsoleAccount(auth?.method === "console");
       setCode("");
       setBusy(false);
       setError(null);
     }
-  }, [open, auth?.method, auth?.tokenExpiresAt, canYear]);
+  }, [open, auth?.method]);
 
   function close(o: boolean) {
     // A sign-in left waiting for its code would hold claude's login open.
@@ -116,11 +110,7 @@ export function ClaudeSignIn({
 
   const start = () =>
     run(async () => {
-      const r = await peer.call(
-        "agent.login",
-        account === "console" ? { console: true } : account === "year" ? { longLived: true } : {},
-        SIGN_IN_TIMEOUT_MS,
-      );
+      const r = await peer.call("agent.login", consoleAccount ? { console: true } : {}, SIGN_IN_TIMEOUT_MS);
       setStep(r.url ? { at: "code", url: r.url } : { at: "done" });
     });
 
@@ -143,6 +133,12 @@ export function ClaudeSignIn({
               <DialogDescription asChild>
                 <div className="grid gap-2">
                   {auth?.problem && <p className="text-warn">Claude said: {auth.problem}</p>}
+                  {auth?.token && (
+                    <p>
+                      {name} uses your account's Claude token, set in Settings → Claude, so a sign-in here isn't used
+                      while it's set. If Claude refused it, replace the token there.
+                    </p>
+                  )}
                   <p>
                     You'll sign in on Anthropic's page here, then paste back the code it shows. Claude threads on{" "}
                     {name} switch to the new sign-in when they're next idle.
@@ -151,23 +147,15 @@ export function ClaudeSignIn({
               </DialogDescription>
             </DialogHeader>
             <div role="radiogroup" aria-label="Account" className="grid gap-1">
-              {canYear && (
-                <AccountOption
-                  on={account === "year"}
-                  onPick={() => setAccount("year")}
-                  label="Claude subscription, for a year"
-                  hint="A token that's never renewed, so threads running at once can't sign each other out. Best for a device that runs unattended."
-                />
-              )}
               <AccountOption
-                on={account === "subscription"}
-                onPick={() => setAccount("subscription")}
+                on={!consoleAccount}
+                onPick={() => setConsoleAccount(false)}
                 label="Claude subscription"
-                hint="Pro, Max, Team or Enterprise; renews itself every few hours"
+                hint="Pro, Max, Team or Enterprise"
               />
               <AccountOption
-                on={account === "console"}
-                onPick={() => setAccount("console")}
+                on={consoleAccount}
+                onPick={() => setConsoleAccount(true)}
                 label="Anthropic Console"
                 hint="Pay for API usage"
               />
@@ -237,9 +225,6 @@ export function ClaudeSignIn({
               </DialogTitle>
               <DialogDescription>
                 {step.auth?.email ? `${name} uses ${step.auth.email}. ` : ""}
-                {step.auth?.tokenExpiresAt
-                  ? `${name} uses a token that lasts until ${new Date(step.auth.tokenExpiresAt).toLocaleDateString()}. `
-                  : ""}
                 {auth?.problem && "Send your prompt again to pick up where you left off."}
               </DialogDescription>
             </DialogHeader>

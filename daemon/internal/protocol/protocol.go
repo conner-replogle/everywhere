@@ -54,6 +54,10 @@ type Hello struct {
 // HubFeatureRPC: the daemon answers "rpc" requests from the hub.
 const HubFeatureRPC = "rpc"
 
+// HubFeatureClaudeToken: the daemon takes the account's Claude token
+// (agent.setToken), which the hub sends when it connects.
+const HubFeatureClaudeToken = "claudeToken"
+
 // HubRPCResult answers a hub "rpc" request (T "rpc.result").
 type HubRPCResult struct {
 	T      string    `json:"t"`
@@ -128,7 +132,7 @@ const (
 	FeatureScratch    = "scratch"
 	FeatureClaudeAuth = "claudeAuth"  // agent.auth, agent.login*, claude.auth and kind signedOut
 	FeatureDone       = "done"        // Thread.doneAt, threads.done and the thread_done tool
-	FeatureToken      = "claudeToken" // agent.login's longLived and ClaudeAuth.tokenExpiresAt
+	FeatureToken      = "claudeToken" // agent.setToken and ClaudeAuth.token
 )
 
 // DesktopInfo is the result of desktop.info.
@@ -213,10 +217,9 @@ type ClaudeAuth struct {
 	Problem string `json:"problem,omitempty"`
 	// SigningIn: an agent.login is waiting for its code.
 	SigningIn bool `json:"signingIn,omitempty"`
-	// TokenExpiresAt (claudeToken): claude is signed in with a long-lived
-	// token (agent.login's longLived), which lasts until then and is never
-	// renewed.
-	TokenExpiresAt *int64 `json:"tokenExpiresAt,omitempty"`
+	// Token (claudeToken): claude uses the account's Claude token (set in
+	// Settings, sent by the hub with agent.setToken), not its own sign-in.
+	Token bool `json:"token,omitempty"`
 }
 
 // ClaudeLogin is the result of agent.login: the sign-in page, which ends on

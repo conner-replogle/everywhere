@@ -42,21 +42,15 @@ func (t *unixTTY) Wait() int {
 // Spawn starts the user's login shell in c.Dir on a new PTY, running
 // c.Command if it's set (as `shell -l -c command`).
 func Spawn(c Command) (TTY, *proc.Group, error) {
-	var cmd *exec.Cmd
-	if len(c.Args) > 0 {
-		cmd = exec.Command(c.Args[0], c.Args[1:]...)
-		cmd.Env = c.Env
+	shell := loginShell()
+	cmd := exec.Command(shell)
+	if c.Command == "" {
+		cmd.Args = []string{"-" + filepath.Base(shell)} // login shell
 	} else {
-		shell := loginShell()
-		cmd = exec.Command(shell)
-		if c.Command == "" {
-			cmd.Args = []string{"-" + filepath.Base(shell)} // login shell
-		} else {
-			cmd.Args = []string{filepath.Base(shell), "-l", "-c", c.Command}
-		}
-		cmd.Env = shellEnv(shell, c.Env)
+		cmd.Args = []string{filepath.Base(shell), "-l", "-c", c.Command}
 	}
 	cmd.Dir = c.Dir
+	cmd.Env = shellEnv(shell, c.Env)
 	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Cols: c.Cols, Rows: c.Rows})
 	if err != nil {
 		return nil, nil, err

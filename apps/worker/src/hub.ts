@@ -13,6 +13,7 @@ import type {
 } from "@everywhere/protocol";
 import { HUB_PING, HUB_PONG, notifyNeedsYou, notifyText } from "@everywhere/protocol";
 import { randomId, sha256 } from "./crypto";
+import { open, seal } from "./secretbox";
 import { versionAtLeast } from "./version";
 import { deliver, type PushOptions } from "./webpush";
 
@@ -23,6 +24,17 @@ type Attachment =
    * active: someone is using the tab and it shows alerts itself.
    */
   | { kind: "client"; id: string; session: string; viewing?: string; active?: boolean };
+
+/** The account's Claude token, in the hub's storage. */
+const CLAUDE_TOKEN_KEY = "claudeToken";
+interface StoredClaudeToken {
+  sealed: string;
+  /** Its last four characters, to tell tokens apart in Settings. */
+  hint: string;
+  setAt: number;
+}
+
+export type ClaudeTokenInfo = { set: false } | { set: true; hint: string; setAt: number };
 
 /** How a relayed rpc request ended. */
 export type DeviceRpcResult<T = unknown> =
@@ -139,8 +151,10 @@ export class AccountHub extends DurableObject<Env> {
         return;
       }
       if (Array.isArray(m.features)) {
-        const features = m.features.filter((f): f is HubFeature => f === "rpc");
+        const features = m.features.filter((f): f is HubFeature => f === "rpc" || f === "claudeToken");
         ws.serializeAttachment({ ...me, features } satisfies Attachment);
+        // A daemon that takes the account's Claude token gets it as it connects.
+        if (features.includes("claudeToken")) this.ctx.waitUntil(this.sendClaudeToken(me.id));
       }
       return;
     }
@@ -226,6 +240,59 @@ export class AccountHub extends DurableObject<Env> {
     });
     send(ws, { t: "rpc", id, method, params } satisfies HubToDaemon);
     return (await result) as DeviceRpcResult<RemoteMethods[M][1]>;
+  }
+
+  /**
+   * What Settings shows of the account's Claude token: whether there is
+   * one, its last few characters and when it was set. The token itself
+   * only ever goes to daemons.
+   */
+  async claudeTokenInfo(): Promise<ClaudeTokenInfo> {
+    const t = await this.ctx.storage.get<StoredClaudeToken>(CLAUDE_TOKEN_KEY);
+    return t ? { set: true, hint: t.hint, setAt: t.setAt } : { set: false };
+  }
+
+  /**
+   * Keeps the account's Claude token (sealed), or with "" forgets it, and
+   * sends that to every connected daemon that takes it; the rest get it
+   * when they next connect. Reports what each device said.
+   */
+  async setClaudeToken(token: string): Promise<Record<string, string>> {
+    if (token) {
+      await this.ctx.storage.put<StoredClaudeToken>(CLAUDE_TOKEN_KEY, {
+        sealed: await seal(this.env, token),
+        hint: token.slice(-4),
+        setAt: Date.now(),
+      });
+    } else {
+      await this.ctx.storage.delete(CLAUDE_TOKEN_KEY);
+    }
+    const out: Record<string, string> = {};
+    await Promise.all(
+      this.tokenDevices().map(async (id) => {
+        const r = await this.deviceRpc(id, "agent.setToken", { token }, 15_000);
+        out[id] = r.ok ? "ok" : r.message;
+      }),
+    );
+    return out;
+  }
+
+  /** Sends a daemon the account's Claude token, or that there is none. */
+  private async sendClaudeToken(deviceId: string): Promise<void> {
+    const t = await this.ctx.storage.get<StoredClaudeToken>(CLAUDE_TOKEN_KEY);
+    const token = t ? await open(this.env, t.sealed) : "";
+    const r = await this.deviceRpc(deviceId, "agent.setToken", { token }, 15_000);
+    if (!r.ok) console.warn(`sending ${deviceId} the Claude token: ${r.message}`);
+  }
+
+  /** Connected daemons that take the account's Claude token. */
+  private tokenDevices(): string[] {
+    const ids = new Set<string>();
+    for (const ws of this.ctx.getWebSockets()) {
+      const a = ws.deserializeAttachment() as Attachment | null;
+      if (a?.kind === "device" && this.live(ws) && a.features?.includes("claudeToken")) ids.add(a.id);
+    }
+    return [...ids];
   }
 
   /** Called by the Worker when a device is revoked. */

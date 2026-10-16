@@ -158,6 +158,12 @@ export const api = {
   prefs: async () => (await request<{ prefs: Partial<Prefs> }>("GET", "/api/prefs")).prefs,
   setPrefs: async (p: Partial<Prefs>) => (await request<{ prefs: Partial<Prefs> }>("PATCH", "/api/prefs", p)).prefs,
 
+  /** The account's Claude token, as far as the app sees it: whether it's set, its last characters, when. */
+  claudeToken: () => request<ClaudeTokenInfo>("GET", "/api/claude/token"),
+  /** Sets it, sending it to every connected device; devices maps each to "ok" or what went wrong. */
+  setClaudeToken: (token: string) => request<ClaudeTokenResult>("PUT", "/api/claude/token", { token }),
+  removeClaudeToken: () => request<ClaudeTokenResult>("DELETE", "/api/claude/token"),
+
   githubStatus: () => request<{ configured: boolean; login: string | null }>("GET", "/api/github/status"),
   /** A page navigation, not a fetch: it goes to GitHub and comes back to Settings. */
   githubConnectUrl: "/api/github/connect",
@@ -169,3 +175,6 @@ export const api = {
   cloneGithubRepo: async (deviceId: string, repo: string, path: string, name?: string) =>
     (await request<{ project: Project }>("POST", "/api/github/clone", { deviceId, repo, path, name })).project,
 };
+
+export type ClaudeTokenInfo = { set: false } | { set: true; hint: string; setAt: number };
+export type ClaudeTokenResult = ClaudeTokenInfo & { devices: Record<string, string> };

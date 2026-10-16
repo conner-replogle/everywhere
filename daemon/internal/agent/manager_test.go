@@ -1546,13 +1546,20 @@ func TestToolResultImagesKept(t *testing.T) {
 	}
 }
 
-func TestStoredToken(t *testing.T) {
+func TestSetToken(t *testing.T) {
 	m := NewManager(nil, t.TempDir(), func() {})
 	if env := m.withToken([]string{"A=1"}); len(env) != 1 {
 		t.Fatalf("no token: env = %q", env)
 	}
-	if err := m.saveToken("sk-ant-oat01-test"); err != nil {
+	if err := m.SetToken("not-a-token"); err == nil {
+		t.Fatal("took something that isn't a Claude token")
+	}
+	gen := m.authGeneration()
+	if err := m.SetToken(" sk-ant-oat01-test\n"); err != nil {
 		t.Fatal(err)
+	}
+	if m.authGeneration() != gen+1 {
+		t.Fatal("setting a token didn't move threads onto it")
 	}
 	if info, err := os.Stat(m.tokenPath); err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Fatalf("token file: %v, %v", info, err)
@@ -1561,15 +1568,14 @@ func TestStoredToken(t *testing.T) {
 	if strings.Join(env, " ") != "A=1 CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-test" {
 		t.Fatalf("env = %q", env)
 	}
-	tok, _ := m.loadToken()
-	if d := time.Duration(tok.ExpiresAt-tok.CreatedAt) * time.Millisecond; d != tokenLife {
-		t.Fatalf("token lasts %s", d)
+	// The same token again changes nothing.
+	if err := m.SetToken("sk-ant-oat01-test"); err != nil || m.authGeneration() != gen+1 {
+		t.Fatalf("same token again: %v, generation %d", err, m.authGeneration())
 	}
-	// A regular sign-in forgets it.
-	if err := m.saveToken(""); err != nil {
+	if err := m.SetToken(""); err != nil {
 		t.Fatal(err)
 	}
 	if env := m.withToken([]string{"A=1"}); len(env) != 1 {
-		t.Fatalf("forgotten token still used: %q", env)
+		t.Fatalf("removed token still used: %q", env)
 	}
 }
