@@ -52,6 +52,12 @@ export function signedOut(auth: ClaudeAuth | undefined): boolean {
 
 type Step = { at: "choose" } | { at: "code"; url: string } | { at: "done"; auth?: ClaudeAuth };
 
+/**
+ * Starting a sign-in and checking its code run claude on the device and wait
+ * on Anthropic: longer than a usual request (the daemon gives each a minute).
+ */
+const SIGN_IN_TIMEOUT_MS = 90_000;
+
 /** How to sign in: a token that lasts a year, the subscription's renewed sign-in, or a Console account. */
 type Account = "year" | "subscription" | "console";
 
@@ -113,6 +119,7 @@ export function ClaudeSignIn({
       const r = await peer.call(
         "agent.login",
         account === "console" ? { console: true } : account === "year" ? { longLived: true } : {},
+        SIGN_IN_TIMEOUT_MS,
       );
       setStep(r.url ? { at: "code", url: r.url } : { at: "done" });
     });
@@ -121,7 +128,7 @@ export function ClaudeSignIn({
     e.preventDefault();
     if (!code.trim()) return;
     void run(async () => {
-      const a = await peer.call("agent.loginCode", { code: code.trim() });
+      const a = await peer.call("agent.loginCode", { code: code.trim() }, SIGN_IN_TIMEOUT_MS);
       setStep({ at: "done", auth: a });
     });
   };

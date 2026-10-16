@@ -43,6 +43,13 @@ type TokenLogin struct {
 	mu    sync.Mutex
 	out   []byte // what it printed, escape sequences and all (the end of it)
 	token string
+	// submitted: a code was typed; after is what it printed since, where a
+	// refusal shows up. refused is that refusal.
+	submitted bool
+	after     []byte
+	refused   string
+
+	writeMu sync.Mutex // the reader answers terminal queries while Submit types
 }
 
 // How setup-token's output is read: the URL is in an OSC 8 hyperlink, and
@@ -51,10 +58,29 @@ var (
 	hyperlinkURL = regexp.MustCompile(`\x1b\]8;[^;\x07\x1b]*;(https://[^\x07\x1b]+)`)
 	// Where a console drops hyperlinks (Windows' may), the URL is still
 	// shown in full: the terminal is wide enough for it.
-	shownURL = regexp.MustCompile(`https://\S*oauth/authorize\?\S+`)
-	oauthToken   = regexp.MustCompile(`sk-ant-oat01-[A-Za-z0-9_-]{20,}`)
-	escapes      = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]`)
+	shownURL   = regexp.MustCompile(`https://\S*oauth/authorize\?\S+`)
+	oauthToken = regexp.MustCompile(`sk-ant-oat01-[A-Za-z0-9_-]{20,}`)
+	escapes    = regexp.MustCompile(`\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[P_^][^\x1b]*\x1b\\|\x1b[@-Z\\-_]`)
+	// Moving the cursor right is how the screen shows spaces.
+	cursorRight = regexp.MustCompile(`\x1b\[(\d*)C`)
+	// A refused code: "OAuth error: … Press Enter to retry." It then waits.
+	oauthError = regexp.MustCompile(`OAuth error:[^\r\n]*`)
 )
+
+// What a terminal answers when asked, as the full-screen UI asks on start
+// (and may wait for, as on Windows): its identity, its kind, where the
+// cursor is. Kitty's keyboard query (CSI ? u) gets no answer, which with the
+// kind's answer says it isn't supported.
+var terminalAnswers = []struct {
+	query  *regexp.Regexp
+	answer string
+}{
+	{regexp.MustCompile(`\x1b\[>0?q`), "\x1bP>|xterm(everywhere)\x1b\\"},
+	{regexp.MustCompile(`\x1b\[0?c`), "\x1b[?62;22c"},
+	{regexp.MustCompile(`\x1b\[6n`), "\x1b[1;1R"},
+	{regexp.MustCompile(`\x1b\]10;\?(?:\x07|\x1b\\)`), "\x1b]10;rgb:ffff/ffff/ffff\x1b\\"},
+	{regexp.MustCompile(`\x1b\]11;\?(?:\x07|\x1b\\)`), "\x1b]11;rgb:0000/0000/0000\x1b\\"},
+}
 
 // tokenOutputMax bounds the output kept to find the URL and token in.
 const tokenOutputMax = 256 << 10
@@ -100,8 +126,13 @@ func StartTokenLogin(ctx context.Context, bin string, env []string) (*TokenLogin
 		l.mu.Lock()
 		token := l.token
 		l.mu.Unlock()
+		l.mu.Lock()
+		refused := l.refused
+		l.mu.Unlock()
 		switch {
 		case token != "":
+		case refused != "":
+			l.err = fmt.Errorf("claude setup-token: %s", refused)
 		case l.canceled.Load():
 			l.err = ErrLoginCanceled
 		default:
@@ -128,9 +159,25 @@ func StartTokenLogin(ctx context.Context, bin string, env []string) (*TokenLogin
 // Once the token appears, setup-token has nothing left to do; it's ended
 // shortly after if it hasn't ended itself.
 func (l *TokenLogin) take(chunk []byte) string {
+	for _, a := range terminalAnswers {
+		for range a.query.FindAll(chunk, -1) {
+			_ = l.write(a.answer)
+		}
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.out = append(l.out, chunk...)
+	if l.submitted && l.refused == "" && l.token == "" {
+		l.after = append(l.after, chunk...)
+		if len(l.after) > tokenOutputMax {
+			l.after = l.after[len(l.after)-tokenOutputMax:]
+		}
+		if m := oauthError.FindString(plainText(l.after)); m != "" && oauthToken.FindString(plainText(l.after)) == "" {
+			// It waits for Enter to try again; this sign-in is over instead.
+			l.refused = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(m), "Press Enter to retry."))
+			go func() { _ = l.group.Signal(syscall.SIGKILL) }()
+		}
+	}
 	if len(l.out) > tokenOutputMax {
 		l.out = l.out[len(l.out)-tokenOutputMax:]
 	}
@@ -156,9 +203,25 @@ func (l *TokenLogin) take(chunk []byte) string {
 	return url
 }
 
-// plainText is terminal output without its escape sequences.
+// plainText is terminal output without its escape sequences, the spaces
+// it drew by moving the cursor put back.
 func plainText(b []byte) string {
-	return escapes.ReplaceAllString(string(b), "")
+	s := cursorRight.ReplaceAllStringFunc(string(b), func(m string) string {
+		n := 1
+		if d := cursorRight.FindStringSubmatch(m)[1]; d != "" {
+			fmt.Sscan(d, &n)
+		}
+		return strings.Repeat(" ", min(n, 200))
+	})
+	return escapes.ReplaceAllString(s, "")
+}
+
+// write types into setup-token's terminal.
+func (l *TokenLogin) write(s string) error {
+	l.writeMu.Lock()
+	defer l.writeMu.Unlock()
+	_, err := io.WriteString(l.tty, s)
+	return err
 }
 
 // Submit types the code from the sign-in page and waits for the token. An
@@ -168,7 +231,10 @@ func (l *TokenLogin) Submit(ctx context.Context, code string) error {
 	if code == "" {
 		return errors.New("paste the code from the sign-in page")
 	}
-	if _, err := io.WriteString(l.tty, code+"\r"); err != nil {
+	l.mu.Lock()
+	l.submitted = true
+	l.mu.Unlock()
+	if err := l.write(code + "\r"); err != nil {
 		select {
 		case <-l.done:
 			return l.Err()
