@@ -175,7 +175,8 @@ export type DeviceFeature =
   | "processes"
   | "scratch"
   | "claudeAuth"
-  | "done";
+  | "done"
+  | "claudeToken";
 
 /**
  * What desktop.start captures: a monitor by name, or a window by id
@@ -237,6 +238,11 @@ export interface ClaudeAuth {
   problem?: string;
   /** An agent.login is waiting for its code. */
   signingIn?: boolean;
+  /**
+   * claudeToken: signed in with a long-lived token (agent.login's longLived),
+   * which lasts until then and is never renewed.
+   */
+  tokenExpiresAt?: number;
 }
 
 export interface Project {
@@ -563,7 +569,8 @@ export interface RpcMethods {
    * opened anywhere and ends on a code for agent.loginCode; none means claude
    * signed in without one. Replaces a sign-in already waiting.
    */
-  "agent.login": [{ console?: boolean }, { url?: string }];
+  /** longLived (claudeToken): a token that lasts a year (claude setup-token), never renewed. */
+  "agent.login": [{ console?: boolean; longLived?: boolean }, { url?: string }];
   /** Finishes the waiting sign-in with the code from its page. Open threads switch over when next idle. */
   "agent.loginCode": [{ code: string }, ClaudeAuth];
   "agent.loginCancel": [Record<string, never>, Record<string, never>];

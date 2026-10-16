@@ -126,8 +126,9 @@ const (
 	// threads.continueIn, threads.search, scratch.usage, threads.delete's
 	// removeScratch, tabs.create's input and threads.create's prompt.
 	FeatureScratch    = "scratch"
-	FeatureClaudeAuth = "claudeAuth" // agent.auth, agent.login*, claude.auth and kind signedOut
-	FeatureDone       = "done"       // Thread.doneAt, threads.done and the thread_done tool
+	FeatureClaudeAuth = "claudeAuth"  // agent.auth, agent.login*, claude.auth and kind signedOut
+	FeatureDone       = "done"        // Thread.doneAt, threads.done and the thread_done tool
+	FeatureToken      = "claudeToken" // agent.login's longLived and ClaudeAuth.tokenExpiresAt
 )
 
 // DesktopInfo is the result of desktop.info.
@@ -212,6 +213,10 @@ type ClaudeAuth struct {
 	Problem string `json:"problem,omitempty"`
 	// SigningIn: an agent.login is waiting for its code.
 	SigningIn bool `json:"signingIn,omitempty"`
+	// TokenExpiresAt (claudeToken): claude is signed in with a long-lived
+	// token (agent.login's longLived), which lasts until then and is never
+	// renewed.
+	TokenExpiresAt *int64 `json:"tokenExpiresAt,omitempty"`
 }
 
 // ClaudeLogin is the result of agent.login: the sign-in page, which ends on

@@ -52,10 +52,14 @@ export function signedOut(auth: ClaudeAuth | undefined): boolean {
 
 type Step = { at: "choose" } | { at: "code"; url: string } | { at: "done"; auth?: ClaudeAuth };
 
+/** How to sign in: a token that lasts a year, the subscription's renewed sign-in, or a Console account. */
+type Account = "year" | "subscription" | "console";
+
 /**
  * Signs the device's Claude Code in from here. The daemon runs
- * `claude auth login`, whose sign-in page opens in this browser and ends on a
- * code to paste back, so it works from any device.
+ * `claude auth login` (or `claude setup-token`, for a token that lasts a
+ * year), whose sign-in page opens in this browser and ends on a code to paste
+ * back, so it works from any device.
  */
 export function ClaudeSignIn({
   auth,
@@ -68,7 +72,8 @@ export function ClaudeSignIn({
 }) {
   const { device, peer, info } = useDevice();
   const [step, setStep] = useState<Step>({ at: "choose" });
-  const [consoleAccount, setConsoleAccount] = useState(false);
+  const canYear = info.data?.features?.includes("claudeToken") ?? false;
+  const [account, setAccount] = useState<Account>("subscription");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,12 +82,13 @@ export function ClaudeSignIn({
   useEffect(() => {
     if (open) {
       setStep({ at: "choose" });
-      setConsoleAccount(auth?.method === "console");
+      // The year's token is the recommended way, where the device offers it.
+      setAccount(auth?.method === "console" ? "console" : canYear ? "year" : "subscription");
       setCode("");
       setBusy(false);
       setError(null);
     }
-  }, [open, auth?.method]);
+  }, [open, auth?.method, auth?.tokenExpiresAt, canYear]);
 
   function close(o: boolean) {
     // A sign-in left waiting for its code would hold claude's login open.
@@ -104,7 +110,10 @@ export function ClaudeSignIn({
 
   const start = () =>
     run(async () => {
-      const r = await peer.call("agent.login", consoleAccount ? { console: true } : {});
+      const r = await peer.call(
+        "agent.login",
+        account === "console" ? { console: true } : account === "year" ? { longLived: true } : {},
+      );
       setStep(r.url ? { at: "code", url: r.url } : { at: "done" });
     });
 
@@ -135,15 +144,23 @@ export function ClaudeSignIn({
               </DialogDescription>
             </DialogHeader>
             <div role="radiogroup" aria-label="Account" className="grid gap-1">
+              {canYear && (
+                <AccountOption
+                  on={account === "year"}
+                  onPick={() => setAccount("year")}
+                  label="Claude subscription, for a year"
+                  hint="A token that's never renewed, so threads running at once can't sign each other out. Best for a device that runs unattended."
+                />
+              )}
               <AccountOption
-                on={!consoleAccount}
-                onPick={() => setConsoleAccount(false)}
+                on={account === "subscription"}
+                onPick={() => setAccount("subscription")}
                 label="Claude subscription"
-                hint="Pro, Max, Team or Enterprise"
+                hint="Pro, Max, Team or Enterprise; renews itself every few hours"
               />
               <AccountOption
-                on={consoleAccount}
-                onPick={() => setConsoleAccount(true)}
+                on={account === "console"}
+                onPick={() => setAccount("console")}
                 label="Anthropic Console"
                 hint="Pay for API usage"
               />
@@ -213,6 +230,9 @@ export function ClaudeSignIn({
               </DialogTitle>
               <DialogDescription>
                 {step.auth?.email ? `${name} uses ${step.auth.email}. ` : ""}
+                {step.auth?.tokenExpiresAt
+                  ? `${name} uses a token that lasts until ${new Date(step.auth.tokenExpiresAt).toLocaleDateString()}. `
+                  : ""}
                 {auth?.problem && "Send your prompt again to pick up where you left off."}
               </DialogDescription>
             </DialogHeader>

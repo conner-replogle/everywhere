@@ -2,9 +2,12 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"maps"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -53,14 +56,15 @@ func (m *Manager) ClaudeAuth(ctx context.Context) (protocol.ClaudeAuth, error) {
 	if err != nil {
 		return protocol.ClaudeAuth{}, err
 	}
-	st, err := claude.Auth(ctx, bin, env)
+	tok, _ := m.loadToken()
+	st, err := claude.Auth(ctx, bin, claude.WithToken(env, tok.Token))
 	if err != nil {
 		return protocol.ClaudeAuth{}, err
 	}
 	m.mu.Lock()
 	problem, signingIn := m.authProblem, m.login != nil
 	m.mu.Unlock()
-	return protocol.ClaudeAuth{
+	a := protocol.ClaudeAuth{
 		SignedIn:     st.LoggedIn && problem == "",
 		Method:       st.AuthMethod,
 		Email:        st.Email,
@@ -68,7 +72,70 @@ func (m *Manager) ClaudeAuth(ctx context.Context) (protocol.ClaudeAuth, error) {
 		Subscription: st.SubscriptionType,
 		Problem:      problem,
 		SigningIn:    signingIn,
-	}, nil
+	}
+	if tok.Token != "" {
+		expires := tok.ExpiresAt
+		a.TokenExpiresAt = &expires
+	}
+	return a, nil
+}
+
+// tokenLife is how long a setup-token token lasts.
+const tokenLife = 365 * 24 * time.Hour
+
+// storedToken is claude's long-lived token, kept in the daemon's data
+// directory and given to every claude it starts.
+type storedToken struct {
+	Token     string `json:"token"`
+	CreatedAt int64  `json:"createdAt"`
+	ExpiresAt int64  `json:"expiresAt"`
+}
+
+// loadToken reads the stored token; none is no error.
+func (m *Manager) loadToken() (storedToken, error) {
+	var t storedToken
+	raw, err := os.ReadFile(m.tokenPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return t, nil
+	}
+	if err != nil {
+		return t, err
+	}
+	err = json.Unmarshal(raw, &t)
+	return t, err
+}
+
+// saveToken keeps a new token, or with "" forgets the one kept.
+func (m *Manager) saveToken(token string) error {
+	if token == "" {
+		if err := os.Remove(m.tokenPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	now := time.Now()
+	raw, _ := json.Marshal(storedToken{Token: token, CreatedAt: now.UnixMilli(), ExpiresAt: now.Add(tokenLife).UnixMilli()})
+	if err := os.MkdirAll(filepath.Dir(m.tokenPath), 0o700); err != nil {
+		return err
+	}
+	tmp := m.tokenPath + ".tmp"
+	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, m.tokenPath)
+}
+
+// withToken is env with the stored long-lived token, if there is one, so
+// claude uses it rather than renewing its own credentials.
+func (m *Manager) withToken(env []string) []string {
+	t, err := m.loadToken()
+	if err != nil {
+		slog.Warn("claude token unreadable; using claude's own sign-in", "err", err)
+	}
+	if t.Token == "" {
+		return env
+	}
+	return claude.WithToken(env, t.Token)
 }
 
 // noteAuthFailed records that a request was refused for claude's
@@ -114,8 +181,11 @@ func (m *Manager) authGeneration() int {
 }
 
 // StartLogin starts signing claude in and returns the sign-in page, whose
-// code goes to FinishLogin. It replaces a sign-in already waiting.
-func (m *Manager) StartLogin(ctx context.Context, console bool) (protocol.ClaudeLogin, error) {
+// code goes to FinishLogin. It replaces a sign-in already waiting. A
+// longLived sign-in (claude setup-token) gets a token that lasts a year and
+// is never renewed, which every claude the daemon starts then uses; a
+// regular one goes back to claude's own, renewed credentials.
+func (m *Manager) StartLogin(ctx context.Context, console, longLived bool) (protocol.ClaudeLogin, error) {
 	bin, env, err := m.claudeBinary(ctx)
 	if err != nil {
 		return protocol.ClaudeLogin{}, err
@@ -123,23 +193,44 @@ func (m *Manager) StartLogin(ctx context.Context, console bool) (protocol.Claude
 	m.CancelLogin()
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
-	l, err := claude.StartLogin(ctx, bin, env, console)
-	if err != nil {
-		return protocol.ClaudeLogin{}, err
+	var p *pendingLogin
+	var url string
+	if longLived {
+		l, err := claude.StartTokenLogin(ctx, bin, env)
+		if err != nil {
+			return protocol.ClaudeLogin{}, err
+		}
+		p, url = &pendingLogin{signIn: l, token: l.Token, settled: make(chan struct{})}, l.URL
+	} else {
+		l, err := claude.StartLogin(ctx, bin, env, console)
+		if err != nil {
+			return protocol.ClaudeLogin{}, err
+		}
+		p, url = &pendingLogin{signIn: l, settled: make(chan struct{})}, l.URL
 	}
-	p := &pendingLogin{Login: l, settled: make(chan struct{})}
 	m.mu.Lock()
 	m.login = p
 	m.mu.Unlock()
 	go m.awaitLogin(p)
 	m.authChanged()
-	return protocol.ClaudeLogin{URL: l.URL}, nil
+	return protocol.ClaudeLogin{URL: url}, nil
 }
 
-// pendingLogin is a sign-in in progress. settled is closed once its outcome
-// has been acted on.
+// signIn is a claude sign-in waiting for its code: claude.Login or
+// claude.TokenLogin.
+type signIn interface {
+	Submit(ctx context.Context, code string) error
+	Done() <-chan struct{}
+	Err() error
+	Cancel()
+}
+
+// pendingLogin is a sign-in in progress. token, for a long-lived sign-in,
+// gives its token once done. settled is closed once its outcome has been
+// acted on.
 type pendingLogin struct {
-	*claude.Login
+	signIn
+	token   func() string
 	settled chan struct{}
 }
 
@@ -162,6 +253,15 @@ func (m *Manager) awaitLogin(p *pendingLogin) {
 			m.authChanged()
 		}
 		return
+	}
+	// A long-lived sign-in's token is what claude uses from now on; a
+	// regular sign-in drops a token kept from before, so its credentials are.
+	var token string
+	if p.token != nil {
+		token = p.token()
+	}
+	if err := m.saveToken(token); err != nil {
+		slog.Error("keeping claude's sign-in", "err", err)
 	}
 	m.signedIn()
 }

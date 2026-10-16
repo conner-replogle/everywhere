@@ -105,8 +105,18 @@ func Spawn(c Command) (TTY, *proc.Group, error) {
 		exited: make(chan struct{}),
 		hpc:    hpc,
 	}
-	shell := windowsShell()
-	pi, err := startOnConsole(hpc, commandLine(shell, c.Command), c.Dir, windowsEnv(shell, c.Env))
+	var cmdline string
+	var env []string
+	if len(c.Args) > 0 {
+		cmdline, env = windows.ComposeCommandLine(c.Args), c.Env
+		if env == nil {
+			env = os.Environ()
+		}
+	} else {
+		shell := windowsShell()
+		cmdline, env = commandLine(shell, c.Command), windowsEnv(shell, c.Env)
+	}
+	pi, err := startOnConsole(hpc, cmdline, c.Dir, env)
 	if err != nil {
 		t.closeConsole()
 		t.in.Close()

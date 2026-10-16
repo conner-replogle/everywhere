@@ -265,6 +265,17 @@ same one the Agent SDK uses (`internal/claude`):
   - It keeps running with no viewers attached.
   - It is stopped after 30 idle minutes; the next prompt resumes it.
   - Each thread is an actor goroutine that owns its state.
+- **Sign-in** (`agent.auth`, `agent.login*`): Claude Code renews its OAuth
+  token every 8 hours, and each renewal retires the refresh token; two claude
+  processes renewing at once can get the whole sign-in revoked ("OAuth
+  session expired and could not be refreshed"), which signs every thread out.
+  `agent.login {longLived: true}` (feature `claudeToken`) avoids renewals:
+  the daemon runs `claude setup-token` on a pseudo terminal (it's a
+  full-screen program), reads the sign-in URL from its hyperlink, types in
+  the pasted code, and keeps the token it prints (valid a year) in
+  `claude-token.json` (0600) in its data directory. Every claude it starts,
+  and `claude auth status`, then get it as `CLAUDE_CODE_OAUTH_TOKEN`; a
+  regular sign-in deletes it. `agent.auth` reports `tokenExpiresAt`.
 - **Event log**: Claude's output becomes a persisted event log (`agent_events`,
   per-thread `seq`) plus live state: status, pending permission prompts,
   streamed text, mode and model.

@@ -88,8 +88,10 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		// threads.done: mark it done, or reopen it.
 		Done  bool `json:"done"`
 		Force bool `json:"force"`
-		// agent.login: an Anthropic Console account rather than a subscription.
-		Console bool `json:"console"`
+		// agent.login: an Anthropic Console account rather than a subscription,
+		// or a token that lasts a year (claude setup-token).
+		Console   bool `json:"console"`
+		LongLived bool `json:"longLived"`
 		// agent.loginCode
 		Code string `json:"code"`
 		URL  string `json:"url"`
@@ -123,7 +125,7 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 		defer cancel()
 		return s.agents.ClaudeAuth(ctx)
 	case "agent.login":
-		return s.agents.StartLogin(context.Background(), params.Console)
+		return s.agents.StartLogin(context.Background(), params.Console, params.LongLived)
 	case "agent.loginCode":
 		return s.agents.FinishLogin(context.Background(), params.Code)
 	case "agent.loginCancel":

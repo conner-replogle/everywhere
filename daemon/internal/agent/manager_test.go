@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -1542,5 +1543,33 @@ func TestToolResultImagesKept(t *testing.T) {
 	a := res.Attachments[0]
 	if got, err := os.ReadFile(a.Path); err != nil || string(got) != "\x89PNG fake" || a.Kind != "image" || a.Name != "image-1.png" {
 		t.Fatalf("kept %+v: %q, %v", a, got, err)
+	}
+}
+
+func TestStoredToken(t *testing.T) {
+	m := NewManager(nil, t.TempDir(), func() {})
+	if env := m.withToken([]string{"A=1"}); len(env) != 1 {
+		t.Fatalf("no token: env = %q", env)
+	}
+	if err := m.saveToken("sk-ant-oat01-test"); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(m.tokenPath); err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
+		t.Fatalf("token file: %v, %v", info, err)
+	}
+	env := m.withToken([]string{"A=1", "CLAUDE_CODE_OAUTH_TOKEN=stale"})
+	if strings.Join(env, " ") != "A=1 CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-test" {
+		t.Fatalf("env = %q", env)
+	}
+	tok, _ := m.loadToken()
+	if d := time.Duration(tok.ExpiresAt-tok.CreatedAt) * time.Millisecond; d != tokenLife {
+		t.Fatalf("token lasts %s", d)
+	}
+	// A regular sign-in forgets it.
+	if err := m.saveToken(""); err != nil {
+		t.Fatal(err)
+	}
+	if env := m.withToken([]string{"A=1"}); len(env) != 1 {
+		t.Fatalf("forgotten token still used: %q", env)
 	}
 }

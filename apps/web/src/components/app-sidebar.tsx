@@ -1256,6 +1256,19 @@ function DeviceRow({
                     Sign in to Claude Code…
                   </DropdownMenuItem>
                 )}
+                {/* A signed-in device can move to a token that lasts a year before renewals sign it out. */}
+                {!needsSignIn &&
+                  claudeAuth.data &&
+                  !claudeAuth.data.tokenExpiresAt &&
+                  info.data.features?.includes("claudeToken") && (
+                    <DropdownMenuItem
+                      onSelect={() => setUpdating("signIn")}
+                      title="A token that's never renewed, so threads running at once can't sign each other out"
+                    >
+                      <KeyRoundIcon />
+                      Sign Claude Code in for a year…
+                    </DropdownMenuItem>
+                  )}
                 {deviceUpdate && (
                   <DropdownMenuItem className="text-primary" onSelect={() => setUpdating("device")}>
                     <ArrowUpCircleIcon />

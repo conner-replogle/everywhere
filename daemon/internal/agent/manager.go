@@ -95,6 +95,8 @@ type Manager struct {
 	AuthChanged func()
 
 	attachments attachmentStore
+	// tokenPath keeps claude's long-lived token, when it's signed in with one.
+	tokenPath string
 
 	store    Store
 	onChange func() // called when a thread's running state or status changes
@@ -141,6 +143,7 @@ func NewManager(st Store, dataDir string, onChange func()) *Manager {
 		RefreshRetryWait: 20 * time.Second,
 		WorktreeDir:      filepath.Join(dataDir, "worktrees"),
 		attachments:      attachmentStore{root: filepath.Join(dataDir, "attachments")},
+		tokenPath:        filepath.Join(dataDir, "claude-token.json"),
 		store:            st,
 		onChange:         onChange,
 		sessions:         map[string]*session{},
@@ -442,7 +445,7 @@ func (m *Manager) startClaude(ctx context.Context, o claude.Options) (process, e
 	if m.noteBuild(ctx, bin, env) {
 		go m.claudeChanged()
 	}
-	o.Binary, o.Env = bin, env
+	o.Binary, o.Env = bin, m.withToken(env)
 	return claude.Start(ctx, o)
 }
 
