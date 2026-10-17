@@ -164,6 +164,10 @@ export const api = {
   setClaudeToken: (token: string) => request<ClaudeTokenResult>("PUT", "/api/claude/token", { token }),
   removeClaudeToken: () => request<ClaudeTokenResult>("DELETE", "/api/claude/token"),
 
+  /** Speech to text: base64 audio from a MediaRecorder, and the speaker's language if known. */
+  transcribe: (audio: string, language?: string) =>
+    request<{ text: string }>("POST", "/api/speech/transcribe", { audio, language }),
+
   githubStatus: () => request<{ configured: boolean; login: string | null }>("GET", "/api/github/status"),
   /** A page navigation, not a fetch: it goes to GitHub and comes back to Settings. */
   githubConnectUrl: "/api/github/connect",

@@ -10,6 +10,7 @@ import { claude } from "./routes/claude";
 import { github } from "./routes/github";
 import { prefs } from "./routes/prefs";
 import { push } from "./routes/push";
+import { speech } from "./routes/speech";
 import { iceServers, TURN_TTL_SECONDS } from "./turn";
 import { apiGuard, clientIp, originAllowed, rateLimited, tooMany } from "./security";
 import type { App } from "./types";
@@ -26,6 +27,7 @@ app.route("/api/push", push);
 app.route("/api/github", github);
 app.route("/api/prefs", prefs);
 app.route("/api/claude", claude);
+app.route("/api/speech", speech);
 // The MCP endpoint for agents, and the OAuth server that authorizes them.
 app.route("/", oauth);
 app.route("/", mcp);

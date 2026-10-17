@@ -19,10 +19,12 @@ import {
   GitBranchIcon,
   ImageIcon,
   LoaderIcon,
+  MicIcon,
   Minimize2Icon,
+  SquareIcon,
   XIcon,
 } from "lucide-react";
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -33,6 +35,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { dictationSupported, useDictation } from "@/lib/dictation";
 import type { DevicePeer } from "@/lib/peer";
 import { cn, errorMessage } from "@/lib/utils";
 
@@ -328,6 +331,80 @@ function formatBytes(n: number): string {
   if (n >= 1 << 20) return `${(n / (1 << 20)).toFixed(1)} MB`;
   if (n >= 1024) return `${Math.round(n / 1024)} KB`;
   return `${n} B`;
+}
+
+// --- dictation ---------------------------------------------------------------------
+
+function formatElapsed(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/** Records while on; the transcription goes to onText. Hidden where browsers can't record. */
+export function DictateButton({ disabled, onText }: { disabled: boolean; onText: (text: string) => void }) {
+  const dictation = useDictation(onText);
+  const { state, error, startedAt } = dictation;
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    if (state !== "recording") return;
+    const id = setInterval(() => setNow(Date.now()), 500);
+    return () => clearInterval(id);
+  }, [state]);
+  if (!dictationSupported()) return null;
+
+  if (state === "recording") {
+    return (
+      <span className="flex h-6 items-center gap-0.5">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-6 gap-1.5 px-1.5 font-normal text-destructive tabular-nums"
+          onClick={dictation.stop}
+          aria-label="Stop and transcribe"
+          title="Stop and transcribe"
+        >
+          <span className="size-2 animate-pulse rounded-full bg-current" />
+          {formatElapsed(Math.max(0, now - startedAt))}
+          <SquareIcon className="size-3 fill-current" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="size-6"
+          onClick={dictation.cancel}
+          aria-label="Discard recording"
+          title="Discard recording"
+        >
+          <XIcon />
+        </Button>
+      </span>
+    );
+  }
+  return (
+    <>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className={cn("size-6", error && "text-destructive")}
+        disabled={disabled || state === "transcribing"}
+        onClick={dictation.start}
+        aria-label={state === "transcribing" ? "Transcribing" : "Dictate"}
+        title={state === "transcribing" ? "Transcribing…" : error ? `${error}. Dictate again` : "Dictate"}
+      >
+        {state === "transcribing" ? <LoaderIcon className="animate-spin" /> : <MicIcon />}
+      </Button>
+      {error && (
+        <button
+          type="button"
+          className="max-w-48 truncate text-xs text-destructive"
+          onClick={dictation.clearError}
+          title={error}
+        >
+          {error}
+        </button>
+      )}
+    </>
+  );
 }
 
 // --- effort and thinking ---------------------------------------------------------

@@ -21,6 +21,8 @@
       "migrations_dir": "migrations"
     }
   ],
+  // Workers AI, for speech to text.
+  "ai": { "binding": "AI" },
   "durable_objects": {
     "bindings": [{ "name": "HUB", "class_name": "AccountHub" }]
   },

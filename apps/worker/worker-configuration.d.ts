@@ -3,6 +3,7 @@
 // Runtime types generated with workerd@1.20260921.1 2026-09-01 nodejs_compat
 interface __BaseEnv_Env {
 	DB: D1Database;
+	AI: Ai;
 	AUTH_LIMITER: RateLimit;
 	ASSETS: Fetcher;
 	TURN_KEY_ID: "793c505d98567eb461a730c1cc08ac8a";

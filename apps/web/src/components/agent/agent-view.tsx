@@ -35,6 +35,7 @@ import { cn } from "@/lib/utils";
 import {
   AttachmentChips,
   ContextMeter,
+  DictateButton,
   matchCommands,
   ReasoningMenu,
   SlashMenu,
@@ -557,6 +558,12 @@ function Composer({
     [threadId, addFiles],
   );
 
+  // Dictated text joins whatever's typed, on the same line.
+  const addDictation = useCallback((said: string) => {
+    setText((t) => (t.trim() ? `${t.trimEnd()} ${said}` : said));
+    ref.current?.focus();
+  }, []);
+
   const acceptSuggestion = () => {
     if (!suggestion) return;
     setText(suggestion);
@@ -718,6 +725,7 @@ function Composer({
             />
           </>
         )}
+        <DictateButton disabled={!ready} onText={addDictation} />
         <ModeMenu state={state} disabled={!ready} onPick={(mode) => agent.send({ t: "setMode", mode })} />
         <ModelMenu
           state={state}
