@@ -1,5 +1,5 @@
 import type { AgentClientMsg, AgentRequest } from "@everywhere/protocol";
-import { CheckIcon, MessageCircleQuestionIcon, ShieldCheckIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, ChevronUpIcon, MessageCircleQuestionIcon, ShieldCheckIcon } from "lucide-react";
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -32,6 +32,8 @@ function Card({
   tone?: "warn" | "neutral";
   children: React.ReactNode;
 }) {
+  // Minimized to its header so the conversation above can be read for context.
+  const [min, setMin] = useState(false);
   return (
     <div
       className={cn(
@@ -39,16 +41,26 @@ function Card({
         tone === "warn" ? "border-warn/40" : "border-border",
       )}
     >
-      <div
+      <button
+        type="button"
+        onClick={() => setMin(!min)}
+        aria-expanded={!min}
+        title={min ? "Show" : "Minimize to read the conversation"}
         className={cn(
-          "flex shrink-0 items-center gap-2 border-b px-3 py-2",
+          "flex shrink-0 items-center gap-2 px-3 py-2 text-left",
+          !min && "border-b",
           tone === "warn" ? "border-warn/20 text-warn" : "border-border text-foreground",
         )}
       >
         {icon}
-        <span className="min-w-0 truncate font-medium">{title}</span>
-      </div>
-      <div className="grid min-h-0 gap-2.5 overflow-y-auto px-3 py-2.5">{children}</div>
+        <span className="min-w-0 flex-1 truncate font-medium">{title}</span>
+        {min ? (
+          <ChevronUpIcon className="size-4 shrink-0 text-muted-foreground" />
+        ) : (
+          <ChevronDownIcon className="size-4 shrink-0 text-muted-foreground" />
+        )}
+      </button>
+      {!min && <div className="grid min-h-0 gap-2.5 overflow-y-auto px-3 py-2.5">{children}</div>}
     </div>
   );
 }
