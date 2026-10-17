@@ -139,7 +139,7 @@ export function ContextMeter({ context, onCompact }: { context: AgentContext | u
           strokeDashoffset={circumference * (1 - pct / 100)}
         />
       </svg>
-      <span className="max-sm:hidden">{Math.round(pct)}%</span>
+      <span className="@max-[40rem]:hidden">{Math.round(pct)}%</span>
       <span className="sr-only">{label}</span>
     </>
   );
@@ -500,7 +500,7 @@ export function ReasoningMenu({
           title="Effort and thinking"
         >
           <BrainIcon className="size-3" />
-          <span className="max-sm:hidden">{label || "Effort"}</span>
+          <span className="@max-[40rem]:hidden">{label || "Effort"}</span>
           <ChevronDownIcon className="size-3" />
         </Button>
       </DropdownMenuTrigger>

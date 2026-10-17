@@ -711,7 +711,7 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
             </div>
           )}
           {modeInfo && (
-            <span className="hidden truncate px-1 text-xs text-muted-foreground lg:inline">
+            <span className="hidden truncate px-1 text-xs text-muted-foreground @min-[64rem]:inline">
               {MODE_LABELS[modeInfo.mode]} · {CODEC_NAMES[modeInfo.codec] ?? "?"} · {(modeInfo.bitrateKbps / 1000).toFixed(1)}{" "}
               Mbps
             </span>

@@ -61,7 +61,7 @@ export function ResumeBanner({
   };
   const idle = Math.round((now - at) / 3_600_000);
   return (
-    <div className="flex items-center gap-3 rounded-md border bg-card px-3 py-2 text-[13px] max-sm:flex-wrap">
+    <div className="flex items-center gap-3 rounded-md border bg-card px-3 py-2 text-[13px] @max-[40rem]:flex-wrap">
       <Minimize2Icon className="size-4 shrink-0 text-muted-foreground" />
       <div className="grid min-w-0 flex-1">
         <span className="font-medium">Resume with less context</span>

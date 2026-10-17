@@ -754,7 +754,8 @@ TODO.md items come later.
 /d/$deviceId                    device page: Scratch composer and threads, home, projects
 /d/$deviceId/t/$threadId        terminal: xterm.js (WebGL, fit addon), writer banner + Take over
                                 claude: timeline, permission/question/plan cards, composer
-                                tab strip: the thread, then its tabs; ?tab=<id> picks one
+                                tab strip: the thread, then its tabs; ?tab=<id> picks one,
+                                &split=<id> shows a second beside it (see Split view)
 /d/$deviceId/desktop            remote desktop: video, workspace bar, monitor picker, fullscreen + keyboard lock
 /settings/devices               add device (shows install command), rename, revoke
 /settings/notifications         push notifications on this browser, test
@@ -772,6 +773,20 @@ tabs), keeps it explicitly (double-click the tab or the sidebar row, or the
 pin on the tab), or looks at it for 20 s with the page in the foreground
 (visible and focused; background time doesn't count, and the count pauses
 rather than restarting). Threads created from the sidebar open as kept tabs.
+
+**Split view**: a thread page can show two of its tabs at once, side by side,
+or stacked when the pane area is under 720 px wide. The split button at the
+end of the tab strip picks the second (and swaps or closes it); `?split=<id>`
+keeps it across reloads. The pane last touched (a click or focus in it, or its
+tab) is focused, marked with a line along its top and on its tab; picking a
+tab shows it there, or just focuses it if it's shown. Something opened for you
+(a link, a process, a claude tab an annotation goes to) goes in the other
+pane, so the one you're working in stays. The divider drags (20-80 %,
+remembered per browser; double-click for half). Closing a shown tab gives the
+other pane the whole area. Panes are only positioned, never moved, so one
+changing sides keeps its state (a terminal's scrollback, a claude draft).
+Each pane is a CSS container, and the views in it lay out by its width
+(`@min-[48rem]:` rather than `md:`), so a narrow pane gets the phone layout.
 
 The sidebar tucks threads untouched for 3 days under a per-project "N idle"
 row (or one for the whole list when ungrouped). This is display only: nothing

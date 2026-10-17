@@ -127,8 +127,8 @@ export function ProcessesView({
           )}
         </div>
       ) : (
-        <div className="flex min-h-0 flex-1 max-md:flex-col">
-          <ul className="flex min-h-0 shrink-0 flex-col gap-2 overflow-y-auto p-2 max-md:max-h-[45%] max-md:border-b md:w-96 md:border-r">
+        <div className="flex min-h-0 flex-1 @max-[48rem]:flex-col">
+          <ul className="flex min-h-0 shrink-0 flex-col gap-2 overflow-y-auto p-2 @max-[48rem]:max-h-[45%] @max-[48rem]:border-b @min-[48rem]:w-96 @min-[48rem]:border-r">
             {processes.map((p) => (
               <li key={p.id}>
                 <ProcessCard

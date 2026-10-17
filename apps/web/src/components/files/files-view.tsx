@@ -100,9 +100,9 @@ export function FilesView({
     <div className="flex h-full min-h-0">
       <div
         className={cn(
-          "flex min-h-0 w-full flex-col border-r md:w-72 md:shrink-0",
+          "flex min-h-0 w-full flex-col border-r @min-[48rem]:w-72 @min-[48rem]:shrink-0",
           // On a phone the open file takes the whole tab.
-          file && "max-md:hidden",
+          file && "@max-[48rem]:hidden",
         )}
       >
         <div className="flex h-8 shrink-0 items-center gap-1 border-b px-2">
@@ -145,7 +145,7 @@ export function FilesView({
           )}
         </div>
       </div>
-      <div className={cn("min-h-0 min-w-0 flex-1", !file && "max-md:hidden")}>
+      <div className={cn("min-h-0 min-w-0 flex-1", !file && "@max-[48rem]:hidden")}>
         {file ? (
           <FileViewer key={`${file}:${refresh}`} peer={peer} root={root} path={file} onBack={() => openFile(undefined)} />
         ) : (
@@ -237,10 +237,10 @@ function FileViewer({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-8 shrink-0 items-center gap-2 border-b px-2">
-        <Button variant="ghost" size="icon-sm" className="md:hidden" aria-label="Back to files" onClick={onBack}>
+        <Button variant="ghost" size="icon-sm" className="@min-[48rem]:hidden" aria-label="Back to files" onClick={onBack}>
           <ArrowLeftIcon />
         </Button>
-        <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground max-md:hidden" />
+        <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground @max-[48rem]:hidden" />
         <span className="min-w-0 flex-1 truncate font-mono text-xs" title={path}>
           {relative(root, dirName(path)) === relative(root, root) ? baseName(path) : relative(root, path)}
         </span>

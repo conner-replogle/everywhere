@@ -4,6 +4,8 @@ import {
   ActivityIcon,
   AppWindowIcon,
   ArchiveRestoreIcon,
+  ArrowLeftRightIcon,
+  Columns2Icon,
   FolderInputIcon,
   FolderPlusIcon,
   FolderTreeIcon,
@@ -23,6 +25,7 @@ import { OpenLinkContext, RunInTerminalContext } from "@/components/agent/markdo
 import { useDevice } from "@/components/device-context";
 import { ContinueDialog, PromoteDialog } from "@/components/scratch-actions";
 import { RenameDialog } from "@/components/rename-dialog";
+import { SplitArea } from "@/components/split-area";
 import { GitChip } from "@/components/git-chip";
 import { TerminalView, type WriterState } from "@/components/terminal-view";
 import { ThreadTabs } from "@/components/thread-tabs";
@@ -94,14 +97,17 @@ interface WebPane {
 type Pane = (Thread & { parentId?: undefined; tabState?: undefined }) | Tab | WebPane;
 
 export const Route = createFileRoute("/_app/_workspace/d/$deviceId/t/$threadId")({
-  validateSearch: (search: Record<string, unknown>): { tab?: string } =>
-    typeof search.tab === "string" ? { tab: search.tab } : {},
+  // tab: the pane shown (the thread itself if absent); split: one shown beside it.
+  validateSearch: (search: Record<string, unknown>): { tab?: string; split?: string } => ({
+    ...(typeof search.tab === "string" ? { tab: search.tab } : {}),
+    ...(typeof search.split === "string" ? { split: search.split } : {}),
+  }),
   component: ThreadPage,
 });
 
 function ThreadPage() {
   const { deviceId, threadId } = Route.useParams();
-  const { tab: tabParam } = Route.useSearch();
+  const { tab: tabParam, split: splitParam } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
   const entry = useDevice();
   const { device, peer, conn, threads, projects, info } = entry;
@@ -129,16 +135,61 @@ function ThreadPage() {
     ? [thread, ...(canTab ? (tabs.data ?? []) : []), ...(legacyTab ? [legacyTab] : []), ...webPanes]
     : [];
   // A tab that's gone (closed elsewhere) falls back to the thread.
-  const active = panes.find((p) => p.id === tabParam) ?? thread;
-  const setActive = (id: string) =>
-    navigate({ search: id === threadId ? {} : { tab: id }, replace: true, resetScroll: false });
+  const primary = panes.find((p) => p.id === tabParam) ?? thread;
+  // Split view: a second pane beside (or, narrow, below) the first.
+  const splitPane = splitParam && splitParam !== primary?.id ? panes.find((p) => p.id === splitParam) : undefined;
+  // The pane you last touched: tab clicks go there.
+  const [focusSide, setFocusSide] = useState<"primary" | "split">("primary");
+  const side = splitPane ? focusSide : "primary";
+  const active = side === "split" ? splitPane : primary;
+  const show = (primaryId: string, splitId?: string) =>
+    navigate({
+      search: {
+        ...(primaryId === threadId ? {} : { tab: primaryId }),
+        ...(splitId && splitId !== primaryId ? { split: splitId } : {}),
+      },
+      replace: true,
+      resetScroll: false,
+    });
+  /** A tab the user picked: into the focused pane, unless it's shown already. */
+  const select = (id: string) => {
+    if (id === primary?.id) return setFocusSide("primary");
+    if (id === splitPane?.id) return setFocusSide("split");
+    if (splitPane && side === "split") show(primary!.id, id);
+    else show(id, splitPane?.id);
+  };
+  /**
+   * A pane something opened (a link, a process, an annotation's claude
+   * tab): shown, and with a split, beside the one you're working in rather
+   * than in its place.
+   */
+  const setActive = (id: string) => {
+    if (id === primary?.id) return setFocusSide("primary");
+    if (id === splitPane?.id) return setFocusSide("split");
+    if (splitPane && side === "primary") show(primary!.id, id);
+    else if (splitPane) show(id, splitPane.id);
+    else show(id);
+  };
+  const openSplit = (id: string) => {
+    show(primary!.id, id);
+    setFocusSide("split");
+  };
+  const closeSplit = () => {
+    // The focused pane stays.
+    show(active!.id);
+    setFocusSide("primary");
+  };
 
   // Terminal and claude panes stay mounted once opened, so switching tabs
   // keeps their scrollback and drafts. The browser only streams while shown.
   const [opened, setOpened] = useState<Set<string>>(() => new Set());
-  const activeId = active?.id;
+  const activeId = primary?.id;
+  const splitId = splitPane?.id;
   // Before the effect below, so a new thread starts empty and then opens.
-  useEffect(() => setOpened(new Set()), [threadId]);
+  useEffect(() => {
+    setOpened(new Set());
+    setFocusSide("primary");
+  }, [threadId]);
   // Opening a thread gives it a tab along the top (the preview tab, unless it
   // has one already), and counts as touching it, for the sidebar's idle threads.
   const threadName = thread?.name;
@@ -156,8 +207,10 @@ function ThreadPage() {
     return () => hub.setThread(null);
   }, [deviceId, threadId]);
   useEffect(() => {
-    if (activeId) setOpened((s) => (s.has(activeId) ? s : new Set(s).add(activeId)));
-  }, [activeId]);
+    for (const id of [activeId, splitId]) {
+      if (id) setOpened((s) => (s.has(id) ? s : new Set(s).add(id)));
+    }
+  }, [activeId, splitId]);
 
   const [writers, setWriters] = useState<Record<string, WriterState>>({});
   const [error, setError] = useState<string | null>(null);
@@ -226,22 +279,33 @@ function ThreadPage() {
         }
       : null;
 
+  // A shown tab closing: with a split, the other pane takes the view; else its neighbour.
+  const leave = (t: Tab | WebPane) => {
+    if (t.id === splitPane?.id) {
+      show(primary!.id);
+      setFocusSide("primary");
+      return;
+    }
+    if (t.id !== primary?.id) return;
+    if (splitPane) {
+      show(splitPane.id);
+      setFocusSide("primary");
+      return;
+    }
+    const i = panes.findIndex((p) => p.id === t.id);
+    show((panes[i + 1] ?? panes[i - 1] ?? thread!).id);
+  };
+
   const closeTab = async (t: Tab | WebPane) => {
     if (t.kind === "web") {
-      if (active?.id === t.id) {
-        const i = panes.findIndex((p) => p.id === t.id);
-        setActive((panes[i + 1] ?? panes[i - 1] ?? thread!).id);
-      }
+      leave(t);
       closeWebTab(deviceId, threadId, t.id);
       return;
     }
     if (t.kind === "browser") browserClosedAt.current = Date.now();
     if (t.kind === "desktop") desktopClosedAt.current = Date.now();
     if (t.kind === "processes") processesClosedAt.current = Date.now();
-    if (active?.id === t.id) {
-      const i = panes.findIndex((p) => p.id === t.id);
-      setActive((panes[i + 1] ?? panes[i - 1] ?? thread!).id);
-    }
+    leave(t);
     await peer.call("tabs.close", { id: t.id });
     tabs.refetch();
   };
@@ -368,7 +432,7 @@ function ThreadPage() {
             peer={peer}
             threadId={p.id}
             generation={conn.generation}
-            active={p.id === active?.id}
+            active={p.id === primary?.id || p.id === splitPane?.id}
             onInteract={keep}
             onWriterChange={(w) => setWriters((ws) => (ws[p.id] === w ? ws : { ...ws, [p.id]: w }))}
           />
@@ -412,7 +476,7 @@ function ThreadPage() {
               peer={peer}
               deviceId={deviceId}
               deviceName={device.name || info.data?.hostname || "the device"}
-              active={p.id === active?.id}
+              active={p.id === primary?.id || p.id === splitPane?.id}
               show={desktopShow?.tabId === p.id ? desktopShow : undefined}
               onAnnotate={
                 claudeTarget
@@ -534,8 +598,10 @@ function ThreadPage() {
                 key={p.id}
                 pane={p}
                 active={p.id === active?.id}
+                shown={p.id === primary?.id || p.id === splitPane?.id}
+                split={!!splitPane}
                 running={p.kind === "processes" ? thread?.processes : undefined}
-                onSelect={() => setActive(p.id)}
+                onSelect={() => select(p.id)}
                 onRename={p.parentId && (canTab || p.kind === "web") ? () => (keep(), setRenaming(p)) : undefined}
                 onClose={
                   p.parentId && (canTab || p.kind === "web")
@@ -582,26 +648,72 @@ function ThreadPage() {
               {error}
             </span>
           )}
+          {panes.length > 1 && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className={cn("mr-1 self-center", !error && "ml-auto", splitPane && "text-primary")}
+                  aria-label="Split view"
+                  title="Split view: two tabs at once"
+                >
+                  <Columns2Icon />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="max-h-80 overflow-y-auto">
+                {panes
+                  .filter((p) => p.id !== primary?.id && p.id !== splitPane?.id)
+                  .map((p) => {
+                    const Icon = KIND_ICON[p.kind];
+                    return (
+                      <DropdownMenuItem
+                        key={p.id}
+                        onSelect={() => (splitPane ? select(p.id) : openSplit(p.id))}
+                      >
+                        <Icon />
+                        <span className="truncate">{p.parentId ? p.name : KIND_LABEL[p.kind]}</span>
+                        <span className="ml-auto pl-3 text-xs text-muted-foreground">{splitPane ? "here" : "beside"}</span>
+                      </DropdownMenuItem>
+                    );
+                  })}
+                {splitPane && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onSelect={() => (show(splitPane.id, primary!.id), setFocusSide(side === "split" ? "primary" : "split"))}>
+                      <ArrowLeftRightIcon />
+                      Swap sides
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={closeSplit}>
+                      <XIcon />
+                      Close split
+                    </DropdownMenuItem>
+                  </>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
       )}
       <OpenLinkContext.Provider value={thread && !archived ? openUrl : null}>
       <RunInTerminalContext.Provider value={runInTerminal}>
-      <div className="relative min-h-0 flex-1">
-        {/* Panes wait for the thread list, so a claude thread never flashes a terminal. */}
-        {panes
-          .filter((p) => p.id === active?.id || (p.kind !== "browser" && opened.has(p.id)))
-          .map((p) => (
-            <div
-              key={p.id}
-              role="tabpanel"
-              // Hidden panes keep their size, so terminals don't resize.
-              className={cn("absolute inset-0", p.id !== active?.id && "invisible")}
-              {...(p.kind === "terminal" || p.kind === "browser" || p.kind === "desktop" ? inputCapture(p.kind) : {})}
-            >
-              {renderPane(p)}
-            </div>
-          ))}
-      </div>
+      {/* Panes wait for the thread list, so a claude thread never flashes a terminal. */}
+      <SplitArea
+        split={!!splitPane}
+        focused={side}
+        onFocus={setFocusSide}
+        items={panes
+          .filter((p) => p.id === primary?.id || p.id === splitPane?.id || (p.kind !== "browser" && opened.has(p.id)))
+          .map((p) => ({
+            id: p.id,
+            side: p.id === primary?.id ? "primary" : p.id === splitPane?.id ? "split" : "hidden",
+            node: renderPane(p),
+            props: {
+              role: "tabpanel",
+              ...(p.kind === "terminal" || p.kind === "browser" || p.kind === "desktop" ? inputCapture(p.kind) : {}),
+            },
+          }))}
+      />
       </RunInTerminalContext.Provider>
       </OpenLinkContext.Provider>
       {thread && (
@@ -658,13 +770,20 @@ function ThreadPage() {
 function TabButton({
   pane: p,
   active,
+  shown,
+  split,
   running,
   onSelect,
   onRename,
   onClose,
 }: {
   pane: Pane;
+  /** In the focused pane. */
   active: boolean;
+  /** In either pane. */
+  shown: boolean;
+  /** Two panes are shown. */
+  split: boolean;
   /** How many processes are running, for the processes tab. */
   running?: number;
   onSelect: () => void;
@@ -679,7 +798,10 @@ function TabButton({
     <div
       className={cn(
         "group flex shrink-0 items-center border-r text-xs",
-        active ? "bg-background text-foreground" : "text-muted-foreground hover:bg-accent/60",
+        shown ? "bg-background" : "hover:bg-accent/60",
+        active ? "text-foreground" : "text-muted-foreground",
+        // With a split, the focused pane's tab is marked as its pane is.
+        split && active && "shadow-[inset_0_2px_0_var(--primary)]",
       )}
     >
       <button

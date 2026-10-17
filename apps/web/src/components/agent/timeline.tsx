@@ -505,7 +505,7 @@ function TurnEnd({
 }) {
   if (e.status === "error") {
     return (
-      <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive max-sm:flex-wrap">
+      <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive @max-[40rem]:flex-wrap">
         <CircleAlertIcon className="mt-0.5 size-3.5 shrink-0" />
         <span className="min-w-0 flex-1 whitespace-pre-wrap">{e.text || "The turn failed."}</span>
         {e.kind === "contextFull" && onCompact && (

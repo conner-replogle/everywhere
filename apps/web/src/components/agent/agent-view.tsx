@@ -348,7 +348,7 @@ export function AgentView({
       {/* The composer sits a little above the bottom edge, where it's easier to see. */}
       <div className="shrink-0 bg-background">
         {archived ? (
-          <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-3 px-4 pt-1 pb-5 md:pb-8">
+          <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-3 px-4 pt-1 pb-5 @min-[48rem]:pb-8">
             <p className="min-w-0 flex-1 text-[13px] text-muted-foreground">
               {archived.error ?? "This thread is archived. Restore it to keep going; Claude picks up where it left off."}
             </p>
@@ -358,7 +358,7 @@ export function AgentView({
             </Button>
           </div>
         ) : (
-          <div className="mx-auto grid max-w-3xl gap-2 px-4 pt-1 pb-5 md:pb-8">
+          <div className="mx-auto grid max-w-3xl gap-2 px-4 pt-1 pb-5 @min-[48rem]:pb-8">
             {state?.pending.map((r) => (
               <PendingRequest key={r.id} request={r} cwd={workdir} respond={user.send} />
             ))}
