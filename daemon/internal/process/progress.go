@@ -40,6 +40,7 @@ type event struct {
 	attrs      string // e.g. checkpoint="Tests pass"
 	text       string
 	checkpoint string // the checkpoint reached, if that's what happened
+	quiet      bool   // waits for the model's next turn rather than starting one
 }
 
 type sample struct {

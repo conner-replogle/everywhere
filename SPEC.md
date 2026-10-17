@@ -338,7 +338,10 @@ that speaks MCP. `internal/process`.
   model reports by hand for work it does itself.
 - **Running**: on a PTY like a terminal (ConPTY on Windows), as
   `<login shell> -l -c <command>` (`pwsh -NoLogo -Command` on Windows) in the
-  thread's workdir or a `cwd` under it, at 120×32 until a viewer resizes it.
+  thread's workdir or a `cwd` under it, at 200×50 whoever watches: viewers
+  don't resize it (one on a phone made its output rewrap at ~50 columns, and
+  ConPTY repaint the screen into the log, repeating lines); they wrap its
+  wide lines themselves.
   `EVERYWHERE_THREAD`, `EVERYWHERE_PROCESS` and `EVERYWHERE_PROCESS_NAME`
   are set. Stopping sends SIGINT, then SIGTERM after 3 s and SIGKILL after
   6 s, to the whole process group (job object on Windows).
@@ -365,7 +368,9 @@ that speaks MCP. `internal/process`.
     `{stat, value | inc, total, unit, label, checkpoint, status, notify, url,
     dashboard, widget ops…}`. A stat with a value is logged as a metric too,
     so its history is charted. Output is only ever the log: nothing in it is
-    read as a report. `processes.changed` goes out at most 4 times a second.
+    read as a report. The first `::ew ` line a run prints (how processes
+    reported before) tells the model, once and without starting a turn, where
+    reports go now. `processes.changed` goes out at most 4 times a second.
   - **OSC 9;4** (the terminal progress sequence winget, systemd and others
     emit) fills the current checkpoint segment.
 - **Widgets**: predefined charts the model (or the process) puts on a
@@ -468,7 +473,10 @@ just what they draw. `internal/telemetry`.
 - **Runs**: each process start is a run of an experiment: the experiment is
   `process_start`'s `experiment` or the process's name, the run its `run` or
   `<experiment>#<n>`. Starting a named run again adds to it. A run ends with
-  its process (status exited / exited N / stopped / failed / done).
+  its process (status exited / exited N / stopped / failed / done). A run is
+  stored with its first data: a process that never reports (a helper, a
+  probe) leaves none, and the catalog lists only runs with data. Runs started
+  but not stored yet still count when numbering the next.
 - **Store**: `<project>/.everywhere/telemetry.db`, SQLite (WAL), written only
   by the daemon, in batches about once a second (a query writes what's
   pending first). Tables: `runs`, `series` (metric name + labels, with
@@ -487,6 +495,9 @@ just what they draw. `internal/telemetry`.
   SDK exports with no setup. Requests carry the token
   (`X-Everywhere-Token`, or `Authorization: Bearer`), which says the
   project, experiment and run; it stops working 10 s after the run ends.
+  Names that don't fit are cleaned, not refused (one bad name would drop a
+  whole request): other characters become `_`, so `seen by 2+` is
+  `seen_by_2_`.
   ```
   POST /log        {"step": 12, "metrics": {"loss": 0.41}, "labels": {…}, "time": ms}   or a list
   POST /event      {"kind": "checkpoint", "data": …, "time": ms}                       or a list

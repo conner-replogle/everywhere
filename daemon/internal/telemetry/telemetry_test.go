@@ -72,9 +72,18 @@ func TestTelemetry(t *testing.T) {
 	if code, msg := post(t, h, r2.Token, "/log", "application/json", []byte(`{"step":0,"metrics":{"loss":3}}`)); code != 204 {
 		t.Fatalf("log 2: %d %s", code, msg)
 	}
-	if code, _ := post(t, h, r1.Token, "/log", "application/json", []byte(`{"metrics":{"bad name!":1}}`)); code != 400 {
-		t.Fatal("bad metric name accepted")
+	// A name it can't take is cleaned, not the request refused.
+	if code, msg := post(t, h, r1.Token, "/log", "application/json", []byte(`{"metrics":{"seen by 2+":1},"labels":{"a b":"x"}}`)); code != 204 {
+		t.Fatalf("odd name: %d %s", code, msg)
 	}
+
+	// A run that never reports leaves nothing, and doesn't take a name twice.
+	idle, _ := h.StartRun(home, "train", "", "p3")
+	idle2, _ := h.StartRun(home, "train", "", "p4")
+	if idle.Run != "train#3" || idle2.Run != "train#4" {
+		t.Fatalf("idle runs %q %q", idle.Run, idle2.Run)
+	}
+	h.EndRun(idle, "exited")
 
 	// OTLP, protobuf: a gauge with an attribute.
 	md := &metricsv1.MetricsData{ResourceMetrics: []*metricsv1.ResourceMetrics{{ScopeMetrics: []*metricsv1.ScopeMetrics{{Metrics: []*metricsv1.Metric{{
@@ -102,8 +111,11 @@ func TestTelemetry(t *testing.T) {
 
 	// Queries see it all (they write what's pending first).
 	cat, err := h.Catalog(home, "train")
-	if err != nil || len(cat.Runs) != 2 || len(cat.Metrics) != 3 {
+	if err != nil || len(cat.Runs) != 2 || len(cat.Metrics) != 4 {
 		t.Fatalf("catalog %+v %v", cat, err)
+	}
+	if !hasMetric(cat, "seen_by_2_") {
+		t.Fatalf("cleaned name missing: %+v", cat.Metrics)
 	}
 	for _, m := range cat.Metrics {
 		if m.Name == "loss" && (!m.Steps || len(m.Labels["run"]) != 2) {
@@ -163,4 +175,13 @@ func TestTelemetry(t *testing.T) {
 	if b, _ := os.ReadFile(filepath.Join(home, ".everywhere", ".gitignore")); !strings.Contains(string(b), "telemetry.db") {
 		t.Fatalf("gitignore %q", b)
 	}
+}
+
+func hasMetric(c Catalog, name string) bool {
+	for _, m := range c.Metrics {
+		if m.Name == name {
+			return true
+		}
+	}
+	return false
 }

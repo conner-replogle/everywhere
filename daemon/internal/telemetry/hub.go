@@ -59,14 +59,19 @@ type Hub struct {
 	dbs     map[string]*db
 	pending map[string]*batch
 	tokens  map[string]*RunInfo
-	addr    string
-	srv     *http.Server
-	done    chan struct{}
-	closed  bool
+	// unwritten are runs started but not stored: a run is stored with its
+	// first data, so a process that never reports leaves none behind. By
+	// home, then experiment and run.
+	unwritten map[string]map[[2]string]Run
+	addr      string
+	srv       *http.Server
+	done      chan struct{}
+	closed    bool
 }
 
 func New() *Hub {
-	return &Hub{dbs: map[string]*db{}, pending: map[string]*batch{}, tokens: map[string]*RunInfo{}, done: make(chan struct{})}
+	return &Hub{dbs: map[string]*db{}, pending: map[string]*batch{}, tokens: map[string]*RunInfo{},
+		unwritten: map[string]map[[2]string]Run{}, done: make(chan struct{})}
 }
 
 // Start listens on loopback and starts writing batches.
@@ -157,6 +162,31 @@ func (h *Hub) write(home string, b *batch) {
 		slog.Warn("telemetry store", "home", home, "err", err)
 		return
 	}
+	// Runs with their first data are stored now.
+	h.mu.Lock()
+	var starting []Run
+	if waiting := h.unwritten[home]; len(waiting) > 0 {
+		for _, p := range b.points {
+			k := [2]string{p.Labels["experiment"], p.Labels["run"]}
+			if r, ok := waiting[k]; ok {
+				starting = append(starting, r)
+				delete(waiting, k)
+			}
+		}
+		for _, e := range b.events {
+			k := [2]string{e.Experiment, e.Run}
+			if r, ok := waiting[k]; ok {
+				starting = append(starting, r)
+				delete(waiting, k)
+			}
+		}
+	}
+	h.mu.Unlock()
+	for _, r := range starting {
+		if err := d.startRun(r); err != nil {
+			slog.Warn("storing telemetry run", "run", r.Run, "err", err)
+		}
+	}
 	if err := d.write(b.points, b.events); err != nil {
 		slog.Warn("writing telemetry", "home", home, "err", err)
 		return
@@ -227,20 +257,31 @@ func (h *Hub) StartRun(home, experiment, run, processID string) (RunInfo, error)
 	if err != nil {
 		return RunInfo{}, err
 	}
+	home = filepath.Clean(home)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	waiting := h.unwritten[home]
+	if waiting == nil {
+		waiting = map[[2]string]Run{}
+		h.unwritten[home] = waiting
+	}
 	if run == "" {
-		if run, err = d.nextRun(experiment); err != nil {
+		taken := map[string]bool{}
+		for k := range waiting {
+			if k[0] == experiment {
+				taken[k[1]] = true
+			}
+		}
+		if run, err = d.nextRun(experiment, taken); err != nil {
 			return RunInfo{}, err
 		}
 	}
-	if err := d.startRun(Run{Experiment: experiment, Run: run, Process: processID, StartedAt: now()}); err != nil {
-		return RunInfo{}, err
-	}
+	// Stored with its first data (see write).
+	waiting[[2]string{experiment, run}] = Run{Experiment: experiment, Run: run, Process: processID, StartedAt: now()}
 	b := make([]byte, 16)
 	_, _ = rand.Read(b)
-	info := RunInfo{Token: hex.EncodeToString(b), Home: filepath.Clean(home), Experiment: experiment, Run: run, Process: processID}
-	h.mu.Lock()
+	info := RunInfo{Token: hex.EncodeToString(b), Home: home, Experiment: experiment, Run: run, Process: processID}
 	h.tokens[info.Token] = &info
-	h.mu.Unlock()
 	return info, nil
 }
 
@@ -249,7 +290,18 @@ func (h *Hub) EndRun(info RunInfo, status string) {
 	if info.Home == "" || info.Experiment == "" {
 		return
 	}
-	if d, err := h.db(info.Home); err == nil {
+	home := filepath.Clean(info.Home)
+	// Anything it sent on the way out is stored first, then its end.
+	h.flushHome(home)
+	h.mu.Lock()
+	k := [2]string{info.Experiment, info.Run}
+	_, never := h.unwritten[home][k]
+	delete(h.unwritten[home], k)
+	h.mu.Unlock()
+	if never {
+		return // it never reported: no run to end
+	}
+	if d, err := h.db(home); err == nil {
 		_ = d.endRun(info.Experiment, info.Run, status, now())
 	}
 	if info.Token != "" {

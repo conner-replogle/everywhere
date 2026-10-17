@@ -5,6 +5,7 @@ package process
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -362,5 +363,40 @@ func TestTelemetryRuns(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(fx.home, telemetry.DBFile)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestEwLinesAndFixedSize(t *testing.T) {
+	fx := newFixture(t)
+	// A script from before telemetry: told once, quietly, and its lines are output.
+	v, err := fx.m.Start(fx.thread, "agent1", "old", Spec{
+		Command: `echo '::ew stat n 1/2'; echo '::ew checkpoint "Half"'; sleep 0.5; stty size`,
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &client{}
+	_ = fx.m.Attach(v.ID, c, 50, 20)
+	fx.m.Takeover(v.ID, c, 50, 20)
+	fx.m.Resize(v.ID, c, 50, 20)
+	v, _, _ = fx.m.Wait(context.Background(), v.ID, "exit", 10*time.Second)
+	if len(v.Stats) != 0 {
+		t.Fatalf("::ew stat still read: %+v", v.Stats)
+	}
+	var told int
+	for _, n := range fx.notesNow() {
+		if strings.Contains(n.text, `"::ew\" line`) || strings.Contains(n.text, "::ew") {
+			told++
+			if n.wake {
+				t.Error("the ::ew notice woke the model")
+			}
+		}
+	}
+	if told != 1 {
+		t.Fatalf("told %d times: %+v", told, fx.notesNow())
+	}
+	lines, _, _ := fx.m.Output(v.ID, "", "", 0, 1<<20)
+	if got := strings.Join(lines, "\n"); !strings.Contains(got, "::ew stat n 1/2") || !strings.Contains(got, fmt.Sprintf("%d %d", ptyRows, ptyCols)) {
+		t.Fatalf("output %q", got)
 	}
 }

@@ -35,8 +35,12 @@ const (
 	// A thread keeps this many finished processes.
 	keepFinished = 30
 	// How often processes.changed may go out per thread.
-	changeEvery      = 250 * time.Millisecond
-	ptyCols, ptyRows = 120, 32
+	changeEvery = 250 * time.Millisecond
+	// A process's terminal keeps this size whoever watches: resizing it to a
+	// viewer (a phone is ~50 columns) rewraps its output, and on Windows
+	// ConPTY repaints the screen into the log, repeating lines. Wide, so log
+	// lines aren't wrapped; viewers wrap them on their own screens.
+	ptyCols, ptyRows = 200, 50
 )
 
 // Who stopped a process.
@@ -179,6 +183,8 @@ type proc struct {
 	// waiting counts the Wait calls in progress by what they wait for: the
 	// tool calls making them report it, so the model isn't told twice.
 	waiting map[string]int
+	// ewWarned: the model was told ::ew lines are only output now.
+	ewWarned bool
 	// run is what it reports as in its project's telemetry.
 	run telemetry.RunInfo
 	// dashState is its dashboard's state, as in the project's telemetry.
@@ -807,21 +813,11 @@ func (m *Manager) Input(id string, c term.Client, b []byte) {
 	}
 }
 
-// Resize resizes the process's terminal if c is the writer.
-func (m *Manager) Resize(id string, c term.Client, cols, rows uint16) {
-	p := m.get(id)
-	if p == nil || p.tty == nil || cols == 0 || rows == 0 {
-		return
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.writer == c {
-		_ = p.tty.Resize(cols, rows)
-	}
-}
+// Resize does nothing: a process's terminal keeps its size (see ptyCols).
+func (m *Manager) Resize(string, term.Client, uint16, uint16) {}
 
-// Takeover makes c the writer and sizes the terminal to it.
-func (m *Manager) Takeover(id string, c term.Client, cols, rows uint16) {
+// Takeover makes c the writer (the terminal keeps its size).
+func (m *Manager) Takeover(id string, c term.Client, _, _ uint16) {
 	p := m.get(id)
 	if p == nil || p.tty == nil {
 		return
@@ -833,9 +829,6 @@ func (m *Manager) Takeover(id string, c term.Client, cols, rows uint16) {
 	}
 	prev := p.writer
 	p.writer = c
-	if cols > 0 && rows > 0 {
-		_ = p.tty.Resize(cols, rows)
-	}
 	if prev != nil {
 		prev.Writer(false)
 	}
@@ -1045,13 +1038,21 @@ func (p *proc) output(chunk []byte) {
 	p.mu.Unlock()
 	p.m.changedThread(p.threadID)
 	for _, e := range evs {
-		p.m.notify(p, e.attrs, e.text, true)
+		p.m.notify(p, e.attrs, e.text, !e.quiet)
 	}
 }
 
 // onLine is the text scanner's callback, under p.mu. The scanner has seen
 // exactly what the log has, so its count is where the line ends in the log.
 func (p *proc) onLine(s string) {
+	// ::ew lines were how processes reported before telemetry; now they're
+	// just output. Say so once, or a script written for them fails silently.
+	if !p.ewWarned && strings.HasPrefix(s, "::ew ") {
+		p.ewWarned = true
+		p.events = append(p.events, event{attrs: `kind="deprecated"`, quiet: true, text: "It printed a \"::ew\" line, which is only log output now: " +
+			"progress, checkpoints and stats go to POST $EVERYWHERE_TELEMETRY/progress (process_report's fields, as JSON, with the " +
+			"X-Everywhere-Token: $EVERYWHERE_TOKEN header), metrics to /log. See process_start's description."})
+	}
 	for _, e := range p.prog.line(s, p.text.n, time.Now()) {
 		// A tool call waiting for this checkpoint reports it.
 		if e.checkpoint == "" || p.waiting[e.checkpoint] == 0 {

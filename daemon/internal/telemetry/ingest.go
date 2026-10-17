@@ -93,11 +93,9 @@ func logPoints(info RunInfo, e logEntry, ts int64) ([]Point, error) {
 		return nil, err
 	}
 	points := make([]Point, 0, len(e.Metrics))
-	for name, v := range e.Metrics {
-		if !nameRe.MatchString(name) {
-			return nil, fmt.Errorf("metric %q: use letters, digits, _ . : / -", name)
-		}
-		if math.IsNaN(v) || math.IsInf(v, 0) {
+	for raw, v := range e.Metrics {
+		name := cleanName(raw, nameChars, 128)
+		if name == "" || math.IsNaN(v) || math.IsInf(v, 0) {
 			continue
 		}
 		points = append(points, Point{Name: name, Labels: labels, TS: ts, Step: e.Step, Value: v})
@@ -108,12 +106,13 @@ func logPoints(info RunInfo, e logEntry, ts int64) ([]Point, error) {
 // runLabels is a point's labels: its own, then the run's, which win.
 func runLabels(info RunInfo, own map[string]string) (map[string]string, error) {
 	labels := make(map[string]string, len(own)+2)
-	for k, v := range own {
-		if !keyRe.MatchString(k) {
-			return nil, fmt.Errorf("label %q: use letters, digits, ., - and _", k)
+	for raw, v := range own {
+		k := cleanName(raw, keyChars, 64)
+		if k == "" {
+			continue
 		}
 		if len(v) > 200 {
-			return nil, fmt.Errorf("label %s: over 200 characters", k)
+			v = v[:200]
 		}
 		labels[k] = v
 	}
@@ -178,9 +177,8 @@ func (h *Hub) handleEvent(w http.ResponseWriter, r *http.Request) {
 	ts := now()
 	events := make([]Event, 0, len(entries))
 	for _, e := range entries {
-		if !keyRe.MatchString(e.Kind) {
-			http.Error(w, fmt.Sprintf("event kind %q: use letters, digits, ., - and _", e.Kind), http.StatusBadRequest)
-			return
+		if e.Kind = cleanName(e.Kind, keyChars, 64); e.Kind == "" {
+			e.Kind = "event"
 		}
 		if len(e.Data) == 0 {
 			e.Data = json.RawMessage("null")
@@ -298,8 +296,8 @@ func (h *Hub) handleOTLPMetrics(w http.ResponseWriter, r *http.Request) {
 	ts := now()
 	var points []Point
 	add := func(name string, attrs []*commonv1.KeyValue, t uint64, v float64) {
-		name = strings.ReplaceAll(name, " ", "_")
-		if !nameRe.MatchString(name) || math.IsNaN(v) || math.IsInf(v, 0) {
+		name = cleanName(name, nameChars, 128)
+		if name == "" || math.IsNaN(v) || math.IsInf(v, 0) {
 			return
 		}
 		labels, err := runLabels(*info, attrLabels(attrs))
@@ -384,4 +382,32 @@ func (h *Hub) handleOTLPLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	h.add(info.Home, nil, events)
 	otlpOK(w, r)
+}
+
+// The characters names may have past the first (a letter, digit or _):
+// metrics also /, : and . to namespace them, labels and kinds . and -.
+const (
+	nameChars = "_.:/-"
+	keyChars  = "_.-"
+)
+
+// cleanName makes a name a process sent fit: other characters become _
+// ("seen by 2+" is seen_by_2_), it starts with a letter, digit or _, and is
+// at most max bytes. Rejecting it would drop the whole request.
+func cleanName(s, extra string, max int) string {
+	var b strings.Builder
+	for _, r := range strings.TrimSpace(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+			b.WriteRune(r)
+		case strings.ContainsRune(extra, r) && b.Len() > 0:
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+		if b.Len() >= max {
+			break
+		}
+	}
+	return b.String()
 }

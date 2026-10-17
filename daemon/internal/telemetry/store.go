@@ -209,19 +209,27 @@ func (d *db) endRun(experiment, run, status string, at int64) error {
 	return err
 }
 
-// nextRun names a new run of an experiment: <experiment>#<n>.
-func (d *db) nextRun(experiment string) (string, error) {
+// nextRun names a new run of an experiment, <experiment>#<n>, past the
+// stored runs and those in taken (started, but with no data yet).
+func (d *db) nextRun(experiment string, taken map[string]bool) (string, error) {
 	rows, err := d.sql.Query(`SELECT run FROM runs WHERE experiment = ?`, experiment)
 	if err != nil {
 		return "", err
 	}
 	defer rows.Close()
 	n := 0
+	names := make([]string, 0, len(taken))
+	for r := range taken {
+		names = append(names, r)
+	}
 	for rows.Next() {
 		var r string
 		if err := rows.Scan(&r); err != nil {
 			return "", err
 		}
+		names = append(names, r)
+	}
+	for _, r := range names {
 		var k int
 		if _, err := fmt.Sscanf(strings.TrimPrefix(r, experiment+"#"), "%d", &k); err == nil && strings.HasPrefix(r, experiment+"#") {
 			n = max(n, k)
@@ -246,10 +254,13 @@ type MetricInfo struct {
 
 func (d *db) catalog(experiment string) (Catalog, error) {
 	c := Catalog{Runs: []Run{}, Metrics: []MetricInfo{}}
-	q := `SELECT experiment, run, process, started_at, ended_at, status FROM runs`
+	// Only runs with data: a process that never reported isn't one to show.
+	q := `SELECT experiment, run, process, started_at, ended_at, status FROM runs r
+WHERE (EXISTS (SELECT 1 FROM series s WHERE s.experiment = r.experiment AND s.run = r.run)
+    OR EXISTS (SELECT 1 FROM events e WHERE e.experiment = r.experiment AND e.run = r.run))`
 	var args []any
 	if experiment != "" {
-		q += ` WHERE experiment = ?`
+		q += ` AND experiment = ?`
 		args = append(args, experiment)
 	}
 	rows, err := d.sql.Query(q+` ORDER BY started_at`, args...)
