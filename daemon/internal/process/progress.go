@@ -1,7 +1,6 @@
 package process
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -106,6 +105,8 @@ type progress struct {
 	url         string // the web UI link the model chose; replaces urls
 	urls        []string
 	lastLine    string
+	widgets     []*protocol.ProcessWidget
+	dashboard   string
 }
 
 // newProgress sets up the declared checkpoints and stats. prev has the
@@ -164,13 +165,6 @@ func (p *progress) stat(key string) *stat {
 
 // line handles one line of plain output at log offset off.
 func (p *progress) line(text string, off int64, now time.Time) []event {
-	if rest, ok := strings.CutPrefix(text, reportPrefix); ok {
-		r, err := parseReport(rest)
-		if err != nil {
-			return nil
-		}
-		return p.apply(r, off, now)
-	}
 	if strings.TrimSpace(text) != "" {
 		p.lastLine = clip(text, 300)
 	}
@@ -237,7 +231,8 @@ func (p *progress) oscPayload(payload string) {
 	}
 }
 
-// report is one progress update, from a ::ew line or the model.
+// report is one progress update, from the model (process_report) or the
+// process itself (POST $EVERYWHERE_TELEMETRY/progress).
 type report struct {
 	Stat       string   `json:"stat,omitempty"`
 	Value      *float64 `json:"value,omitempty"`
@@ -249,101 +244,34 @@ type report struct {
 	Status     *string  `json:"status,omitempty"`
 	Notify     string   `json:"notify,omitempty"`
 	URL        string   `json:"url,omitempty"`
+
+	// Widgets: declare one, or feed one by its id (see widgets.go).
+	Widget *WidgetSpec `json:"widget,omitempty"`
+	Plot   string      `json:"plot,omitempty"`
+	Series string      `json:"series,omitempty"`
+	X      *float64    `json:"x,omitempty"`
+	Y      *float64    `json:"y,omitempty"`
+	Bar    string      `json:"bar,omitempty"` // with label and value or inc
+	Gauge  string      `json:"gauge,omitempty"`
+	Row    string      `json:"row,omitempty"`
+	Cells  []any       `json:"cells,omitempty"`
+	// Set replaces a widget's data with Points (a line's, by series),
+	// Bars, Rows or Value.
+	Set    string                  `json:"set,omitempty"`
+	Points map[string][][2]float64 `json:"points,omitempty"`
+	Bars   []protocol.ProcessBar   `json:"bars,omitempty"`
+	Rows   [][]any                 `json:"rows,omitempty"`
+
+	// Dashboard shows .everywhere/dashboards/<name> for the process.
+	Dashboard string `json:"dashboard,omitempty"`
+	// Metrics are logged to its run's telemetry, at Step if given.
+	Metrics map[string]float64 `json:"metrics,omitempty"`
+	Step    *float64           `json:"step,omitempty"`
 }
 
-// parseReport parses what follows "::ew ".
-func parseReport(s string) (report, error) {
-	var r report
-	s = strings.TrimSpace(s)
-	if strings.HasPrefix(s, "{") {
-		err := json.Unmarshal([]byte(s), &r)
-		return r, err
-	}
-	verb, rest, _ := strings.Cut(s, " ")
-	rest = strings.TrimSpace(rest)
-	switch verb {
-	case "stat":
-		toks := splitArgs(rest)
-		if len(toks) < 2 {
-			return r, fmt.Errorf("stat needs a key and a value")
-		}
-		r.Stat = toks[0].s
-		v := toks[1].s
-		if v != "" && (v[0] == '+' || v[0] == '-') && !strings.Contains(v, "/") {
-			n, err := strconv.ParseFloat(v, 64)
-			if err != nil {
-				return r, err
-			}
-			r.Inc = &n
-		} else {
-			num, total, hasTotal := strings.Cut(v, "/")
-			n, err := strconv.ParseFloat(num, 64)
-			if err != nil {
-				return r, err
-			}
-			r.Value = &n
-			if hasTotal {
-				t, err := strconv.ParseFloat(total, 64)
-				if err != nil {
-					return r, err
-				}
-				r.Total = &t
-			}
-		}
-		var unit []string
-		for _, t := range toks[2:] {
-			if t.quoted {
-				r.Label = t.s
-			} else {
-				unit = append(unit, t.s)
-			}
-		}
-		r.Unit = strings.Join(unit, " ")
-	case "checkpoint":
-		r.Checkpoint = unquote(rest)
-	case "status":
-		st := unquote(rest)
-		r.Status = &st
-	case "notify":
-		r.Notify = unquote(rest)
-	default:
-		return r, fmt.Errorf("unknown report %q", verb)
-	}
-	return r, nil
-}
-
-type arg struct {
-	s      string
-	quoted bool
-}
-
-// splitArgs splits on spaces, keeping "double" or 'single' quoted runs.
-func splitArgs(s string) []arg {
-	var out []arg
-	for s = strings.TrimSpace(s); s != ""; s = strings.TrimSpace(s) {
-		if q := s[0]; q == '"' || q == '\'' {
-			end := strings.IndexByte(s[1:], q)
-			if end < 0 {
-				out = append(out, arg{s[1:], true})
-				break
-			}
-			out = append(out, arg{s[1 : end+1], true})
-			s = s[end+2:]
-			continue
-		}
-		tok, rest, _ := strings.Cut(s, " ")
-		out = append(out, arg{s: tok})
-		s = rest
-	}
-	return out
-}
-
-func unquote(s string) string {
-	s = strings.TrimSpace(s)
-	if len(s) >= 2 && (s[0] == '"' || s[0] == '\'') && s[len(s)-1] == s[0] {
-		return s[1 : len(s)-1]
-	}
-	return s
+// hasWidget reports whether a report touches widgets.
+func (r report) hasWidget() bool {
+	return r.Widget != nil || r.Plot != "" || r.Bar != "" || r.Gauge != "" || r.Row != "" || r.Set != ""
 }
 
 // apply applies a report, returning what the model should hear about.
@@ -368,6 +296,7 @@ func (p *progress) apply(r report, off int64, now time.Time) []event {
 			}
 			if r.Value != nil || r.Inc != nil {
 				s.record(now)
+				p.plotStat(s, now)
 				if s.condition != nil {
 					met := s.condition.holds(s.Value)
 					if met && !s.met {
@@ -407,6 +336,12 @@ func (p *progress) apply(r report, off int64, now time.Time) []event {
 	}
 	if r.URL != "" && checkURL(r.URL) == nil {
 		p.url = r.URL
+	}
+	if r.hasWidget() {
+		_ = p.widgetReport(r, now) // a process's bad line is just ignored
+	}
+	if r.Dashboard != "" && validKey(r.Dashboard) {
+		p.dashboard = r.Dashboard
 	}
 	return evs
 }
@@ -481,6 +416,8 @@ func (p *progress) fill(v *protocol.Process, now time.Time) {
 		v.URLs = append([]string(nil), p.urls...)
 	}
 	v.LastLine = p.lastLine
+	v.Widgets = p.widgetViews()
+	v.Dashboard = p.dashboard
 }
 
 // timings is how long after starting each reached checkpoint was reached.

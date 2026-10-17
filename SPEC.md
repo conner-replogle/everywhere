@@ -177,6 +177,9 @@ Migrations are append-only and tracked in `PRAGMA user_version`.
   - `threads.list | create | rename | delete`
   - `fs.listDirs { path }`: directory names only, never file contents
   - events: `projects.changed`, `threads.changed`
+  - A message over 48 KB (a data channel message is at most what the
+    browser allows, 64 KB unless it says more) goes as `{chunk, index,
+    count, data}` pieces, cut between characters, that the client joins.
 - **`term:<threadId>` data channel** (one per open terminal):
   - binary messages carry raw PTY bytes in both directions
   - string messages carry JSON control:
@@ -357,27 +360,44 @@ that speaks MCP. `internal/process`.
     (`notify_when` like `"> 0"`), or created by the first report. A stat with
     a total is a counter with its own bar; the daemon derives rate and ETA
     from its history (one sample a second, the last 60 kept for sparklines).
-  - **`::ew` lines** printed by the process, so scripts the model writes can
-    report from any language, over ssh or inside docker:
-    ```
-    ::ew stat migrated 120/4000 "Users migrated"   value/total, optional "label"
-    ::ew stat migrated +1                          increment
-    ::ew stat rate 41.5 /s                         unit
-    ::ew checkpoint "Schema migrated"              reaches a declared one, or adds one
-    ::ew status "Backfilling orders"
-    ::ew notify "Found 3 rows with bad FKs"        tells the model (wakes it)
-    ::ew {"stat":"migrated","value":120,"total":4000}
-    ```
-    Only lines beginning with `::ew ` count. They stay in the log file but are
-    cut from the scrollback viewers see. Updates are applied at once;
-    `processes.changed` goes out at most 4 times a second.
+  - **Reports** from the process (`POST $EVERYWHERE_TELEMETRY/progress`,
+    see Telemetry) or the model (`process_report`): the same fields,
+    `{stat, value | inc, total, unit, label, checkpoint, status, notify, url,
+    dashboard, widget ops…}`. A stat with a value is logged as a metric too,
+    so its history is charted. Output is only ever the log: nothing in it is
+    read as a report. `processes.changed` goes out at most 4 times a second.
   - **OSC 9;4** (the terminal progress sequence winget, systemd and others
     emit) fills the current checkpoint segment.
+- **Widgets**: predefined charts the model (or the process) puts on a
+  process for what isn't a metric over time (metrics are Telemetry's): the
+  app draws them in its own style. Up to 8, each `{id, kind, title?, unit?,
+  …}`, declared in `process_start`'s `widgets`, or a report's `widget`; declaring
+  an id again changes it (keeping its data unless the kind changed).
+  `internal/process/widgets.go`.
+  - `line`: up to 4 series of `[x, y]` points (240 each; older points thin
+    out past that). x is seconds since the start unless `x_label` names it
+    (then a point without x is the previous one's + 1). `stats: [keys]`
+    plots those stats over the run, a point a second.
+  - `bar`: a value per label (40); `stats: [keys]` shows their values.
+  - `gauge`: a value from `min` (0) to `max`, with `warn` and `critical`
+    thresholds (critical below warn: low is bad); `stat` shows a stat
+    (its total the max).
+  - `table`: `columns` (8) and rows (100, the oldest dropped), a row
+    replacing the one with the same first cell.
+  - Fed by reports, incrementally (`{plot, series, x?, y}`, `{bar, label,
+    value | inc}`, `{gauge, value}`, `{row, cells}`) or replaced whole
+    (`{set, points | bars | rows | value}`); a bad one is an error to whoever
+    sent it. Widget data is in the snapshot, so it outlives the process.
+  - The processes tab's Charts view shows them under the process's metrics,
+    each with its data as a table on a click. Series
+    colors are four distinct colors from the theme (`--chart-1..4`, picked
+    by OKLab distance in `theme.ts`), with a dash pattern each and a legend
+    so they tell apart without color.
 - **Telling the model** (the thread's claude, or the claude tab that started
   it): events are wrapped as `<process-event name=… status=…>…</process-event>`
   and say they come from process output, not the user.
   - An event the model asked for (`notify` on the process or a checkpoint,
-    `notify_when`, `::ew notify`) is sent as a user message: during a turn
+    `notify_when`, a report's `notify` from the process) is sent as a user message: during a turn
     claude folds it in after the next tool result; while idle it starts a
     turn, resuming claude if it was stopped.
   - Anything else (e.g. an exit nobody asked about) waits and is prepended
@@ -403,7 +423,8 @@ that speaks MCP. `internal/process`.
 - **MCP tools** (`mcp__everywhere__process_*`). Everything but `start` is
   allowed without asking; `start` runs a command, so it asks like Bash.
   - `process_start {name, command?, cwd?, env?, checkpoints?, stats?,
-    notify?, wait_for?, timeout_s?, replace?}`: waits until `wait_for` (a
+    widgets?, dashboard?, experiment?, run?, notify?, wait_for?, timeout_s?,
+    replace?, url?}`: waits until `wait_for` (a
     checkpoint label or `exit`) or `timeout_s` (default 5 s, to catch an
     immediate crash, or 120 s with `wait_for`; at most 600), returning early
     if the process exits.
@@ -415,8 +436,8 @@ that speaks MCP. `internal/process`.
     at most 2000 lines / 64 KB, keeping the end. The log path is for Read
     and Grep.
   - `process_wait {name, until, timeout_s}`: instead of sleeping.
-  - `process_stop {name}`; `process_report {name, stat?, value?, total?,
-    unit?, label?, checkpoint?, status?, done?}` for trackers.
+  - `process_stop {name}`; `process_report {name, …report fields, metrics?,
+    step?, done?}` for trackers (and running processes).
 - **Control RPC**: `processes.list {threadId}`, `processes.start {threadId,
   name, command, cwd?}`, `processes.stop | restart | remove {id}`; event
   `processes.changed {threadId}`. `threads.list` reports each thread's running
@@ -428,13 +449,110 @@ that speaks MCP. `internal/process`.
   process replays its scrollback, then `exited`.
 - **UI**: a `processes` tab (one per thread, opened when claude starts a
   process): one row per process with its checkpoint track, counters with
-  rate and ETA, status text and URLs; selecting one shows its log. Thread
+  rate and ETA, status text and URLs. The selected one shows its Dashboard,
+  Charts (its telemetry and widgets) or Log; which, and the runs Charts
+  compares, are kept in the tab's state. It opens on the dashboard, then
+  widgets, then the log, before charts that may be empty. Thread
   rows in the sidebar show a running count. Claude tabs show the thread's
   running processes, and those that ended in the last 10 minutes, above the
   composer, one line each; a line opens the process in the processes tab.
-- **Later**: `everywhere progress …` (prints `::ew` lines; a socket for
-  processes not started here), restarting processes after a daemon update,
-  prompt detection, a per-process token for `::ew` lines.
+- **Later**: restarting processes after a daemon update, prompt detection,
+  zooming charts, a token for processes not started here.
+
+### Telemetry
+
+What processes report about themselves, kept in their project so it outlives
+them, compares across runs, and goes wherever the project goes; charts ask for
+just what they draw. `internal/telemetry`.
+
+- **Runs**: each process start is a run of an experiment: the experiment is
+  `process_start`'s `experiment` or the process's name, the run its `run` or
+  `<experiment>#<n>`. Starting a named run again adds to it. A run ends with
+  its process (status exited / exited N / stopped / failed / done).
+- **Store**: `<project>/.everywhere/telemetry.db`, SQLite (WAL), written only
+  by the daemon, in batches about once a second (a query writes what's
+  pending first). Tables: `runs`, `series` (metric name + labels, with
+  experiment and run always set), `points (series, ts, step?, value)`,
+  `events (experiment, run, ts, kind, data)` and `dashboard_state`. Over
+  1 GB, the oldest finished runs are dropped. Uploaded files go to
+  `.everywhere/files/<experiment>/<run>/`. `.everywhere/.gitignore` (the
+  daemon's) leaves `types/`, `telemetry.db*` and `files/` out of git;
+  dashboards' sources stay in. Nothing goes in the daemon's database.
+- **Ingest**: an HTTP server on loopback (a random port). A process gets
+  `EVERYWHERE_TELEMETRY` (its URL), `EVERYWHERE_TOKEN`, `EVERYWHERE_EXPERIMENT`
+  and `EVERYWHERE_RUN`, and the OpenTelemetry variables
+  (`OTEL_EXPORTER_OTLP_ENDPOINT`, `_PROTOCOL=http/protobuf`, `_HEADERS` with
+  the token, `OTEL_SERVICE_NAME`, `OTEL_RESOURCE_ATTRIBUTES`, and
+  `OTEL_METRIC_EXPORT_INTERVAL=1000`, as the default is a minute), so an OTel
+  SDK exports with no setup. Requests carry the token
+  (`X-Everywhere-Token`, or `Authorization: Bearer`), which says the
+  project, experiment and run; it stops working 10 s after the run ends.
+  ```
+  POST /log        {"step": 12, "metrics": {"loss": 0.41}, "labels": {…}, "time": ms}   or a list
+  POST /event      {"kind": "checkpoint", "data": …, "time": ms}                       or a list
+  POST /attach?name=sample.png&step=12&caption=…   the file as the body (200 MB)
+  POST /progress   a report (see Processes)
+  POST /v1/metrics OTLP, protobuf or JSON: a gauge or sum is a point per data
+                   point; a histogram or summary <name>.count and <name>.sum
+  POST /v1/logs    OTLP: events of kind "log"
+  POST /v1/traces  accepted and dropped
+  ```
+  OTLP requests are decoded as `MetricsData` / `LogsData` (the same on the
+  wire as the export requests), so the gRPC service isn't linked in.
+  Per-step values need `/log`: OTel metrics are aggregated per export.
+- **Queries** (control RPC, `{processId | threadId}` choosing the project,
+  never a path): `telemetry.catalog {experiment?}` → runs and metrics (label
+  values, and whether it has steps); `telemetry.query {query: {metric,
+  where?, groupBy? (default run), x? (step | time: seconds since the run
+  started), from?, to?, points? (400, at most 2000)}}` → per group, `points`
+  `[x, mean]` with `min` and `max`, the range cut into `points` buckets on
+  the device; `telemetry.events {experiment, runs?, kind?, before?, limit?}`
+  newest first; `telemetry.deleteRun`. Event `telemetry.changed {home,
+  experiments: {experiment: [metrics]}}` after each write; charts showing
+  one ask again, at most once a second. Attachments are read with
+  `processes.file` (relative to the process's directory, else the project;
+  inside the project) and the file channel.
+- **Charts view** (no work from the model): every metric of the process's
+  experiment as a line chart (over steps if it has them, else time), a line
+  per run: this run, and up to 3 others picked to compare; the runs'
+  attachments, newest first; then its widgets.
+
+### Dashboards
+
+For more than the Charts view: a React page the model writes in
+`<project>/.everywhere/dashboards/<name>/index.tsx`, shown with a process
+whose `dashboard` names it (`process_start`, a report, or the process's
+`/progress`). `internal/dashboard`, `apps/web/src/dashboard`.
+
+- **Build**: the daemon bundles it with esbuild (Go, no Node): an IIFE whose
+  `react`, `react-dom` and `everywhere` imports come from
+  `globalThis.__everywhere.modules`, npm packages from `node_modules`. A
+  build is kept until the dashboard's files change. `processes.dashboard
+  {id, version?}` → `{version, js, css}` or `{errors}` (file:line), or
+  `unchanged`; viewers ask every 1.5 s, so an edit reloads them. The
+  `dashboard_build {name}` tool (allowed without asking) reports errors and
+  what viewers hit, and writes `.everywhere/types/everywhere.d.ts`, the API;
+  `dashboard_docs` explains it all.
+- **Frame**: it runs in `/dashboard` (`dashboard.html`) in an iframe with
+  `sandbox="allow-scripts"`: an opaque origin, so no cookies, storage or
+  access to the app, and a CSP with `connect-src 'none'`, so no network
+  (`public/_headers`; `/assets` sends `Access-Control-Allow-Origin` for its
+  module scripts; the service worker leaves it alone). The app sends it the
+  bundle, the process, the theme's variables (again when they change) and
+  `telemetry.changed`, and answers its requests over postMessage: queries,
+  catalog, events, files (bytes, transferred), the log, state. Errors it
+  hits (`processes.dashboardError`) are kept for `dashboard_build` and
+  `process_status`.
+- **API** (`everywhere.d.ts`, which the frame's module is type-checked
+  against): `useQuery`, `useCatalog`, `useTelemetryEvents`, `useProcess`,
+  `useLog`, `useFile`/`useText`/`useJSON`, `useDashboardState`; `Grid`,
+  `Card`, `Stat`, `LineChart`, `BarChart`, `Gauge`, `Table`, `Widget`,
+  `Image`, `Video`, `Empty`; `theme`, `useThemeColors`, formatters; Tailwind
+  (the browser build) with the app's colors.
+- **Stateless**: a dashboard holds nothing a reload would lose: it asks the
+  device for what it shows, and what the user picks goes in
+  `useDashboardState` (`processes.setState`, in the project's
+  `dashboard_state`), so every device shows the same.
 
 ### Scratch
 

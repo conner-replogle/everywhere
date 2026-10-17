@@ -422,6 +422,17 @@ type ProcessesChanged struct {
 
 const EventProcessesChanged = "processes.changed"
 
+// TelemetryChanged is sent when a project's telemetry got new data: by
+// experiment, the metrics that did (empty if only events did). Charts
+// showing them ask again.
+type TelemetryChanged struct {
+	Event       string              `json:"event"` // EventTelemetryChanged
+	Home        string              `json:"home"`
+	Experiments map[string][]string `json:"experiments"`
+}
+
+const EventTelemetryChanged = "telemetry.changed"
+
 // TermClientMsg is attach | resize | takeover.
 type TermClientMsg struct {
 	T    string `json:"t"`
@@ -747,4 +758,14 @@ type AgentEvent struct {
 	FromSeq int64 `json:"fromSeq,omitempty"`
 	// FilesRestored (rewind): how many files were restored.
 	FilesRestored int `json:"filesRestored,omitempty"`
+}
+
+// ControlChunk is a piece of a control message too big to send whole; the
+// client joins Data from Index 0 to Count-1 and reads the result as the
+// message.
+type ControlChunk struct {
+	Chunk uint64 `json:"chunk"`
+	Index int    `json:"index"`
+	Count int    `json:"count"`
+	Data  string `json:"data"`
 }

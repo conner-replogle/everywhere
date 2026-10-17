@@ -12,6 +12,8 @@ export function formatDuration(seconds: number): string {
 }
 
 export function formatNumber(n: number): string {
+  // Small fractions (0.001, a learning rate) keep their first digits.
+  if (n !== 0 && Math.abs(n) < 1) return n.toLocaleString(undefined, { maximumSignificantDigits: 3 });
   return n.toLocaleString(undefined, { maximumFractionDigits: Math.abs(n) < 10 ? 2 : 1 });
 }
 

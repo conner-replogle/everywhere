@@ -76,20 +76,46 @@ const urlHelp = "The link the user opens its web UI with, shown on the process i
 
 const reportHelp = `
 
-The process can report progress by printing lines that start with "::ew " (hidden from the user's log view; flush stdout, e.g. print(..., flush=True)):
-  ::ew stat KEY VALUE[/TOTAL] [UNIT] ["Label"]   e.g. ::ew stat migrated 120/4000 "Users migrated"  (a total makes a progress bar)
-  ::ew stat KEY +1                             increment
-  ::ew checkpoint "Label"                      reach a declared checkpoint, or add one
-  ::ew status "Backfilling orders"             current phase
-  ::ew notify "text"                           tell you about something now (starts a turn if you're idle)
-  ::ew {"stat":"migrated","value":120,"total":4000}
-When you write a script that will run for a while, have it report this way so the user can see how far along it is.`
+Telemetry: a process reports to everywhere over HTTP, never through its output (its output is only its log). Its environment has EVERYWHERE_TELEMETRY (a loopback URL) and EVERYWHERE_TOKEN; send the token as the X-Everywhere-Token header. Everything is kept in the project's .everywhere/telemetry.db as a run (EVERYWHERE_RUN, e.g. train#3) of an experiment (EVERYWHERE_EXPERIMENT, the process name unless you set experiment), so it outlives the process and runs can be compared. The user sees it charted with the process, live.
+  POST /log      {"step": 120, "metrics": {"loss": 0.41, "acc": 0.88}}   numbers to chart; step is optional (time is the default x); a list of these is fine
+  POST /event    {"kind": "checkpoint", "data": {...}}                    something that happened
+  POST /attach?name=sample.png&step=120&caption=…   the file as the body  an image, video or any file to show (up to 200 MB)
+  POST /progress {"stat": "rows", "value": 120, "total": 4000}            progress on the process: process_report's fields (stat, value, inc, total, unit, label, checkpoint, status, notify, url, widgets)
+e.g. in Python:  requests.post(os.environ["EVERYWHERE_TELEMETRY"] + "/log", json={"step": i, "metrics": {"loss": loss}}, headers={"X-Everywhere-Token": os.environ["EVERYWHERE_TOKEN"]})
+     in a shell:  curl -s -H "X-Everywhere-Token: $EVERYWHERE_TOKEN" -d '{"metrics":{"rows":120}}' $EVERYWHERE_TELEMETRY/log
+The OpenTelemetry SDKs are set up too (OTEL_EXPORTER_OTLP_ENDPOINT and the rest): a program that exports OTLP metrics or logs needs nothing more. A request that fails is the process's to retry or ignore; don't let it stop the work.
+When you write a script that will run for a while, have it report this way so the user can see how it's going, and pick a run name (run) when you're comparing versions.` + widgetHelp
+
+const widgetHelp = `
+
+Widgets are extra charts on a process for what isn't a metric over time: declare them in widgets (or with process_report's widget, or the process's /progress), then feed them with process_report or /progress (same fields). Kinds:
+  line   series over time (or over x_label), up to 4 series. stats:[keys] plots those stats.
+  bar    a value per category. stats:[keys] shows those stats' current values as bars.
+  gauge  one value against min (default 0) and max, with warn and critical thresholds (critical below warn: low is bad). stat:key shows a stat.
+  table  rows under columns; a row whose first cell matches an existing row replaces it.
+Feed: {"plot": ID, "series": S, "y": 1.2, "x": 3}, {"bar": ID, "label": L, "value": 3} (or inc), {"gauge": ID, "value": 812}, {"row": ID, "cells": ["lr=0.01", 0.91]}, or replace one whole: {"set": ID, "points": {"train": [[1, 0.9]]}} / "bars" / "rows" / "value".
+Metrics sent to /log are charted with the process already: use widgets for the rest.`
+
+const widgetSchema = `{"type": "object", "required": ["id", "kind"], "properties": {
+      "id": {"type": "string", "description": "Letters, digits, - and _. Declaring an id again changes that widget."},
+      "kind": {"type": "string", "enum": ["line", "bar", "gauge", "table"]},
+      "title": {"type": "string"},
+      "unit": {"type": "string", "description": "Of the values, e.g. ms or %."},
+      "stats": {"type": "array", "items": {"type": "string"}, "description": "line: stats to plot over time; bar: stats to show as bars."},
+      "stat": {"type": "string", "description": "gauge: the stat it shows."},
+      "x_label": {"type": "string", "description": "line: what x is (e.g. epoch). Without it x is time since the start."},
+      "min": {"type": "number", "description": "gauge; default 0."},
+      "max": {"type": "number", "description": "gauge; needed unless its stat has a total."},
+      "warn": {"type": "number", "description": "gauge threshold."},
+      "critical": {"type": "number", "description": "gauge threshold."},
+      "columns": {"type": "array", "items": {"type": "string"}, "description": "table: up to 8 column headings."}}}`
 
 var toolDefs = []toolDef{
 	{
 		name: "process_start", title: "Start process", annotations: runs,
 		description: "Start a long-running command in the background for this thread: a dev server, watcher, build, test run, migration or script. The user sees it, with live progress and its log, in the everywhere app's processes tab, and it keeps running across your turns. Use this instead of a backgrounded shell command (never append & or use nohup). " +
 			"It runs in the user's login shell in the thread's directory (or cwd) on a terminal. Returns its status, progress and recent output once wait_for happens, the process exits, or timeout_s passes (default 5s, enough to catch a crash on startup). " +
+			"It reports metrics, events, files and progress over HTTP (see below); the user sees them charted with it, and runs of the same experiment side by side. For anything richer, give it a dashboard: a React page you write in .everywhere/dashboards/<name> (see dashboard_docs). " +
 			"Declare checkpoints (milestones, optionally matched by a regex on output lines, e.g. {label:'Ready', pattern:'Local:.*http'}) and stats (counters with a total get a progress bar; notify_when like '> 0' tells you when it becomes true). " +
 			"When it exits you're told: right away if notify is set (even if that starts a turn), otherwise with your next message. Set url to the link for its web UI, if it has one. Leave out command to make a tracker: a progress bar you update with process_report while you work through a long task yourself." + reportHelp,
 		schema: `{"type": "object", "required": ["name"], "properties": {
@@ -107,6 +133,10 @@ var toolDefs = []toolDef{
       "total": {"type": "number", "description": "Makes it a counter with a progress bar, rate and ETA."},
       "unit": {"type": "string"},
       "notify_when": {"type": "string", "description": "Tell you when this becomes true, e.g. '> 0' or '>= 100'."}}}},
+    "widgets": {"type": "array", "items": ` + widgetSchema + `},
+    "dashboard": {"type": "string", "description": "Show the dashboard in .everywhere/dashboards/<this name> with the process (see dashboard_docs)."},
+    "experiment": {"type": "string", "description": "What its telemetry is a run of, to compare with other runs. Default: its name."},
+    "run": {"type": "string", "description": "Its run's name, e.g. v2-lr0.01. Default: <experiment>#<n>. Starting a run of the same name again adds to it."},
     "notify": {"type": "boolean", "description": "Tell you as soon as it exits, starting a turn if you're idle. Use it for builds and test runs you're waiting on."},
     "wait_for": {"type": "string", "description": "A checkpoint label to wait for (e.g. the server's Ready), or 'exit' to wait for it to finish."},
     "timeout_s": {"type": "number", "minimum": 0, "maximum": 600, "description": "Longest to wait, in seconds. Default 5, or 120 with wait_for."},
@@ -121,6 +151,10 @@ var toolDefs = []toolDef{
 				Env         map[string]string `json:"env"`
 				Checkpoints []CheckpointSpec  `json:"checkpoints"`
 				Stats       []StatSpec        `json:"stats"`
+				Widgets     []WidgetSpec      `json:"widgets"`
+				Dashboard   string            `json:"dashboard"`
+				Experiment  string            `json:"experiment"`
+				Run         string            `json:"run"`
 				Notify      bool              `json:"notify"`
 				WaitFor     string            `json:"wait_for"`
 				TimeoutS    *float64          `json:"timeout_s"`
@@ -130,7 +164,7 @@ var toolDefs = []toolDef{
 			if err := decode(args, &a); err != nil {
 				return nil, err
 			}
-			spec := Spec{Command: strings.TrimSpace(a.Command), Cwd: a.Cwd, Env: a.Env, Checkpoints: a.Checkpoints, Stats: a.Stats, URL: strings.TrimSpace(a.URL), Notify: a.Notify}
+			spec := Spec{Command: strings.TrimSpace(a.Command), Cwd: a.Cwd, Env: a.Env, Checkpoints: a.Checkpoints, Stats: a.Stats, Widgets: a.Widgets, Dashboard: strings.TrimSpace(a.Dashboard), Experiment: strings.TrimSpace(a.Experiment), Run: strings.TrimSpace(a.Run), URL: strings.TrimSpace(a.URL), Notify: a.Notify}
 			v, err := m.Start(c.Browser, c.ThreadID, a.Name, spec, a.Replace)
 			if err != nil {
 				return nil, err
@@ -314,17 +348,33 @@ var toolDefs = []toolDef{
 	},
 	{
 		name: "process_report", title: "Report progress", annotations: changes,
-		description: "Update a tracker's (or a running process's) progress yourself: set or increment a stat, reach a checkpoint, set the status text, set the web UI link, or mark a tracker done. Use it to show the user how far along a long multi-step task is.",
+		description: "Update a tracker's (or a running process's) progress yourself: set or increment a stat, reach a checkpoint, set the status text, set the web UI link, declare or feed a widget (chart), or mark a tracker done. Use it to show the user how far along a long multi-step task is." + widgetHelp,
 		schema: `{"type": "object", "required": ["name"], "properties": {` + nameProp + `,
     "stat": {"type": "string", "description": "Stat key to update."},
     "value": {"type": "number", "description": "The stat's new value."},
-    "inc": {"type": "number", "description": "Add this to the stat instead."},
+    "inc": {"type": "number", "description": "Add this to the stat (or bar) instead."},
     "total": {"type": "number"},
     "unit": {"type": "string"},
-    "label": {"type": "string", "description": "The stat's label."},
+    "label": {"type": "string", "description": "The stat's label, or the bar's category."},
     "checkpoint": {"type": "string", "description": "Reach this checkpoint (added if it wasn't declared)."},
     "status": {"type": "string", "description": "Status text, e.g. the step you're on."},
     "done": {"type": "boolean", "description": "Finish the tracker."},
+    "widget": ` + widgetSchema + `,
+    "plot": {"type": "string", "description": "Add a point to this line widget: series and y, optionally x."},
+    "series": {"type": "string"},
+    "x": {"type": "number"},
+    "y": {"type": "number"},
+    "bar": {"type": "string", "description": "Set (value) or add to (inc) a bar of this bar widget, named by label."},
+    "gauge": {"type": "string", "description": "Set this gauge widget to value."},
+    "row": {"type": "string", "description": "Add or replace (by its first cell) a row of this table widget."},
+    "cells": {"type": "array", "items": {"type": ["string", "number", "boolean"]}},
+    "set": {"type": "string", "description": "Replace this widget's data with points (line), bars (bar), rows (table) or value (gauge)."},
+    "points": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2}}, "description": "By series: [[x, y], ...]."},
+    "bars": {"type": "array", "items": {"type": "object", "required": ["label", "value"], "properties": {"label": {"type": "string"}, "value": {"type": "number"}}}},
+    "rows": {"type": "array", "items": {"type": "array", "items": {"type": ["string", "number", "boolean"]}}},
+    "metrics": {"type": "object", "additionalProperties": {"type": "number"}, "description": "Numbers to log to its run's telemetry and chart, e.g. {\"files_done\": 12}."},
+    "step": {"type": "number", "description": "The step the metrics are at, if they're by step."},
+    "dashboard": {"type": "string", "description": "Show the dashboard in .everywhere/dashboards/<this name> with the process."},
     "url": {"type": "string", "description": "Set or change the web UI link, e.g. once you know its port. ` + urlHelp + `"}
   }}`,
 		run: func(_ context.Context, m *Manager, c mcp.Caller, args json.RawMessage) (*mcp.Result, error) {
@@ -353,7 +403,11 @@ func outputResult(m *Manager, v protocol.Process, head string, n int) (*mcp.Resu
 			return nil, err
 		}
 	}
-	return mcp.Text(head + summary(v, lines, true)), nil
+	text := head + summary(v, lines, true)
+	if errs := m.DashboardErrors(v.ID, false); len(errs) > 0 {
+		text += "\n--- its dashboard hit, in the user's view ---\n" + strings.Join(errs, "\n")
+	}
+	return mcp.Text(text), nil
 }
 
 func statusWord(v protocol.Process) string {
@@ -404,6 +458,15 @@ func summary(v protocol.Process, lines []string, full bool) string {
 	}
 	if v.StatusText != "" {
 		fmt.Fprintf(&b, "\nstatus: %s", v.StatusText)
+	}
+	if len(v.Widgets) > 0 {
+		fmt.Fprintf(&b, "\nwidgets: %s", widgetSummary(v.Widgets))
+	}
+	if v.Experiment != "" {
+		fmt.Fprintf(&b, "\ntelemetry: run %s of %s", v.Run, v.Experiment)
+	}
+	if v.Dashboard != "" {
+		fmt.Fprintf(&b, "\ndashboard: %s", v.Dashboard)
 	}
 	if v.Progress != nil {
 		if v.Progress.State == "indeterminate" {

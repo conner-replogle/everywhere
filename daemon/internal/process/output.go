@@ -1,51 +1,12 @@
 package process
 
 import (
-	"bytes"
 	"regexp"
 	"strings"
 )
 
-// reportPrefix starts a line a process prints to report progress.
-const reportPrefix = "::ew "
-
 // maxLine caps a line of plain text; the rest of a longer one is dropped.
 const maxLine = 4096
-
-// hideReports cuts ::ew lines out of the raw output viewers see. A line
-// that might be one is held back until it's clearly not.
-type hideReports struct {
-	midLine  bool // not at the start of a line
-	held     []byte
-	dropping bool
-}
-
-func (f *hideReports) filter(p []byte) []byte {
-	out := make([]byte, 0, len(p))
-	for _, b := range p {
-		switch {
-		case f.dropping:
-			if b == '\n' {
-				f.dropping, f.midLine = false, false
-			}
-		case len(f.held) > 0 || (!f.midLine && b == ':'):
-			f.held = append(f.held, b)
-			if bytes.HasPrefix([]byte(reportPrefix), f.held) {
-				if len(f.held) == len(reportPrefix) {
-					f.dropping, f.held = true, f.held[:0]
-				}
-				continue
-			}
-			out = append(out, f.held...)
-			f.held = f.held[:0]
-			f.midLine = b != '\n'
-		default:
-			out = append(out, b)
-			f.midLine = b != '\n'
-		}
-	}
-	return out
-}
 
 // textScanner turns raw terminal output into plain lines: escape sequences
 // are dropped (OSC payloads are handed to onOSC), a carriage return lets

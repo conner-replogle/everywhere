@@ -48,7 +48,7 @@ func (s *Server) serveControl(p *peer, dc *webrtc.DataChannel) {
 				resp.Result = result
 			}
 			out, _ := json.Marshal(resp)
-			_ = dc.SendText(string(out))
+			sendControl(dc, out)
 		}
 		// Requests are answered in order, except slow ones (GitHub, starting
 		// claude or signing it in, a desktop capture), which would hold up
@@ -66,6 +66,11 @@ func (s *Server) serveControl(p *peer, dc *webrtc.DataChannel) {
 type empty struct{}
 
 func (s *Server) call(method string, raw json.RawMessage) (any, error) {
+	// Their params (a query object) don't fit the shared ones below.
+	switch method {
+	case "telemetry.catalog", "telemetry.query", "telemetry.events", "telemetry.deleteRun":
+		return s.callTelemetry(method, raw)
+	}
 	var params struct {
 		ID           string `json:"id"`
 		Name         string `json:"name"`
@@ -285,6 +290,8 @@ func (s *Server) call(method string, raw json.RawMessage) (any, error) {
 
 	case "processes.list", "processes.start", "processes.stop", "processes.restart", "processes.remove":
 		return s.callProcesses(method, raw)
+	case "processes.dashboard", "processes.output", "processes.file", "processes.dashboardError", "processes.setState":
+		return s.callDashboards(method, raw)
 
 	case "tabs.list":
 		tabs, err := s.store.ListTabs(params.ThreadID)

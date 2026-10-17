@@ -11,3 +11,20 @@
 
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
+  Access-Control-Allow-Origin: *
+
+# A process's dashboard runs in a sandboxed frame (opaque origin) inside the
+# app: framable by the app only, scripts from here and the bundle (a blob),
+# and no network: its data comes from the app over postMessage. Its scripts
+# and fonts load cross-origin from the opaque origin, hence the CORS header on
+# /assets above (they're public anyway). Served at /dashboard (Cloudflare
+# drops the .html).
+/dashboard
+  ! Content-Security-Policy
+  ! X-Frame-Options
+  Content-Security-Policy: default-src 'none'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src data: blob:; font-src 'self' data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'
+
+/dashboard.html
+  ! Content-Security-Policy
+  ! X-Frame-Options
+  Content-Security-Policy: default-src 'none'; script-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src data: blob:; font-src 'self' data:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'

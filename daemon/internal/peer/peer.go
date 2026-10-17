@@ -16,11 +16,13 @@ import (
 
 	"github.com/conner-replogle/everywhere/daemon/internal/agent"
 	"github.com/conner-replogle/everywhere/daemon/internal/browser"
+	"github.com/conner-replogle/everywhere/daemon/internal/dashboard"
 	"github.com/conner-replogle/everywhere/daemon/internal/desktop"
 	"github.com/conner-replogle/everywhere/daemon/internal/mcp"
 	"github.com/conner-replogle/everywhere/daemon/internal/process"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/store"
+	"github.com/conner-replogle/everywhere/daemon/internal/telemetry"
 	"github.com/conner-replogle/everywhere/daemon/internal/term"
 	"github.com/conner-replogle/everywhere/daemon/internal/version"
 )
@@ -37,16 +39,20 @@ type Server struct {
 	// DesktopEnabled reports whether the device owner turned remote desktop on.
 	DesktopEnabled func() bool
 
-	store    *store.Store
-	terms    *term.Manager
-	procs    *process.Manager
-	agents   *agent.Manager
-	browsers *browser.Manager
-	desktop  *desktop.Manager // nil if its media stack failed to build
-	mcp      *mcp.Server      // the daemon's own tools for claude threads
-	mcpDir   string           // their per-process MCP configs
-	info     protocol.DeviceInfo
-	api      *webrtc.API
+	store *store.Store
+	terms *term.Manager
+	procs *process.Manager
+	// telemetry is what processes report, kept in their projects.
+	telemetry *telemetry.Hub
+	// dashboards builds processes' dashboards.
+	dashboards *dashboard.Builder
+	agents     *agent.Manager
+	browsers   *browser.Manager
+	desktop    *desktop.Manager // nil if its media stack failed to build
+	mcp        *mcp.Server      // the daemon's own tools for claude threads
+	mcpDir     string           // their per-process MCP configs
+	info       protocol.DeviceInfo
+	api        *webrtc.API
 
 	mu     sync.Mutex
 	peers  map[string]*peer // by sid
@@ -132,6 +138,17 @@ func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string) *Serve
 		s.broadcastMsg(protocol.ProcessesChanged{Event: protocol.EventProcessesChanged, ThreadID: threadID})
 	}
 	s.procs.Notify = s.processNotice
+	s.telemetry = telemetry.New()
+	s.telemetry.OnProgress = s.procs.ReportFromProcess
+	s.telemetry.OnChange = func(home string, changed map[string][]string) {
+		s.broadcastMsg(protocol.TelemetryChanged{Event: protocol.EventTelemetryChanged, Home: home, Experiments: changed})
+	}
+	if err := s.telemetry.Start(); err != nil {
+		slog.Error("telemetry endpoint unavailable", "err", err)
+	} else {
+		s.procs.Telemetry = s.telemetry
+	}
+	s.dashboards = dashboard.NewBuilder()
 	s.browsers = browser.NewManager(filepath.Join(dataDir, "browser"))
 	s.browsers.ICEServers = func() []webrtc.ICEServer {
 		if s.ICEServers != nil {
@@ -155,6 +172,7 @@ func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string) *Serve
 	tools := append(browser.Tools(s.browsers), process.Tools(s.procs)...)
 	tools = append(tools, s.doneTools()...)
 	tools = append(tools, s.attachTools()...)
+	tools = append(tools, s.dashboardTools()...)
 	if s.desktop != nil && (runtime.GOOS == "linux" || runtime.GOOS == "windows") {
 		tools = append(tools, desktop.Tools(s.desktop)...)
 	}
@@ -207,6 +225,7 @@ func (s *Server) Shutdown() {
 	}
 	s.terms.Shutdown()
 	s.procs.Shutdown()
+	s.telemetry.Close()
 	s.agents.Shutdown()
 	s.mcp.Close()
 	s.browsers.Shutdown()
@@ -382,7 +401,7 @@ func (s *Server) broadcastMsg(event any) {
 		dc := p.control
 		p.mu.Unlock()
 		if dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
-			_ = dc.SendText(string(msg))
+			sendControl(dc, msg)
 		}
 	}
 }

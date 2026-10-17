@@ -7,6 +7,7 @@ import {
   BROWSER_CHANNEL_PREFIX,
   type AgentClientMsg,
   type AgentDaemonMsg,
+  type ControlChunk,
   CONTROL_CHANNEL,
   FILE_CHANNEL_PREFIX,
   type FileClientMsg,
@@ -525,6 +526,7 @@ export class DevicePeer {
       p.reject(new Error("Connection to device closed"));
     }
     this.pending.clear();
+    this.chunks.clear();
   }
 
   // --- debug ----------------------------------------------------------------
@@ -598,11 +600,25 @@ export class DevicePeer {
     return () => this.eventListeners.delete(fn);
   }
 
+  /** Big control messages arrive in chunks; these are the parts so far. */
+  private chunks = new Map<number, string[]>();
+
   private onControlMessage(raw: string): void {
-    let msg: RpcResponse | RpcEvent;
+    let msg: RpcResponse | RpcEvent | ControlChunk;
     try {
-      msg = JSON.parse(raw) as RpcResponse | RpcEvent;
+      msg = JSON.parse(raw) as RpcResponse | RpcEvent | ControlChunk;
     } catch {
+      return;
+    }
+    if ("chunk" in msg) {
+      const parts = this.chunks.get(msg.chunk) ?? [];
+      parts[msg.index] = msg.data;
+      if (parts.filter((p) => p !== undefined).length < msg.count) {
+        this.chunks.set(msg.chunk, parts);
+        return;
+      }
+      this.chunks.delete(msg.chunk);
+      this.onControlMessage(parts.join(""));
       return;
     }
     if ("event" in msg) {

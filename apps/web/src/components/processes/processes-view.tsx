@@ -1,5 +1,5 @@
 import type { Process } from "@everywhere/protocol";
-import { ActivityIcon, GlobeIcon, PlayIcon, RotateCcwIcon, SquareIcon, Trash2Icon } from "lucide-react";
+import { ActivityIcon, ChartLineIcon, GlobeIcon, LayoutDashboardIcon, PlayIcon, RotateCcwIcon, SquareIcon, Trash2Icon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { TerminalView } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,8 @@ import { Label } from "@/components/ui/label";
 import type { DevicePeer } from "@/lib/peer";
 import { cn, errorMessage } from "@/lib/utils";
 import { useProcesses } from "./use-processes";
+import { DashboardView } from "./dashboard-view";
+import { TelemetryView } from "./telemetry-view";
 import {
   CheckpointTrack,
   formatDuration,
@@ -20,8 +22,15 @@ import {
   useNow,
 } from "./progress";
 
+/** What the selected process shows; the first it has if it hasn't this one. */
+type PaneView = "dashboard" | "charts" | "log";
+
+/** The tab's state, kept on the device with the tab (tabs.setState). */
 interface ProcessesState {
   selected?: string;
+  view?: PaneView;
+  /** By experiment, the other runs its charts show. */
+  compare?: Record<string, string[]>;
 }
 
 function parseState(s?: string): ProcessesState {
@@ -56,14 +65,16 @@ export function ProcessesView({
   const { refetch } = list;
 
   const processes = list.data ?? [];
-  const [selected, setSelected] = useState(() => parseState(initialState).selected);
+  const [state, setState] = useState(() => parseState(initialState));
+  const selected = state.selected;
   const shown = processes.find((p) => p.id === selected) ?? processes.find(isRunning) ?? processes[0];
   const onStateChangeRef = useRef(onStateChange);
   onStateChangeRef.current = onStateChange;
-  const select = (id: string) => {
-    setSelected(id);
-    onStateChangeRef.current?.(JSON.stringify({ selected: id } satisfies ProcessesState));
+  const save = (next: ProcessesState) => {
+    setState(next);
+    onStateChangeRef.current?.(JSON.stringify(next satisfies ProcessesState));
   };
+  const select = (id: string) => save({ ...state, selected: id });
 
   const showAt = show?.at;
   const showId = show?.id;
@@ -133,21 +144,21 @@ export function ProcessesView({
               </li>
             ))}
           </ul>
-          <div className="relative min-h-0 min-w-0 flex-1">
-            {shown?.command ? (
-              <TerminalView
-                // A new run is a new log.
-                key={`${shown.id}:${shown.startedAt}`}
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            {shown && (
+              <ProcessPane
                 peer={peer}
                 threadId={threadId}
-                processId={shown.id}
                 generation={generation}
+                process={shown}
+                view={state.view}
+                onView={(view) => save({ ...state, view })}
+                compare={(shown.experiment && state.compare?.[shown.experiment]) || []}
+                onCompare={(runs) =>
+                  shown.experiment && save({ ...state, compare: { ...state.compare, [shown.experiment]: runs } })
+                }
               />
-            ) : shown ? (
-              <div className="flex h-full items-center justify-center p-6 text-xs text-muted-foreground">
-                A tracker has no output: Claude reports its progress as it works.
-              </div>
-            ) : null}
+            )}
           </div>
         </div>
       )}
@@ -161,6 +172,95 @@ export function ProcessesView({
         }}
       />
     </div>
+  );
+}
+
+/** The selected process: its widgets, its log, or a switch between them. */
+function ProcessPane({
+  peer,
+  threadId,
+  generation,
+  process: p,
+  view: picked,
+  onView,
+  compare,
+  onCompare,
+}: {
+  peer: DevicePeer;
+  threadId: string;
+  generation: number;
+  process: Process;
+  view?: PaneView;
+  onView: (view: PaneView) => void;
+  compare: string[];
+  onCompare: (runs: string[]) => void;
+}) {
+  const views: { id: PaneView; label: string }[] = [
+    ...(p.dashboard ? [{ id: "dashboard" as const, label: "Dashboard" }] : []),
+    ...(p.experiment || (p.widgets?.length ?? 0) > 0 ? [{ id: "charts" as const, label: "Charts" }] : []),
+    ...(p.command ? [{ id: "log" as const, label: "Log" }] : []),
+  ];
+  // Unless picked: its dashboard, its widgets, or its log, before charts
+  // that may well be empty (any process can report; most don't).
+  const fallback: PaneView[] = ["dashboard", ...((p.widgets?.length ?? 0) > 0 ? ["charts" as const] : []), "log", "charts"];
+  const view =
+    views.find((v) => v.id === picked)?.id ?? fallback.find((id) => views.some((v) => v.id === id));
+  if (!view) {
+    return (
+      <div className="flex h-full items-center justify-center p-6 text-xs text-muted-foreground">
+        A tracker has no output: Claude reports its progress as it works.
+      </div>
+    );
+  }
+  return (
+    <>
+      {views.length > 1 && (
+        <div className="flex h-8 shrink-0 items-center gap-1 border-b px-2 text-xs" role="tablist">
+          {views.map((v) => (
+            <button
+              key={v.id}
+              type="button"
+              role="tab"
+              aria-selected={view === v.id}
+              onClick={() => onView(v.id)}
+              className={cn(
+                "rounded px-2 py-0.5",
+                view === v.id ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {v.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {/* The log and the dashboard stay mounted and sized while hidden (fitting
+          a hidden terminal would shrink the process's; a dashboard would start
+          over), so switching back is instant. */}
+      <div className="relative min-h-0 flex-1">
+        {p.command && (
+          <div className={cn("absolute inset-0", view !== "log" && "invisible")}>
+            <TerminalView
+              // A new run is a new log.
+              key={`${p.id}:${p.startedAt}`}
+              peer={peer}
+              threadId={threadId}
+              processId={p.id}
+              generation={generation}
+            />
+          </div>
+        )}
+        {p.dashboard && (
+          <div className={cn("absolute inset-0", view !== "dashboard" && "invisible")}>
+            <DashboardView key={p.id} peer={peer} process={p} />
+          </div>
+        )}
+        {view === "charts" && (
+          <div className="absolute inset-0 flex flex-col bg-background">
+            <TelemetryView peer={peer} process={p} compare={compare} onCompare={onCompare} />
+          </div>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -206,6 +306,13 @@ function ProcessCard({
         <StatusMark process={p} />
         <span className="min-w-0 truncate text-sm font-medium">{p.name}</span>
         <span className="text-xs text-muted-foreground">{statusLabel(p)}</span>
+        {p.dashboard ? (
+          <LayoutDashboardIcon className="size-3.5 shrink-0 text-muted-foreground" aria-label="Has a dashboard" />
+        ) : (
+          (p.widgets?.length ?? 0) > 0 && (
+            <ChartLineIcon className="size-3.5 shrink-0 text-muted-foreground" aria-label="Has charts" />
+          )
+        )}
         <span className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">{elapsed}</span>
         <div className="flex shrink-0 items-center">
           {running && (

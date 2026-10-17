@@ -8,36 +8,6 @@ import (
 
 func f(v float64) *float64 { return &v }
 
-func TestParseReport(t *testing.T) {
-	r, err := parseReport(`stat migrated 120/4000 "Users migrated"`)
-	if err != nil || r.Stat != "migrated" || *r.Value != 120 || *r.Total != 4000 || r.Label != "Users migrated" {
-		t.Fatalf("counter: %+v %v", r, err)
-	}
-	r, err = parseReport(`stat migrated +1`)
-	if err != nil || r.Inc == nil || *r.Inc != 1 || r.Value != nil {
-		t.Fatalf("increment: %+v %v", r, err)
-	}
-	r, err = parseReport(`stat rate 41.5 /s`)
-	if err != nil || *r.Value != 41.5 || r.Unit != "/s" {
-		t.Fatalf("unit: %+v %v", r, err)
-	}
-	r, err = parseReport(`checkpoint "Schema migrated"`)
-	if err != nil || r.Checkpoint != "Schema migrated" {
-		t.Fatalf("checkpoint: %+v %v", r, err)
-	}
-	r, err = parseReport(`status Backfilling orders`)
-	if err != nil || *r.Status != "Backfilling orders" {
-		t.Fatalf("status: %+v %v", r, err)
-	}
-	r, err = parseReport(`{"stat":"done","value":3,"total":9}`)
-	if err != nil || r.Stat != "done" || *r.Value != 3 || *r.Total != 9 {
-		t.Fatalf("json: %+v %v", r, err)
-	}
-	if _, err := parseReport("bogus x"); err == nil {
-		t.Fatal("unknown verb parsed")
-	}
-}
-
 func TestProgressCheckpointsAndStats(t *testing.T) {
 	t0 := time.Unix(1000, 0)
 	p, err := newProgress(t0,
@@ -56,30 +26,30 @@ func TestProgressCheckpointsAndStats(t *testing.T) {
 	if p.checkpoints[0].ReachedAt == nil || p.checkpoints[0].Offset != 10 {
 		t.Fatal("pattern checkpoint not reached")
 	}
-	evs := p.line(`::ew checkpoint "Tests pass"`, 20, t0.Add(41*time.Second))
+	evs := p.apply(report{Checkpoint: "Tests pass"}, 20, t0.Add(41*time.Second))
 	if len(evs) != 1 || !strings.Contains(evs[0].text, "41s") {
 		t.Fatalf("Tests pass should notify: %v", evs)
 	}
 	// Reaching it again says nothing.
-	if evs := p.line(`::ew checkpoint "Tests pass"`, 30, t0.Add(42*time.Second)); len(evs) != 0 {
+	if evs := p.apply(report{Checkpoint: "Tests pass"}, 30, t0.Add(42*time.Second)); len(evs) != 0 {
 		t.Fatalf("second reach notified: %v", evs)
 	}
-	p.line(`::ew checkpoint "Extra"`, 40, t0.Add(43*time.Second))
+	p.apply(report{Checkpoint: "Extra"}, 40, t0.Add(43*time.Second))
 	if len(p.checkpoints) != 3 || p.checkpoints[2].ReachedAt == nil {
 		t.Fatal("reported checkpoint not added")
 	}
 
-	if evs := p.line("::ew stat errors 0", 0, t0); len(evs) != 0 {
+	if evs := p.apply(report{Stat: "errors", Value: f(0)}, 0, t0); len(evs) != 0 {
 		t.Fatal("notify_when fired at 0")
 	}
-	if evs := p.line("::ew stat errors +2", 0, t0); len(evs) != 1 {
+	if evs := p.apply(report{Stat: "errors", Inc: f(2)}, 0, t0); len(evs) != 1 {
 		t.Fatalf("notify_when didn't fire: %v", evs)
 	}
-	if evs := p.line("::ew stat errors +1", 0, t0); len(evs) != 0 {
+	if evs := p.apply(report{Stat: "errors", Inc: f(1)}, 0, t0); len(evs) != 0 {
 		t.Fatal("notify_when fired again while still met")
 	}
 	if p.lastLine != "webpack compiled successfully" {
-		t.Fatalf("report lines count as the last line: %q", p.lastLine)
+		t.Fatalf("last line %q", p.lastLine)
 	}
 }
 

@@ -3,7 +3,7 @@
 //
 // - Page loads: network first, falling back to the last cached app shell.
 // - /assets/*: content-hashed and immutable, so cache first.
-// - Everything else (/api, /mcp, /oauth, /i, /.well-known, …): untouched.
+// - Everything else (/api, /mcp, /oauth, /i, /.well-known, /dashboard, …): untouched.
 
 const SHELL = "shell-v1";
 const ASSETS = "assets-v2"; // v1 could hold index.html under a chunk's name
@@ -22,8 +22,9 @@ self.addEventListener("activate", (event) => {
   );
 });
 
-// Worker-served paths that are pages or API, never the SPA.
-const WORKER_PATHS = /^\/(api|i|mcp|oauth|\.well-known)(\/|$)/;
+// Worker-served paths that are pages or API, never the SPA; and the
+// dashboard frame's page, which isn't the app shell either.
+const WORKER_PATHS = /^\/(api|i|mcp|oauth|\.well-known)(\/|$)|^\/dashboard(\.html)?$/;
 
 self.addEventListener("fetch", (event) => {
   const req = event.request;

@@ -23,6 +23,7 @@ import (
 	procgroup "github.com/conner-replogle/everywhere/daemon/internal/proc"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/store"
+	"github.com/conner-replogle/everywhere/daemon/internal/telemetry"
 	"github.com/conner-replogle/everywhere/daemon/internal/term"
 )
 
@@ -62,6 +63,18 @@ type Spec struct {
 	Env         map[string]string `json:"env,omitempty"`
 	Checkpoints []CheckpointSpec  `json:"checkpoints,omitempty"`
 	Stats       []StatSpec        `json:"stats,omitempty"`
+	// Widgets are declared at start or by the model later, so a restart
+	// keeps them (empty).
+	Widgets []WidgetSpec `json:"widgets,omitempty"`
+	// Dashboard is the process's dashboard, .everywhere/dashboards/<name>.
+	Dashboard string `json:"dashboard,omitempty"`
+	// Experiment and Run name what it reports as in its project's
+	// telemetry: by default the process's name, and <experiment>#<n>.
+	Experiment string `json:"experiment,omitempty"`
+	Run        string `json:"run,omitempty"`
+	// Home is the directory its project's .everywhere is in: the thread's
+	// (or the claude tab's) directory, before cwd.
+	Home string `json:"home,omitempty"`
 	// URL is the web UI link the user is shown, in place of the localhost
 	// ones seen in its output.
 	URL string `json:"url,omitempty"`
@@ -106,12 +119,18 @@ type Manager struct {
 	live   map[string]*proc // by id: running processes and open trackers
 	timers map[string]*time.Timer
 	closed bool
+	// dashErrors are the last errors each process's dashboard hit in a
+	// viewer, for the model.
+	dashErrors map[string][]string
+	// Telemetry is where processes report metrics, events and progress, if
+	// anywhere: each run gets its endpoint and token in its environment.
+	Telemetry *telemetry.Hub
 }
 
 // NewManager keeps logs in dir. Processes a previous daemon left running
 // are marked lost, and logs without a process are removed.
 func NewManager(st Store, dir string) *Manager {
-	m := &Manager{store: st, dir: dir, live: map[string]*proc{}, timers: map[string]*time.Timer{}}
+	m := &Manager{store: st, dir: dir, live: map[string]*proc{}, timers: map[string]*time.Timer{}, dashErrors: map[string][]string{}}
 	if err := st.MarkProcessesLost(); err != nil {
 		slog.Warn("marking lost processes", "err", err)
 	}
@@ -148,7 +167,6 @@ type proc struct {
 	endedAt    *int64
 	stopping   string // who is stopping it
 	prog       *progress
-	hide       hideReports
 	text       textScanner
 	events     []event
 	scrollback []byte
@@ -161,6 +179,10 @@ type proc struct {
 	// waiting counts the Wait calls in progress by what they wait for: the
 	// tool calls making them report it, so the model isn't told twice.
 	waiting map[string]int
+	// run is what it reports as in its project's telemetry.
+	run telemetry.RunInfo
+	// dashState is its dashboard's state, as in the project's telemetry.
+	dashState map[string]json.RawMessage
 }
 
 var nameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9 ._:-]{0,63}$`)
@@ -210,6 +232,23 @@ func (m *Manager) Start(threadID, agentThreadID, name string, spec Spec, replace
 	if err != nil {
 		return protocol.Process{}, err
 	}
+	// The project's .everywhere is here: dashboards, and the telemetry this
+	// process reports as a run of its experiment.
+	spec.Home = dir
+	var run telemetry.RunInfo
+	var dashState map[string]json.RawMessage
+	if m.Telemetry != nil {
+		experiment := spec.Experiment
+		if experiment == "" {
+			experiment = experimentName(name)
+		}
+		if run, err = m.Telemetry.StartRun(dir, experiment, spec.Run, row.ID); err != nil {
+			return protocol.Process{}, err
+		}
+		if spec.Dashboard != "" {
+			dashState, _ = m.Telemetry.DashboardState(dir, spec.Dashboard)
+		}
+	}
 	if spec.Cwd != "" {
 		if filepath.IsAbs(spec.Cwd) {
 			dir = filepath.Clean(spec.Cwd)
@@ -232,8 +271,21 @@ func (m *Manager) Start(threadID, agentThreadID, name string, spec Spec, replace
 		}
 		prog.url = spec.URL
 	}
+	for _, w := range spec.Widgets {
+		if err := prog.addWidget(w); err != nil {
+			return protocol.Process{}, err
+		}
+	}
+	if spec.Dashboard != "" {
+		if !validKey(spec.Dashboard) {
+			return protocol.Process{}, fmt.Errorf("dashboard %q: name it with letters, digits, - and _", spec.Dashboard)
+		}
+		prog.dashboard = spec.Dashboard
+	}
 	p := &proc{
-		m: m, id: row.ID, threadID: threadID, agentThreadID: agentThreadID, name: name,
+		run:       run,
+		dashState: dashState,
+		m:         m, id: row.ID, threadID: threadID, agentThreadID: agentThreadID, name: name,
 		spec: spec, cwd: dir, started: now, logPath: filepath.Join(m.dir, row.ID+".log"),
 		prev: row.Prev, done: make(chan struct{}), status: protocol.ProcessRunning,
 		prog: prog, changed: make(chan struct{}),
@@ -256,6 +308,9 @@ func (m *Manager) Start(threadID, agentThreadID, name string, spec Spec, replace
 			return protocol.Process{}, err
 		}
 		env := []string{"EVERYWHERE_THREAD=" + threadID, "EVERYWHERE_PROCESS=" + p.id, "EVERYWHERE_PROCESS_NAME=" + name}
+		if m.Telemetry != nil {
+			env = append(env, m.Telemetry.Env(run)...)
+		}
 		keys := make([]string, 0, len(spec.Env))
 		for k := range spec.Env {
 			keys = append(keys, k)
@@ -270,6 +325,7 @@ func (m *Manager) Start(threadID, agentThreadID, name string, spec Spec, replace
 			end := now.UnixMilli()
 			p.status, p.endedAt = protocol.ProcessFailed, &end
 			p.save()
+			p.endRun()
 			m.changedThread(threadID)
 			return p.view(), fmt.Errorf("starting %q: %w", name, err)
 		}
@@ -434,21 +490,9 @@ func (m *Manager) Report(threadID, name string, r report, done bool) (protocol.P
 	if done && p.tty != nil {
 		return protocol.Process{}, errors.New("done is for trackers; a process is done when it exits")
 	}
-	if r.Stat != "" && !validKey(r.Stat) {
-		return protocol.Process{}, fmt.Errorf("stat key %q: use letters, digits, - and _", r.Stat)
+	if _, err := m.applyReport(p, r); err != nil { // the model reported it, so no need to tell it
+		return protocol.Process{}, err
 	}
-	if r.URL != "" {
-		if err := checkURL(r.URL); err != nil {
-			return protocol.Process{}, err
-		}
-	}
-	p.mu.Lock()
-	if r.URL != "" {
-		p.spec.URL = r.URL // so a tracker keeps it across restarts
-	}
-	p.prog.apply(r, p.logSize+p.logBase, time.Now()) // the model reported it, so no need to tell it
-	p.bump()
-	p.mu.Unlock()
 	if done {
 		p.endTracker(protocol.ProcessDone)
 	} else if p.tty == nil {
@@ -456,6 +500,66 @@ func (m *Manager) Report(threadID, name string, r report, done bool) (protocol.P
 	}
 	m.changedThread(threadID)
 	return p.view(), nil
+}
+
+// applyReport applies a progress report to a process: its progress, its
+// spec (widgets, dashboard and link outlive restarts), and its telemetry
+// (metrics, and stats as metrics). It returns what the model would hear.
+func (m *Manager) applyReport(p *proc, r report) ([]event, error) {
+	if r.Stat != "" && !validKey(r.Stat) {
+		return nil, fmt.Errorf("stat key %q: use letters, digits, - and _", r.Stat)
+	}
+	if r.URL != "" {
+		if err := checkURL(r.URL); err != nil {
+			return nil, err
+		}
+	}
+	if r.Dashboard != "" && !validKey(r.Dashboard) {
+		return nil, fmt.Errorf("dashboard %q: name it with letters, digits, - and _", r.Dashboard)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	now := time.Now()
+	if r.hasWidget() {
+		if err := p.prog.widgetReport(r, now); err != nil {
+			return nil, err
+		}
+		if r.Widget != nil {
+			p.spec.Widgets = upsertWidget(p.spec.Widgets, *r.Widget)
+		}
+		r.Widget, r.Plot, r.Bar, r.Gauge, r.Row = nil, "", "", "", ""
+	}
+	logs := m.Telemetry != nil && p.run.Experiment != ""
+	if logs && len(r.Metrics) > 0 {
+		if err := m.Telemetry.Log(p.run, r.Step, r.Metrics, nil); err != nil {
+			return nil, err
+		}
+	}
+	if r.Dashboard != "" && r.Dashboard != p.spec.Dashboard {
+		p.spec.Dashboard = r.Dashboard
+		if m.Telemetry != nil {
+			p.dashState, _ = m.Telemetry.DashboardState(p.spec.Home, r.Dashboard)
+		}
+	}
+	if r.URL != "" {
+		p.spec.URL = r.URL // so a tracker keeps it across restarts
+	}
+	evs := p.prog.apply(r, p.logSize+p.logBase, now)
+	// A stat is a metric too, so its history is charted.
+	if logs && r.Stat != "" && (r.Value != nil || r.Inc != nil) {
+		if s := p.prog.findStat(r.Stat); s != nil {
+			_ = m.Telemetry.Log(p.run, nil, map[string]float64{r.Stat: s.Value}, nil)
+		}
+	}
+	var told []event
+	for _, e := range evs {
+		// A tool call waiting for this checkpoint reports it.
+		if e.checkpoint == "" || p.waiting[e.checkpoint] == 0 {
+			told = append(told, e)
+		}
+	}
+	p.bump()
+	return told, nil
 }
 
 // Wait waits until a process reaches a checkpoint (or ends, if until is
@@ -639,9 +743,8 @@ func (m *Manager) Attach(id string, c term.Client, _, _ uint16) error {
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		var h hideReports
-		if shown := h.filter(raw); len(shown) > 0 {
-			c.Output(shown)
+		if len(raw) > 0 {
+			c.Output(raw)
 		}
 		code := -1
 		if row.ExitCode != nil {
@@ -787,10 +890,20 @@ func (m *Manager) loadTracker(r store.Process) *proc {
 	}
 	prog.statusText = s.StatusText
 	prog.url = spec.URL
+	for _, w := range s.Widgets {
+		prog.widgets = append(prog.widgets, &w)
+	}
+	prog.dashboard = s.Dashboard
+	run := telemetry.RunInfo{Home: spec.Home, Experiment: s.Experiment, Run: s.Run, Process: r.ID}
+	var dashState map[string]json.RawMessage
+	if m.Telemetry != nil && spec.Dashboard != "" {
+		dashState, _ = m.Telemetry.DashboardState(spec.Home, spec.Dashboard)
+	}
 	p := &proc{
 		m: m, id: r.ID, threadID: r.ThreadID, agentThreadID: r.AgentThreadID, name: r.Name,
 		spec: spec, cwd: r.Cwd, started: started, prev: r.Prev, done: make(chan struct{}),
 		status: protocol.ProcessRunning, prog: prog, changed: make(chan struct{}),
+		run: run, dashState: dashState,
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -827,6 +940,12 @@ func (m *Manager) rowView(r store.Process) protocol.Process {
 	}
 	if r.Command != "" {
 		v.LogPath = m.LogPath(r.ID)
+	}
+	var spec Spec
+	_ = json.Unmarshal(r.Spec, &spec)
+	v.Home = spec.Home
+	if v.Dashboard != "" && m.Telemetry != nil {
+		v.DashboardState, _ = m.Telemetry.DashboardState(spec.Home, v.Dashboard)
 	}
 	return v
 }
@@ -902,14 +1021,12 @@ func (p *proc) pump() {
 func (p *proc) output(chunk []byte) {
 	p.mu.Lock()
 	p.writeLog(chunk)
-	if shown := p.hide.filter(chunk); len(shown) > 0 {
-		p.scrollback = append(p.scrollback, shown...)
-		if over := len(p.scrollback) - scrollbackBytes; over > 0 {
-			p.scrollback = append([]byte(nil), p.scrollback[over:]...)
-		}
-		for _, c := range p.clients {
-			c.Output(shown)
-		}
+	p.scrollback = append(p.scrollback, chunk...)
+	if over := len(p.scrollback) - scrollbackBytes; over > 0 {
+		p.scrollback = append([]byte(nil), p.scrollback[over:]...)
+	}
+	for _, c := range p.clients {
+		c.Output(chunk)
 	}
 	p.text.write(chunk)
 	evs := p.events
@@ -1012,6 +1129,7 @@ func (p *proc) finish(code int) {
 	p.mu.Unlock()
 
 	p.save()
+	p.endRun()
 	p.m.mu.Lock()
 	if p.m.live[p.id] == p {
 		delete(p.m.live, p.id)
@@ -1057,6 +1175,7 @@ func (p *proc) endTracker(status string) {
 	close(p.done)
 	p.mu.Unlock()
 	p.save()
+	p.endRun()
 	p.m.mu.Lock()
 	if p.m.live[p.id] == p {
 		delete(p.m.live, p.id)
@@ -1115,12 +1234,20 @@ func (p *proc) viewLocked() protocol.Process {
 		StartedAt: p.started.UnixMilli(), EndedAt: p.endedAt,
 	}
 	p.prog.fill(&v, time.Now())
+	if len(p.dashState) > 0 {
+		v.DashboardState = make(map[string]json.RawMessage, len(p.dashState))
+		for k, val := range p.dashState {
+			v.DashboardState[k] = val
+		}
+	}
 	if v.LastLine == "" && p.tty != nil {
 		v.LastLine = p.text.partial()
 	}
 	if p.tty != nil {
 		v.LogPath = p.logPath
 	}
+	v.Home = p.spec.Home
+	v.Experiment, v.Run = p.run.Experiment, p.run.Run
 	return v
 }
 
@@ -1128,6 +1255,7 @@ func (p *proc) viewLocked() protocol.Process {
 func (p *proc) save() {
 	p.mu.Lock()
 	v := p.viewLocked()
+	v.DashboardState = nil // it's in the project's telemetry
 	snap, _ := json.Marshal(saved{Process: v, LogBase: p.logBase})
 	spec, _ := json.Marshal(p.spec)
 	prev := p.prev
@@ -1149,4 +1277,130 @@ func (p *proc) save() {
 	if err := p.m.store.SaveProcess(row); err != nil {
 		slog.Warn("saving process", "process", p.id, "err", err)
 	}
+}
+
+// upsertWidget replaces the spec with w's id, or adds w.
+func upsertWidget(specs []WidgetSpec, w WidgetSpec) []WidgetSpec {
+	for i := range specs {
+		if specs[i].ID == w.ID {
+			specs[i] = w
+			return specs
+		}
+	}
+	return append(specs, w)
+}
+
+// maxDashErrors is how many of a dashboard's errors are kept.
+const maxDashErrors = 5
+
+// DashboardError records an error a process's dashboard hit in a viewer.
+func (m *Manager) DashboardError(id, msg string) {
+	msg = clip(strings.TrimSpace(msg), 2000)
+	if msg == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	errs := m.dashErrors[id]
+	for _, e := range errs {
+		if e == msg {
+			return
+		}
+	}
+	errs = append(errs, msg)
+	if len(errs) > maxDashErrors {
+		errs = errs[len(errs)-maxDashErrors:]
+	}
+	m.dashErrors[id] = errs
+}
+
+// DashboardErrors returns the errors a process's dashboard hit; clear
+// forgets them, e.g. once it's been rebuilt.
+func (m *Manager) DashboardErrors(id string, clear bool) []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	errs := m.dashErrors[id]
+	if clear {
+		delete(m.dashErrors, id)
+	}
+	return errs
+}
+
+// SetDashboardState sets a key of a process's dashboard's state (null
+// removes it), in its project's telemetry, and tells viewers.
+func (m *Manager) SetDashboardState(id, key string, value json.RawMessage) error {
+	if m.Telemetry == nil {
+		return errors.New("no telemetry")
+	}
+	v, err := m.Get(id)
+	if err != nil {
+		return err
+	}
+	if v.Dashboard == "" || v.Home == "" {
+		return errors.New("this process has no dashboard")
+	}
+	if err := m.Telemetry.SetDashboardState(v.Home, v.Dashboard, key, value); err != nil {
+		return err
+	}
+	if p := m.get(id); p != nil {
+		st, _ := m.Telemetry.DashboardState(v.Home, v.Dashboard)
+		p.mu.Lock()
+		p.dashState = st
+		p.bump()
+		p.mu.Unlock()
+	}
+	m.changedThread(v.ThreadID)
+	return nil
+}
+
+// ReportFromProcess applies a progress report a process sent (POST
+// /progress): what the model would hear about, it does.
+func (m *Manager) ReportFromProcess(id string, raw json.RawMessage) error {
+	var r report
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return fmt.Errorf("want process_report's fields as JSON: %w", err)
+	}
+	p := m.get(id)
+	if p == nil {
+		return errors.New("the process isn't running")
+	}
+	evs, err := m.applyReport(p, r)
+	if err != nil {
+		return err
+	}
+	m.changedThread(p.threadID)
+	for _, e := range evs {
+		m.notify(p, e.attrs, e.text, true)
+	}
+	return nil
+}
+
+// experimentName is a process's experiment unless it names one: its name,
+// in the characters experiments allow.
+func experimentName(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-', r == '.':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	return strings.TrimLeft(b.String(), ".-")
+}
+
+// endRun marks its telemetry run ended, as it ended.
+func (p *proc) endRun() {
+	if p.m.Telemetry == nil {
+		return
+	}
+	p.mu.Lock()
+	status := p.status
+	if status == protocol.ProcessExited && p.exitCode != nil && *p.exitCode != 0 {
+		status = fmt.Sprintf("exited %d", *p.exitCode)
+	}
+	run := p.run
+	p.mu.Unlock()
+	p.m.Telemetry.EndRun(run, status)
 }

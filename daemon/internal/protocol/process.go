@@ -1,5 +1,7 @@
 package protocol
 
+import "encoding/json"
+
 // Process statuses.
 const (
 	ProcessRunning = "running"
@@ -33,6 +35,20 @@ type Process struct {
 	Progress *ProcessProgress `json:"progress,omitempty"`
 	URLs     []string         `json:"urls,omitempty"`
 	LastLine string           `json:"lastLine,omitempty"`
+	// Widgets are the charts and tables the model asked to show.
+	Widgets []ProcessWidget `json:"widgets,omitempty"`
+	// Dashboard names its dashboard, .everywhere/dashboards/<name> in the
+	// thread's directory.
+	Dashboard string `json:"dashboard,omitempty"`
+	// Experiment and Run are what it reports as in its project's telemetry
+	// (.everywhere/telemetry.db).
+	Experiment string `json:"experiment,omitempty"`
+	Run        string `json:"run,omitempty"`
+	// DashboardState is its dashboard's own state (processes.setState), kept
+	// in the project with its events.
+	DashboardState map[string]json.RawMessage `json:"dashboardState,omitempty"`
+	// Home is the directory its project's .everywhere is in.
+	Home string `json:"home,omitempty"`
 	// LogPath is the raw output on disk.
 	LogPath string `json:"logPath,omitempty"`
 }
@@ -71,4 +87,73 @@ type ProcessStat struct {
 type ProcessProgress struct {
 	State   string `json:"state"`
 	Percent int    `json:"percent"`
+}
+
+// Widget kinds.
+const (
+	WidgetLine  = "line"  // series of points over time, or over x_label
+	WidgetBar   = "bar"   // a value per category
+	WidgetGauge = "gauge" // one value between min and max
+	WidgetTable = "table" // rows keyed by their first cell
+)
+
+// ProcessWidget is a chart or table on a process, declared by the model or
+// the process and fed by ::ew lines, process_report or its stats.
+type ProcessWidget struct {
+	ID    string `json:"id"`
+	Kind  string `json:"kind"`
+	Title string `json:"title,omitempty"`
+	Unit  string `json:"unit,omitempty"`
+	// Stats are the stats it shows: a line's series over time, a bar's
+	// categories; Stat is a gauge's value.
+	Stats []string `json:"stats,omitempty"`
+	Stat  string   `json:"stat,omitempty"`
+
+	// Line: without XLabel, x is seconds since the process started.
+	XLabel string          `json:"xLabel,omitempty"`
+	Series []ProcessSeries `json:"series,omitempty"`
+	// Bar.
+	Bars []ProcessBar `json:"bars,omitempty"`
+	// Gauge: Warn and Critical are thresholds; below Warn is fine unless
+	// Critical is lower than Warn, when low values are the bad ones.
+	Value    *float64 `json:"value,omitempty"`
+	Min      *float64 `json:"min,omitempty"`
+	Max      *float64 `json:"max,omitempty"`
+	Warn     *float64 `json:"warn,omitempty"`
+	Critical *float64 `json:"critical,omitempty"`
+	// Table.
+	Columns []string `json:"columns,omitempty"`
+	Rows    [][]any  `json:"rows,omitempty"`
+}
+
+// ProcessSeries is one line of a line widget: [x, y] points, oldest first.
+type ProcessSeries struct {
+	Key    string       `json:"key"`
+	Label  string       `json:"label,omitempty"`
+	Points [][2]float64 `json:"points"`
+}
+
+type ProcessBar struct {
+	Label string  `json:"label"`
+	Value float64 `json:"value"`
+}
+
+// DashboardBuild answers processes.dashboard: the process's dashboard as
+// one script (and stylesheet), or why it didn't build. Unchanged means the
+// caller already has this version.
+type DashboardBuild struct {
+	Version   string   `json:"version"`
+	Unchanged bool     `json:"unchanged,omitempty"`
+	JS        string   `json:"js,omitempty"`
+	CSS       string   `json:"css,omitempty"`
+	Errors    []string `json:"errors,omitempty"`
+}
+
+// DashboardFile answers processes.file: a file a dashboard may read, to
+// fetch over a file channel.
+type DashboardFile struct {
+	Path    string `json:"path"`
+	Size    int64  `json:"size"`
+	ModTime int64  `json:"modTime"`
+	Type    string `json:"type"`
 }

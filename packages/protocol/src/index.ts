@@ -380,6 +380,114 @@ export interface Process {
   urls?: string[];
   lastLine?: string;
   logPath?: string;
+  /** Charts and tables the model asked to show. */
+  widgets?: ProcessWidget[];
+  /** Its dashboard: .everywhere/dashboards/<name> in the thread's directory. */
+  dashboard?: string;
+  /** What it reports as in its project's telemetry: a run of an experiment. */
+  experiment?: string;
+  run?: string;
+  /** Its dashboard's own state (processes.setState), kept in the project. */
+  dashboardState?: Record<string, unknown>;
+  /** The directory its project's .everywhere is in. */
+  home?: string;
+}
+
+/*
+ * Telemetry: what processes report (POST $EVERYWHERE_TELEMETRY/log, /event,
+ * /attach, OTLP), kept in their project's .everywhere/telemetry.db by run
+ * and experiment, and queried by charts for just what they draw.
+ */
+
+export interface TelemetryRun {
+  experiment: string;
+  run: string;
+  /** The process that ran it. */
+  process?: string;
+  startedAt: number;
+  endedAt?: number;
+  /** running, exited, exited 3, stopped, failed, done… */
+  status: string;
+}
+
+export interface TelemetryMetric {
+  name: string;
+  /** Each label's values, e.g. run: ["train#1", "train#2"]. */
+  labels: Record<string, string[]>;
+  /** Some points have a step: draw it over steps. */
+  steps: boolean;
+}
+
+export interface TelemetryCatalog {
+  runs: TelemetryRun[];
+  metrics: TelemetryMetric[];
+}
+
+export interface TelemetryQuery {
+  metric: string;
+  /** By label; a list matches any of its values. */
+  where?: Record<string, string[]>;
+  /** A series per value of these labels (default ["run"]). */
+  groupBy?: string[];
+  /** step, or time: seconds since the run started. Default: step if it has steps. */
+  x?: "step" | "time";
+  from?: number;
+  to?: number;
+  /** About how many points a series comes back as (the chart's width): default 400, at most 2000. */
+  points?: number;
+}
+
+export interface TelemetrySeries {
+  labels: Record<string, string>;
+  /** [x, mean of the bucket]. */
+  points: [number, number][];
+  min: number[];
+  max: number[];
+}
+
+export interface TelemetryResult {
+  x: "step" | "time";
+  series: TelemetrySeries[];
+}
+
+export interface TelemetryEvent {
+  id: number;
+  experiment: string;
+  run: string;
+  ts: number;
+  kind: string;
+  data: unknown;
+}
+
+/** An "attachment" event's data: a file a run uploaded (POST /attach). */
+export interface TelemetryAttachment {
+  /** Relative to the project. */
+  path: string;
+  name: string;
+  type: string;
+  size: number;
+  step?: number;
+  caption?: string;
+}
+
+/** Where a telemetry call looks: a process's project, or a thread's. */
+export type TelemetryScope = { processId: string } | { threadId: string };
+
+/** A process's dashboard, bundled; unchanged when the caller has this version. */
+export interface DashboardBuild {
+  version: string;
+  unchanged?: boolean;
+  js?: string;
+  css?: string;
+  errors?: string[];
+}
+
+/** A file a dashboard may read, to fetch with readFile. */
+export interface DashboardFile {
+  path: string;
+  size: number;
+  modTime: number;
+  type: string;
 }
 
 export interface ProcessCheckpoint {
@@ -407,6 +515,40 @@ export interface ProcessStat {
   /** One sample a second, oldest first. */
   history?: number[];
   notifyWhen?: string;
+}
+
+/**
+ * A chart or table on a process, fed by ::ew lines, process_report or its
+ * stats. The fields used depend on kind.
+ */
+export interface ProcessWidget {
+  id: string;
+  kind: "line" | "bar" | "gauge" | "table";
+  title?: string;
+  unit?: string;
+  /** The stats it shows: a line's series, a bar's categories. */
+  stats?: string[];
+  /** A gauge's stat. */
+  stat?: string;
+  /** line: what x is; without it, x is seconds since the start. */
+  xLabel?: string;
+  series?: ProcessSeries[];
+  bars?: { label: string; value: number }[];
+  /** gauge: below warn is fine, unless critical < warn (then low is bad). */
+  value?: number;
+  min?: number;
+  max?: number;
+  warn?: number;
+  critical?: number;
+  columns?: string[];
+  rows?: (string | number | boolean)[][];
+}
+
+export interface ProcessSeries {
+  key: string;
+  label?: string;
+  /** [x, y], oldest first. */
+  points: [number, number][];
 }
 
 export interface ProcessProgress {
@@ -528,6 +670,27 @@ export interface RpcMethods {
   "processes.restart": [{ id: string }, Process];
   /** Stops it if it's running and forgets it, with its log. */
   "processes.remove": [{ id: string }, Record<string, never>];
+  /** Builds its dashboard; pass the version you have to get unchanged back. */
+  "processes.dashboard": [{ id: string; version?: string }, DashboardBuild];
+  /** Its output as plain lines. */
+  "processes.output": [{ id: string; tail?: number; grep?: string }, string[]];
+  /** Checks a file its dashboard asked for (relative to its directory, inside the thread's). */
+  "processes.file": [{ id: string; path: string }, DashboardFile];
+  /** An error its dashboard hit, for the model. */
+  "processes.dashboardError": [{ id: string; message: string }, Record<string, never>];
+  /** Sets a key of its dashboard's state; null removes it. Viewers hear processes.changed. */
+  "processes.setState": [{ id: string; key: string; value: unknown }, Record<string, never>];
+  /** An experiment's (or the project's) runs and metrics. */
+  "telemetry.catalog": [TelemetryScope & { experiment?: string }, TelemetryCatalog];
+  /** A metric, bucketed to about query.points points per series. */
+  "telemetry.query": [TelemetryScope & { query: TelemetryQuery }, TelemetryResult];
+  /** An experiment's events, newest first: of some runs and a kind, before an id. */
+  "telemetry.events": [
+    TelemetryScope & { experiment: string; runs?: string[]; kind?: string; before?: number; limit?: number },
+    TelemetryEvent[],
+  ];
+  /** Forgets a run's data. */
+  "telemetry.deleteRun": [TelemetryScope & { experiment: string; run: string }, Record<string, never>];
   "tabs.list": [{ threadId: string }, Tab[]];
   /** input (scratch): typed into a new terminal tab's shell without running it. */
   "tabs.create": [
@@ -713,6 +876,17 @@ export type RpcResponse =
   | { id: number; result: unknown }
   | { id: number; error: { message: string } };
 
+/**
+ * A piece of a control message too big for one data channel message; join
+ * data from index 0 to count-1 and read the result as the message.
+ */
+export interface ControlChunk {
+  chunk: number;
+  index: number;
+  count: number;
+  data: string;
+}
+
 export type RpcEvent =
   | { event: "projects.changed" }
   | { event: "clones.changed" }
@@ -722,6 +896,8 @@ export type RpcEvent =
   | { event: "claude.auth" }
   /** A thread's processes started, stopped or made progress (at most 4 a second). */
   | { event: "processes.changed"; threadId: string }
+  /** A project's telemetry got new data: by experiment, the metrics that did. */
+  | { event: "telemetry.changed"; home: string; experiments: Record<string, string[]> }
   /** One of a desktop session's ICE candidates (trickle ICE); see desktop.start. */
   | { event: "desktop.candidate"; id: string; candidate: IceCandidate };
 

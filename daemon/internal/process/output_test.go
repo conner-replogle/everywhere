@@ -2,38 +2,8 @@ package process
 
 import (
 	"reflect"
-	"strings"
 	"testing"
 )
-
-func TestHideReports(t *testing.T) {
-	cases := []struct {
-		name   string
-		chunks []string
-		want   string
-	}{
-		{"plain", []string{"hello\r\nworld\r\n"}, "hello\r\nworld\r\n"},
-		{"report", []string{"a\r\n::ew stat x 1/2\r\nb\r\n"}, "a\r\nb\r\n"},
-		{"first line", []string{"::ew status \"go\"\r\nok\r\n"}, "ok\r\n"},
-		{"split prefix", []string{"a\r\n::e", "w checkpoint x\r\nb\r\n"}, "a\r\nb\r\n"},
-		{"split mismatch", []string{"a\r\n::e", "x\r\n"}, "a\r\n::ex\r\n"},
-		{"mid line", []string{"a ::ew stat x 1\r\n"}, "a ::ew stat x 1\r\n"},
-		{"colon start", []string{":: not\r\n"}, ":: not\r\n"},
-		{"no space", []string{"::ewx\r\n"}, "::ewx\r\n"},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			var f hideReports
-			var got strings.Builder
-			for _, ch := range c.chunks {
-				got.Write(f.filter([]byte(ch)))
-			}
-			if got.String() != c.want {
-				t.Fatalf("got %q, want %q", got.String(), c.want)
-			}
-		})
-	}
-}
 
 func TestPlainLines(t *testing.T) {
 	raw := "\x1b[32mgreen\x1b[0m text\r\n" +

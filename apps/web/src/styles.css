@@ -37,6 +37,10 @@
   --warn: #b36d43;
   --sidebar: #191919;
   --terminal: #222222;
+  --chart-1: #78824b;
+  --chart-2: #c9a554;
+  --chart-3: #bb7744;
+  --chart-4: #5f875f;
 }
 
 @theme inline {
@@ -66,6 +70,10 @@
   --color-warn: var(--warn);
   --color-sidebar: var(--sidebar);
   --color-terminal: var(--terminal);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
 
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);

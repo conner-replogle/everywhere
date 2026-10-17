@@ -4,6 +4,8 @@ package process
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/store"
+	"github.com/conner-replogle/everywhere/daemon/internal/telemetry"
 )
 
 type note struct {
@@ -20,6 +23,8 @@ type note struct {
 }
 
 type fixture struct {
+	hub    *telemetry.Hub
+	home   string
 	m      *Manager
 	st     *store.Store
 	thread string
@@ -48,6 +53,14 @@ func newFixture(t *testing.T) *fixture {
 		fx.notes = append(fx.notes, note{agent, n.Prompt, n.Wake})
 		fx.mu.Unlock()
 	}
+	fx.hub = telemetry.New()
+	fx.hub.OnProgress = fx.m.ReportFromProcess
+	if err := fx.hub.Start(); err != nil {
+		t.Fatal(err)
+	}
+	fx.m.Telemetry = fx.hub
+	fx.home = dir
+	t.Cleanup(fx.hub.Close)
 	t.Cleanup(fx.m.Shutdown)
 	return fx
 }
@@ -60,8 +73,8 @@ func (fx *fixture) notesNow() []note {
 
 func TestProcessReportsAndExit(t *testing.T) {
 	fx := newFixture(t)
-	script := `echo starting; echo '::ew status "Migrating"'; echo '::ew stat rows 2/4 "Rows"'; ` +
-		`echo 'compiled ok'; echo '::ew checkpoint "Half"'; echo '::ew notify "careful"'; echo 'see http://localhost:5173/'; exit 3`
+	script := reportFn + `echo starting; ew '{"status":"Migrating"}'; ew '{"stat":"rows","value":2,"total":4,"label":"Rows"}'; ` +
+		`echo 'compiled ok'; ew '{"checkpoint":"Half"}'; ew '{"notify":"careful"}'; echo 'see http://localhost:5173/'; exit 3`
 	v, err := fx.m.Start(fx.thread, "agent1", "mig", Spec{
 		Command:     script,
 		Checkpoints: []CheckpointSpec{{Label: "Compiled", Pattern: "compiled ok"}, {Label: "Half"}},
@@ -103,7 +116,7 @@ func TestProcessReportsAndExit(t *testing.T) {
 		t.Fatalf("list %+v", list)
 	}
 
-	// ::ew notify wakes the model; the exit nobody asked about doesn't.
+	// A notify the process sent wakes the model; the exit nobody asked about doesn't.
 	var sawNotify, sawExit bool
 	for _, n := range fx.notesNow() {
 		if n.agent != "agent1" {
@@ -126,13 +139,13 @@ func TestProcessReportsAndExit(t *testing.T) {
 		t.Fatalf("notes %+v", fx.notesNow())
 	}
 
-	// The log keeps report lines; the replay viewers get doesn't.
+	// Reports never touch the log.
 	lines, _, err := fx.m.Output(v.ID, "", "", 0, 1<<20)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(strings.Join(lines, "\n"), "::ew stat rows") {
-		t.Errorf("log lost report lines: %q", lines)
+	if got := strings.Join(lines, "\n"); strings.Contains(got, "rows") || !strings.Contains(got, "compiled ok") {
+		t.Errorf("log %q", lines)
 	}
 	since, _, _ := fx.m.Output(v.ID, "Half", "", 0, 1<<20)
 	if len(since) == 0 || strings.Contains(strings.Join(since, "\n"), "starting") {
@@ -146,7 +159,7 @@ func TestProcessReportsAndExit(t *testing.T) {
 	if err := fx.m.Attach(v.ID, c, 80, 24); err != nil {
 		t.Fatal(err)
 	}
-	if out := c.String(); strings.Contains(out, "::ew") || !strings.Contains(out, "compiled ok") || c.exited != 3 {
+	if out := c.String(); !strings.Contains(out, "compiled ok") || c.exited != 3 {
 		t.Errorf("replay %q exited %d", out, c.exited)
 	}
 
@@ -256,6 +269,42 @@ func TestTracker(t *testing.T) {
 	}
 }
 
+func TestTrackerWidgets(t *testing.T) {
+	fx := newFixture(t)
+	spec := Spec{Widgets: []WidgetSpec{{ID: "fails", Kind: "bar", Title: "Failures"}}}
+	if _, err := fx.m.Start(fx.thread, "", "triage", spec, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fx.m.Report(fx.thread, "triage", report{Bar: "fails", Label: "auth", Inc: f(3)}, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fx.m.Report(fx.thread, "triage", report{Plot: "fails", Series: "s", Y: f(1)}, false); err == nil {
+		t.Fatal("plotted on a bar widget")
+	}
+	if _, err := fx.m.Report(fx.thread, "triage", report{Widget: &WidgetSpec{ID: "left", Kind: "gauge", Max: f(9)}, Gauge: "left", Value: f(4)}, false); err != nil {
+		t.Fatal(err)
+	}
+	// Restored after a daemon restart, data and all.
+	m2 := NewManager(fx.st, t.TempDir())
+	m2.Workdir = fx.m.Workdir
+	v, err := m2.Report(fx.thread, "triage", report{Bar: "fails", Label: "auth", Inc: f(1)}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v.Widgets) != 2 || v.Widgets[0].Bars[0].Value != 4 || *v.Widgets[1].Value != 4 || v.Widgets[0].Title != "Failures" {
+		t.Fatalf("restored widgets %+v", v.Widgets)
+	}
+	m2.Telemetry = fx.hub
+	if _, err := m2.Report(fx.thread, "triage", report{Metrics: map[string]float64{"found": 1}, Dashboard: "triage"}, false); err != nil {
+		t.Fatal(err)
+	}
+	v, _ = m2.Report(fx.thread, "triage", report{}, true)
+	cat, err := fx.hub.Catalog(fx.home, "triage")
+	if err != nil || len(cat.Metrics) != 1 || cat.Metrics[0].Name != "found" || v.Dashboard != "triage" || cat.Runs[0].Status != "done" {
+		t.Fatalf("telemetry after done: %+v %v, dashboard %q", cat, err, v.Dashboard)
+	}
+}
+
 type client struct {
 	mu     sync.Mutex
 	out    strings.Builder
@@ -266,3 +315,52 @@ func (c *client) Output(p []byte) { c.mu.Lock(); c.out.Write(p); c.mu.Unlock() }
 func (c *client) Writer(bool)     {}
 func (c *client) Exited(code int) { c.mu.Lock(); c.exited = code; c.mu.Unlock() }
 func (c *client) String() string  { c.mu.Lock(); defer c.mu.Unlock(); return c.out.String() }
+
+// reportFn is a shell function the test scripts report with: ew '<json>'.
+const reportFn = `ew() { curl -sf -H "X-Everywhere-Token: $EVERYWHERE_TOKEN" -d "$1" "$EVERYWHERE_TELEMETRY/progress" >/dev/null; }; ` +
+	`ewlog() { curl -sf -H "X-Everywhere-Token: $EVERYWHERE_TOKEN" -d "$1" "$EVERYWHERE_TELEMETRY/log" >/dev/null; }; `
+
+func TestTelemetryRuns(t *testing.T) {
+	fx := newFixture(t)
+	run := func() protocol.Process {
+		t.Helper()
+		v, err := fx.m.Start(fx.thread, "", "train", Spec{
+			Command:   reportFn + `ewlog '{"step":1,"metrics":{"loss":2}}'; ewlog '{"step":2,"metrics":{"loss":1}}'; ew '{"stat":"epochs","value":1}'`,
+			Dashboard: "train",
+		}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v, _, err = fx.m.Wait(context.Background(), v.ID, "exit", 10*time.Second)
+		if err != nil || v.Status != protocol.ProcessExited || *v.ExitCode != 0 {
+			t.Fatalf("run: %+v %v", v, err)
+		}
+		return v
+	}
+	v := run()
+	if v.Experiment != "train" || v.Run != "train#1" {
+		t.Fatalf("named %q %q", v.Experiment, v.Run)
+	}
+	if err := fx.m.SetDashboardState(v.ID, "tab", json.RawMessage(`"loss"`)); err != nil {
+		t.Fatal(err)
+	}
+	v = run()
+	if v.Run != "train#2" || string(v.DashboardState["tab"]) != `"loss"` {
+		t.Fatalf("second run %q, state %v", v.Run, v.DashboardState)
+	}
+	cat, err := fx.hub.Catalog(fx.home, "train")
+	if err != nil || len(cat.Runs) != 2 || cat.Runs[0].Status != "exited" {
+		t.Fatalf("catalog %+v %v", cat, err)
+	}
+	res, err := fx.hub.Query(fx.home, telemetry.Query{Metric: "loss"})
+	if err != nil || len(res.Series) != 2 || res.X != "step" || len(res.Series[1].Points) != 2 {
+		t.Fatalf("loss by run: %+v %v", res, err)
+	}
+	// The stat it reported is charted too.
+	if res, _ := fx.hub.Query(fx.home, telemetry.Query{Metric: "epochs"}); len(res.Series) != 2 {
+		t.Fatalf("epochs: %+v", res)
+	}
+	if _, err := os.Stat(filepath.Join(fx.home, telemetry.DBFile)); err != nil {
+		t.Fatal(err)
+	}
+}

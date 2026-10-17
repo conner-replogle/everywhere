@@ -16,10 +16,11 @@ import (
 	"github.com/conner-replogle/everywhere/daemon/internal/process"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/store"
+	"github.com/conner-replogle/everywhere/daemon/internal/telemetry"
 )
 
 // TestLive has a real claude (haiku) start processes through the MCP tools:
-// a script that reports progress with ::ew lines, then a slow one with
+// a script that reports progress over HTTP, then a slow one with
 // notify, whose exit must wake the idle thread. It spends a few cents of
 // the logged-in account's usage.
 //
@@ -49,6 +50,13 @@ func TestLive(t *testing.T) {
 	procs := process.NewManager(st, t.TempDir())
 	defer procs.Shutdown()
 	procs.Workdir = func(string) (string, error) { return dir, nil }
+	hub := telemetry.New()
+	hub.OnProgress = procs.ReportFromProcess
+	if err := hub.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer hub.Close()
+	procs.Telemetry = hub
 	agents := agent.NewManager(st, t.TempDir(), func() {})
 	defer agents.Shutdown()
 	procs.Notify = func(threadID, agentThreadID string, n process.Notice) {
@@ -100,7 +108,8 @@ func TestLive(t *testing.T) {
 
 	send(`Use the mcp__everywhere__process_start tool (not Bash) to start a process named "count" with this exact command, ` +
 		`declaring a stat with key "n", label "Counted" and total 5, and wait_for "exit": ` +
-		`for i in 1 2 3 4 5; do echo "::ew stat n $i/5"; sleep 0.2; done; echo '::ew checkpoint "Counted"'; echo done` +
+		`for i in 1 2 3 4 5; do curl -s -H "X-Everywhere-Token: $EVERYWHERE_TOKEN" -d "{\"stat\":\"n\",\"value\":$i,\"total\":5}" $EVERYWHERE_TELEMETRY/progress; sleep 0.2; done; ` +
+		`curl -s -H "X-Everywhere-Token: $EVERYWHERE_TOKEN" -d '{"checkpoint":"Counted"}' $EVERYWHERE_TELEMETRY/progress; echo done` +
 		` Then reply with the stat's final value.`)
 	waitTurns(1, "the first turn")
 	v, err := procs.Find(th.ID, "count")

@@ -63,7 +63,7 @@ func (s *Server) claudeArgs(threadID, _ string) ([]string, func(), error) {
 		return nil, nil, fmt.Errorf("writing mcp config: %w", werr)
 	}
 	names := append(browser.ToolNames(), process.ToolNames()...)
-	names = append(names, doneToolName, attachToolName)
+	names = append(names, doneToolName, attachToolName, dashboardBuildTool, dashboardDocsTool)
 	if s.desktop != nil {
 		names = append(names, desktop.ToolNames()...)
 	}
