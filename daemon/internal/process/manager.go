@@ -854,13 +854,23 @@ func (m *Manager) get(id string) *proc {
 // previous daemon is loaded from its row.
 func (m *Manager) byName(threadID, name string) *proc {
 	m.mu.Lock()
+	var found []*proc
 	for _, p := range m.live {
 		if p.threadID == threadID && p.name == name {
-			m.mu.Unlock()
-			return p
+			found = append(found, p)
 		}
 	}
 	m.mu.Unlock()
+	// One that just ended stays live until its row is saved: it isn't
+	// running, so its name is free.
+	for _, p := range found {
+		p.mu.Lock()
+		running := p.status == protocol.ProcessRunning
+		p.mu.Unlock()
+		if running {
+			return p
+		}
+	}
 	rows, err := m.store.ListProcesses(threadID)
 	if err != nil {
 		return nil
