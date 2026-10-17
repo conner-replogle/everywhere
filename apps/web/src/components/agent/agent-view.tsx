@@ -28,16 +28,19 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { type AgentThread, useAgentThread } from "@/lib/agent";
+import { api } from "@/lib/api";
 import { listenComposer, sendToComposer } from "@/lib/composer-inbox";
 import { loadDraft, saveDraft } from "@/lib/drafts";
 import { type DevicePeer, useRpc } from "@/lib/peer";
-import { cn } from "@/lib/utils";
+import { rewriteContext } from "@/lib/rewrite";
+import { cn, errorMessage } from "@/lib/utils";
 import {
   AttachmentChips,
   ContextMeter,
   DictateButton,
   matchCommands,
   ReasoningMenu,
+  RewriteButton,
   SlashMenu,
   UsageMeter,
   useAttachments,
@@ -564,6 +567,28 @@ function Composer({
     ref.current?.focus();
   }, []);
 
+  // Rewrite: the draft goes to a small model with the recent conversation;
+  // the box is read-only meanwhile, so the result can't clobber new typing.
+  const [rewriting, setRewriting] = useState(false);
+  const [beforeRewrite, setBeforeRewrite] = useState<string | null>(null);
+  const [rewriteError, setRewriteError] = useState<string>();
+  const rewrite = async () => {
+    const draft = text.trim();
+    if (!draft || rewriting) return;
+    setRewriting(true);
+    setRewriteError(undefined);
+    try {
+      const { text: better } = await api.rewritePrompt(draft, rewriteContext(agent.events));
+      setBeforeRewrite(text);
+      setText(better);
+    } catch (e) {
+      setRewriteError(errorMessage(e));
+    } finally {
+      setRewriting(false);
+      ref.current?.focus();
+    }
+  };
+
   const acceptSuggestion = () => {
     if (!suggestion) return;
     setText(suggestion);
@@ -596,6 +621,7 @@ function Composer({
     const attachments = files.ready.map((a) => a.id);
     agent.send({ t: "send", text: text.trim(), ...(attachments.length ? { attachments } : {}) });
     setText("");
+    setBeforeRewrite(null);
     files.clear();
   };
 
@@ -627,8 +653,10 @@ function Composer({
         rows={1}
         autoFocus
         disabled={!ready}
+        readOnly={rewriting}
         onChange={(e) => {
           setText(e.target.value);
+          setBeforeRewrite(null);
           if (!e.target.value.startsWith("/")) setSlashDismissed(false);
         }}
         onPaste={(e) => {
@@ -726,6 +754,18 @@ function Composer({
           </>
         )}
         <DictateButton disabled={!ready} onText={addDictation} />
+        <RewriteButton
+          rewriting={rewriting}
+          canUndo={beforeRewrite !== null}
+          error={rewriteError}
+          disabled={!ready || text.trim() === ""}
+          onRewrite={rewrite}
+          onUndo={() => {
+            setText(beforeRewrite ?? "");
+            setBeforeRewrite(null);
+          }}
+          onClearError={() => setRewriteError(undefined)}
+        />
         <ModeMenu state={state} disabled={!ready} onPick={(mode) => agent.send({ t: "setMode", mode })} />
         <ModelMenu
           state={state}

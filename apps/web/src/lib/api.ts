@@ -168,6 +168,10 @@ export const api = {
   transcribe: (audio: string, language?: string) =>
     request<{ text: string }>("POST", "/api/speech/transcribe", { audio, language }),
 
+  /** A clearer version of a composer draft, given the thread's recent messages. */
+  rewritePrompt: (draft: string, context: { role: "user" | "claude"; text: string }[]) =>
+    request<{ text: string }>("POST", "/api/prompt/rewrite", { draft, context }),
+
   githubStatus: () => request<{ configured: boolean; login: string | null }>("GET", "/api/github/status"),
   /** A page navigation, not a fetch: it goes to GitHub and comes back to Settings. */
   githubConnectUrl: "/api/github/connect",

@@ -22,6 +22,8 @@ import {
   MicIcon,
   Minimize2Icon,
   SquareIcon,
+  Undo2Icon,
+  WandSparklesIcon,
   XIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
@@ -400,6 +402,54 @@ export function DictateButton({ disabled, onText }: { disabled: boolean; onText:
           onClick={dictation.clearError}
           title={error}
         >
+          {error}
+        </button>
+      )}
+    </>
+  );
+}
+
+// --- rewrite -------------------------------------------------------------------------
+
+/** Rewrites the draft into a clearer prompt; Undo puts the draft back until it's edited. */
+export function RewriteButton({
+  rewriting,
+  canUndo,
+  error,
+  disabled,
+  onRewrite,
+  onUndo,
+  onClearError,
+}: {
+  rewriting: boolean;
+  canUndo: boolean;
+  error: string | undefined;
+  disabled: boolean;
+  onRewrite: () => void;
+  onUndo: () => void;
+  onClearError: () => void;
+}) {
+  return (
+    <>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className={cn("size-6", error && "text-destructive")}
+        disabled={disabled || rewriting}
+        onClick={onRewrite}
+        aria-label={rewriting ? "Rewriting" : "Rewrite prompt"}
+        title={rewriting ? "Rewriting…" : error ? `${error}. Rewrite again` : "Rewrite prompt, using the conversation for context"}
+      >
+        {rewriting ? <LoaderIcon className="animate-spin" /> : <WandSparklesIcon />}
+      </Button>
+      {canUndo && !rewriting && (
+        <Button variant="ghost" size="sm" className="h-6 gap-1 px-1.5 text-xs font-normal" onClick={onUndo} title="Put your draft back">
+          <Undo2Icon className="size-3" />
+          Undo
+        </Button>
+      )}
+      {error && (
+        <button type="button" className="max-w-48 truncate text-xs text-destructive" onClick={onClearError} title={error}>
           {error}
         </button>
       )}
