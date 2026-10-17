@@ -1,6 +1,7 @@
 import { type Context, Hono } from "hono";
 import { bearerDevice } from "./auth";
 import { randomId, randomToken, sha256 } from "./crypto";
+import { serveDashboardFrame } from "./dashboard";
 import { HUB_ID_HEADER, HUB_KIND_HEADER, HUB_SESSION_HEADER } from "./hub";
 import { failingScript, type InstallPlatform, installScript } from "./install";
 import { mcp } from "./mcp";
@@ -156,6 +157,8 @@ async function serveInstall(c: Context<App>, platform: InstallPlatform) {
     "x-content-type-options": "nosniff",
   });
 }
+
+app.get("/dashboard", serveDashboardFrame);
 
 app.get("/i/:token", (c) => serveInstall(c, "unix"));
 app.get("/i/:token/windows", (c) => serveInstall(c, "windows"));

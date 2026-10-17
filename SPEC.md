@@ -535,9 +535,12 @@ whose `dashboard` names it (`process_start`, a report, or the process's
   `dashboard_docs` explains it all.
 - **Frame**: it runs in `/dashboard` (`dashboard.html`) in an iframe with
   `sandbox="allow-scripts"`: an opaque origin, so no cookies, storage or
-  access to the app, and a CSP with `connect-src 'none'`, so no network
-  (`public/_headers`; `/assets` sends `Access-Control-Allow-Origin` for its
-  module scripts; the service worker leaves it alone). The app sends it the
+  access to the app, and a CSP with `connect-src 'none'`, so no network.
+  The Worker serves it (`run_worker_first`, `src/dashboard.ts`) to give that
+  CSP our origin by name: WebKit matches `'self'` against the sandbox's
+  opaque origin, which refuses every script. `/assets` sends
+  `Access-Control-Allow-Origin` for its module scripts; the service worker
+  leaves it alone. The app sends it the
   bundle, the process, the theme's variables (again when they change) and
   `telemetry.changed`, and answers its requests over postMessage: queries,
   catalog, events, files (bytes, transferred), the log, state. Errors it
