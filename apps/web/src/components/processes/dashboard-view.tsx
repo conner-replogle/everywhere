@@ -7,6 +7,8 @@ import { errorMessage } from "@/lib/utils";
 
 /** How often an open dashboard checks for a new build. */
 const POLL_MS = 1500;
+/** How long the frame has to say it's ready before it's shown as stuck. */
+const START_MS = 10_000;
 
 function currentTheme(): FrameTheme {
   const style = getComputedStyle(document.documentElement);
@@ -90,6 +92,12 @@ function Message({ title, children }: { title: string; children: React.ReactNode
 function DashboardFrame({ peer, process: p, build }: { peer: DevicePeer; process: Process; build: DashboardBuild }) {
   const frame = useRef<HTMLIFrameElement>(null);
   const [ready, setReady] = useState(false);
+  const [stuck, setStuck] = useState(false);
+  useEffect(() => {
+    if (ready) return;
+    const t = setTimeout(() => setStuck(true), START_MS);
+    return () => clearTimeout(t);
+  }, [ready]);
   const processRef = useRef(p);
   processRef.current = p;
 
@@ -175,6 +183,13 @@ function DashboardFrame({ peer, process: p, build }: { peer: DevicePeer; process
     return () => observer.disconnect();
   }, [ready]);
 
+  if (stuck && !ready) {
+    return (
+      <Message title="The dashboard's page didn't start">
+        <span>Its scripts didn't load. Reload the app; if it stays like this, the browser is refusing them.</span>
+      </Message>
+    );
+  }
   return (
     <iframe
       ref={frame}

@@ -538,9 +538,11 @@ whose `dashboard` names it (`process_start`, a report, or the process's
   access to the app, and a CSP with `connect-src 'none'`, so no network.
   The Worker serves it (`run_worker_first`, `src/dashboard.ts`) to give that
   CSP our origin by name: WebKit matches `'self'` against the sandbox's
-  opaque origin, which refuses every script. `/assets` sends
-  `Access-Control-Allow-Origin` for its module scripts; the service worker
-  leaves it alone. The app sends it the
+  opaque origin, which refuses every script. Its module scripts load
+  cross-origin, so built files are served from `/static` with
+  `Access-Control-Allow-Origin`: not `/assets`, where browsers kept a year's
+  copies from before they had it, and reused them, failing the frame. The
+  service worker leaves the frame alone. The app sends it the
   bundle, the process, the theme's variables (again when they change) and
   `telemetry.changed`, and answers its requests over postMessage: queries,
   catalog, events, files (bytes, transferred), the log, state. Errors it

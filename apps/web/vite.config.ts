@@ -30,6 +30,10 @@ export default defineConfig({
   },
   build: {
     outDir: "dist",
+    // Not "assets": browsers keep that path's files a year, and copies from
+    // before they carried CORS (which a dashboard's sandboxed frame needs to
+    // load them) would be reused as they are. Nothing is cached under here.
+    assetsDir: "static",
     rollupOptions: {
       input: {
         main: new URL("./index.html", import.meta.url).pathname,

@@ -2,11 +2,13 @@
 // round trip. Everything live (API, WebSockets, WebRTC) bypasses it.
 //
 // - Page loads: network first, falling back to the last cached app shell.
-// - /assets/*: content-hashed and immutable, so cache first.
+// - /static/*: content-hashed and immutable, so cache first.
 // - Everything else (/api, /mcp, /oauth, /i, /.well-known, /dashboard, …): untouched.
 
 const SHELL = "shell-v1";
-const ASSETS = "assets-v2"; // v1 could hold index.html under a chunk's name
+// v1 could hold index.html under a chunk's name; v2 chunks without CORS,
+// from /assets, before builds moved to /static.
+const ASSETS = "assets-v3";
 const MAX_ASSETS = 150;
 
 self.addEventListener("install", () => self.skipWaiting());
@@ -34,7 +36,7 @@ self.addEventListener("fetch", (event) => {
 
   if (req.mode === "navigate") {
     event.respondWith(shell(req));
-  } else if (url.pathname.startsWith("/assets/")) {
+  } else if (url.pathname.startsWith("/static/")) {
     event.respondWith(asset(req));
   }
 });
