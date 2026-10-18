@@ -12,7 +12,9 @@ import {
   SERIES_COLORS,
   Table,
   WidgetCard,
+  type XRange,
 } from "@/components/processes/widgets";
+import { useDebounced, ZOOM_ASK_MS } from "@/lib/telemetry";
 import { cn } from "@/lib/utils";
 import { reportError, request, store, UNSET } from "./frame";
 
@@ -70,6 +72,56 @@ function useAsk<T>(ask: (() => Promise<T>) | null, key: string, version: number)
     return () => clearTimeout(timer);
   }, [key, version]);
   return state;
+}
+
+/** A metric from telemetry as a zoomable chart that asks for the zoomed range in detail. */
+function MetricChart({
+  metric,
+  where,
+  groupBy,
+  x,
+  unit,
+  height,
+  zoom: zoomProp,
+  onZoom,
+}: {
+  metric: string;
+  where?: Record<string, string[]>;
+  groupBy?: string[];
+  x?: "step" | "time";
+  unit?: string;
+  height?: number;
+  zoom?: XRange | null;
+  onZoom?: (range: XRange | null) => void;
+}) {
+  const [own, setOwn] = useState<XRange | null>(null);
+  const zoom = onZoom ? (zoomProp ?? null) : own;
+  const asked = useDebounced(zoom, ZOOM_ASK_MS);
+  const res = useQuery({
+    metric,
+    where,
+    groupBy,
+    x,
+    points: 600,
+    ...(asked ? { from: asked[0], to: asked[1] } : {}),
+  });
+  if (res.error) return <Empty>{res.error}</Empty>;
+  const keys = groupBy ?? ["run"];
+  const series = (res.data?.series ?? []).map((s) => ({
+    key: keys.map((k) => s.labels[k] ?? "").join(" · ") || metric,
+    points: s.points,
+  }));
+  return (
+    <LineChart
+      series={series}
+      xLabel={(res.data?.x ?? x) === "step" ? "step" : undefined}
+      unit={unit}
+      height={height}
+      title={metric}
+      zoom={zoom}
+      onZoom={onZoom ?? setOwn}
+    />
+  );
 }
 
 function useQuery(query: Everywhere.Query | null) {
@@ -386,6 +438,7 @@ export const api = {
   Stat,
   Empty,
   LineChart,
+  MetricChart,
   BarChart,
   Gauge,
   Table,

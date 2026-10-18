@@ -1,5 +1,5 @@
 import type { Process } from "@everywhere/protocol";
-import { ActivityIcon, ChartLineIcon, GlobeIcon, LayoutDashboardIcon, PlayIcon, RotateCcwIcon, SquareIcon, Trash2Icon } from "lucide-react";
+import { ActivityIcon, ChartLineIcon, GlobeIcon, LayoutDashboardIcon, Maximize2Icon, Minimize2Icon, PlayIcon, RotateCcwIcon, SquareIcon, Trash2Icon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { TerminalView } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
@@ -31,6 +31,8 @@ interface ProcessesState {
   view?: PaneView;
   /** By experiment, the other runs its charts show. */
   compare?: Record<string, string[]>;
+  /** The selected process's pane fills the tab, the list hidden. */
+  maximized?: boolean;
 }
 
 function parseState(s?: string): ProcessesState {
@@ -128,7 +130,12 @@ export function ProcessesView({
         </div>
       ) : (
         <div className="flex min-h-0 flex-1 @max-[48rem]:flex-col">
-          <ul className="flex min-h-0 shrink-0 flex-col gap-2 overflow-y-auto p-2 @max-[48rem]:max-h-[45%] @max-[48rem]:border-b @min-[48rem]:w-96 @min-[48rem]:border-r">
+          <ul
+            className={cn(
+              "flex min-h-0 shrink-0 flex-col gap-2 overflow-y-auto p-2 @max-[48rem]:max-h-[45%] @max-[48rem]:border-b @min-[48rem]:w-96 @min-[48rem]:border-r",
+              state.maximized && shown && "hidden",
+            )}
+          >
             {processes.map((p) => (
               <li key={p.id}>
                 <ProcessCard
@@ -154,6 +161,8 @@ export function ProcessesView({
                 view={state.view}
                 onView={(view) => save({ ...state, view })}
                 compare={(shown.experiment && state.compare?.[shown.experiment]) || []}
+                maximized={!!state.maximized}
+                onMaximize={(maximized) => save({ ...state, maximized })}
                 onCompare={(runs) =>
                   shown.experiment && save({ ...state, compare: { ...state.compare, [shown.experiment]: runs } })
                 }
@@ -185,6 +194,8 @@ function ProcessPane({
   onView,
   compare,
   onCompare,
+  maximized,
+  onMaximize,
 }: {
   peer: DevicePeer;
   threadId: string;
@@ -194,6 +205,8 @@ function ProcessPane({
   onView: (view: PaneView) => void;
   compare: string[];
   onCompare: (runs: string[]) => void;
+  maximized: boolean;
+  onMaximize: (maximized: boolean) => void;
 }) {
   const views: { id: PaneView; label: string }[] = [
     ...(p.dashboard ? [{ id: "dashboard" as const, label: "Dashboard" }] : []),
@@ -214,9 +227,17 @@ function ProcessPane({
   }
   return (
     <>
-      {views.length > 1 && (
-        <div className="flex h-8 shrink-0 items-center gap-1 border-b px-2 text-xs" role="tablist">
-          {views.map((v) => (
+      <div className="flex h-8 shrink-0 items-center gap-1 border-b px-2 text-xs">
+        {maximized && (
+          // The list is hidden: say which process this is.
+          <span className="flex min-w-0 items-center gap-1.5 pr-2">
+            <StatusMark process={p} />
+            <span className="truncate font-medium">{p.name}</span>
+          </span>
+        )}
+        <div className="flex min-w-0 items-center gap-1" role="tablist">
+          {views.length > 1 &&
+            views.map((v) => (
             <button
               key={v.id}
               type="button"
@@ -232,7 +253,18 @@ function ProcessPane({
             </button>
           ))}
         </div>
-      )}
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="ml-auto"
+          onClick={() => onMaximize(!maximized)}
+          aria-pressed={maximized}
+          aria-label={maximized ? "Show the process list" : "Maximize"}
+          title={maximized ? "Show the process list" : "Fill the tab with this process's view"}
+        >
+          {maximized ? <Minimize2Icon /> : <Maximize2Icon />}
+        </Button>
+      </div>
       {/* The log and the dashboard stay mounted and sized while hidden (fitting
           a hidden terminal would shrink the process's; a dashboard would start
           over), so switching back is instant. */}

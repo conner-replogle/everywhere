@@ -11,10 +11,10 @@ import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import type { DevicePeer } from "@/lib/peer";
-import { useCatalog, useTelemetryChanged, useTelemetryQuery } from "@/lib/telemetry";
+import { useCatalog, useDebounced, useTelemetryChanged, useTelemetryQuery, ZOOM_ASK_MS } from "@/lib/telemetry";
 import { cn, errorMessage } from "@/lib/utils";
 import { formatDuration } from "./progress";
-import { Card, Empty, Grid, LineChart, ProcessWidgets, SERIES_COLORS } from "./widgets";
+import { Card, Empty, Grid, LineChart, ProcessWidgets, SERIES_COLORS, type XRange } from "./widgets";
 
 /** Runs a chart compares at most: one color each. */
 const MAX_RUNS = SERIES_COLORS.length;
@@ -44,6 +44,10 @@ export function TelemetryView({
     [p.run, compare, runs],
   );
   const metrics = catalog.data?.metrics ?? [];
+  // Charts on the same axis zoom together; the device is asked once zooming pauses.
+  const [zoom, setZoom] = useState<Record<"step" | "time", XRange | null>>({ step: null, time: null });
+  const asked = useDebounced(zoom, ZOOM_ASK_MS);
+  useEffect(() => setZoom({ step: null, time: null }), [p.id, p.experiment]);
   const hasWidgets = (p.widgets?.length ?? 0) > 0;
 
   if (!p.experiment || !p.run) return hasWidgets ? <ProcessWidgets process={p} /> : <Empty>No telemetry</Empty>;
@@ -66,9 +70,21 @@ export function TelemetryView({
             </Empty>
           </div>
         )}
-        {metrics.map((m) => (
-          <MetricCard key={m.name} peer={peer} process={p} metric={m} runs={shown} />
-        ))}
+        {metrics.map((m) => {
+          const axis = m.steps ? "step" : "time";
+          return (
+            <MetricCard
+              key={m.name}
+              peer={peer}
+              process={p}
+              metric={m}
+              runs={shown}
+              zoom={zoom[axis]}
+              asked={asked[axis]}
+              onZoom={(range) => setZoom((z) => ({ ...z, [axis]: range }))}
+            />
+          );
+        })}
       </Grid>
       <Attachments peer={peer} process={p} runs={shown} />
       {hasWidgets && <ProcessWidgets process={p} />}
@@ -143,21 +159,32 @@ function MetricCard({
   process: p,
   metric,
   runs,
+  zoom,
+  asked,
+  onZoom,
 }: {
   peer: DevicePeer;
   process: Process;
   metric: TelemetryMetric;
   runs: string[];
+  /** The range shown, and the one asked of the device (it lags while zooming). */
+  zoom: XRange | null;
+  asked: XRange | null;
+  onZoom: (range: XRange | null) => void;
 }) {
+  const from = asked?.[0];
+  const to = asked?.[1];
   const query = useMemo(
     () => ({
       metric: metric.name,
       where: { experiment: [p.experiment!], run: runs },
       groupBy: ["run"],
       x: metric.steps ? ("step" as const) : ("time" as const),
+      // Zoomed in, the device buckets just that range: more detail, not a blur.
+      ...(from !== undefined && to !== undefined ? { from, to } : {}),
       points: 600,
     }),
-    [metric.name, metric.steps, p.experiment, runs],
+    [metric.name, metric.steps, p.experiment, runs, from, to],
   );
   const res = useTelemetryQuery(peer, { processId: p.id }, p.home, p.experiment, query);
   // Series in the order of the runs, so each run keeps its color.
@@ -170,7 +197,13 @@ function MetricCard({
       {res.error ? (
         <Empty>{res.error}</Empty>
       ) : (
-        <LineChart series={series} xLabel={res.data?.x === "step" ? "step" : undefined} title={metric.name} />
+        <LineChart
+          series={series}
+          xLabel={metric.steps ? "step" : undefined}
+          title={metric.name}
+          zoom={zoom}
+          onZoom={onZoom}
+        />
       )}
     </Card>
   );

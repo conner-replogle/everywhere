@@ -9,6 +9,19 @@ import { errorMessage } from "@/lib/utils";
  * data; nothing is kept here between asks.
  */
 
+/** How long zooming pauses before the device is asked for that range. */
+export const ZOOM_ASK_MS = 250;
+
+/** value, once it's stopped changing for ms. */
+export function useDebounced<T>(value: T, ms: number): T {
+  const [settled, setSettled] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setSettled(value), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return settled;
+}
+
 /** A metric changes at most this often, as far as charts are concerned. */
 const REFETCH_MS = 1000;
 

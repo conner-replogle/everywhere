@@ -38,6 +38,9 @@ process: POST $EVERYWHERE_TELEMETRY/progress {"dashboard": "train"}.
 The dashboard runs sandboxed in the browser with no network. It asks the
 device, over the app's connection, for just what it draws:
 
+- <MetricChart metric="loss" />: the easy way to chart a metric. A line per
+  run (or groupBy), and zoomable: drag to zoom, double-click to reset, and
+  the zoomed range is asked of the device again in more detail.
 - useQuery({metric, where, groupBy, x, from, to, points}): a metric, bucketed
   on the device to about points per series (the chart's width), so a run of
   millions of points comes back as a few hundred. By default it's the
@@ -68,7 +71,7 @@ query.
 
 ## Looking right
 
-Build from the components: Grid, Card, Stat, LineChart, BarChart, Gauge,
+Build from the components: Grid, Card, Stat, MetricChart, LineChart, BarChart, Gauge,
 Table, Image, Video, Empty. They follow the user's theme (light or dark, any
 palette). For a custom visual (an SVG, a canvas, a diagram, a map) keep it
 in a Card and use the theme: theme.series[i] and the other theme colors as

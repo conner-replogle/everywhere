@@ -178,11 +178,44 @@ declare module "everywhere" {
     points: [number, number][];
   }
 
+  /** An x range: [from, to]. */
+  export type XRange = [number, number];
+
   /**
-   * Up to 4 series, with hover, legend and the theme's colors. Without
-   * xLabel, x is seconds (shown as durations); with one, plain numbers.
+   * Up to 4 series, with hover, the theme's colors, a legend that hides and
+   * shows series, and zoom: drag across it (or pinch, or a trackpad pinch) to
+   * zoom in, double-click or "Reset zoom" to zoom out, one finger to pan when
+   * zoomed. Without xLabel, x is seconds (shown as durations); with one,
+   * plain numbers. It zooms the points it has unless you pass zoom and
+   * onZoom: then you own the range, e.g. to share it between charts or to
+   * query that range in detail (MetricChart does both for you).
    */
-  export function LineChart(props: { series: Series[]; xLabel?: string; unit?: string; height?: number }): Node;
+  export function LineChart(props: {
+    series: Series[];
+    xLabel?: string;
+    unit?: string;
+    height?: number;
+    title?: string;
+    zoom?: XRange | null;
+    onZoom?: (range: XRange | null) => void;
+  }): Node;
+
+  /**
+   * A metric charted straight from telemetry: a line per group (default: per
+   * run), zoomable, asking the device for the zoomed range in more detail.
+   * The easy way to chart a metric; useQuery + LineChart for anything else.
+   * Pass zoom and onZoom to link charts' zoom (e.g. useDashboardState).
+   */
+  export function MetricChart(props: {
+    metric: string;
+    where?: Record<string, string[]>;
+    groupBy?: string[];
+    x?: "step" | "time";
+    unit?: string;
+    height?: number;
+    zoom?: XRange | null;
+    onZoom?: (range: XRange | null) => void;
+  }): Node;
   /** Horizontal bars from a zero baseline, value at the tip. */
   export function BarChart(props: { bars: { label: string; value: number }[]; unit?: string }): Node;
   /** One value between min (0) and max; past warn or critical it says so. critical < warn means low is bad. */

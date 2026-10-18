@@ -457,7 +457,8 @@ that speaks MCP. `internal/process`.
   rate and ETA, status text and URLs. The selected one shows its Dashboard,
   Charts (its telemetry and widgets) or Log; which, and the runs Charts
   compares, are kept in the tab's state. It opens on the dashboard, then
-  widgets, then the log, before charts that may be empty. Thread
+  widgets, then the log, before charts that may be empty. Maximize (in its
+  view bar, also kept) hides the list so the view fills the tab. Thread
   rows in the sidebar show a running count. Claude tabs show the thread's
   running processes, and those that ended in the last 10 minutes, above the
   composer, one line each; a line opens the process in the processes tab.
@@ -527,6 +528,12 @@ just what they draw. `internal/telemetry`.
   experiment as a line chart (over steps if it has them, else time), a line
   per run: this run, and up to 3 others picked to compare; the runs'
   attachments, newest first; then its widgets.
+- **Zoom**: drag across a chart to zoom in (or pinch, or pinch a trackpad);
+  double-click or "Reset zoom" to zoom out; one finger pans a zoomed chart.
+  Charts on the same axis zoom together. A zoomed chart is asked again
+  (`from`/`to`) once zooming pauses for 250 ms, so the device buckets just
+  that range: more detail, not a magnified blur. Legend entries hide and
+  show their series.
 
 ### Dashboards
 
@@ -562,7 +569,8 @@ whose `dashboard` names it (`process_start`, a report, or the process's
 - **API** (`everywhere.d.ts`, which the frame's module is type-checked
   against): `useQuery`, `useCatalog`, `useTelemetryEvents`, `useProcess`,
   `useLog`, `useFile`/`useText`/`useJSON`, `useDashboardState`; `Grid`,
-  `Card`, `Stat`, `LineChart`, `BarChart`, `Gauge`, `Table`, `Widget`,
+  `Card`, `Stat`, `MetricChart` (a metric, zoomable, asking for the zoomed
+  range), `LineChart` (zoomable; `zoom`/`onZoom` to own the range), `BarChart`, `Gauge`, `Table`, `Widget`,
   `Image`, `Video`, `Empty`; `theme`, `useThemeColors`, formatters; Tailwind
   (the browser build) with the app's colors.
 - **Stateless**: a dashboard holds nothing a reload would lose: it asks the
