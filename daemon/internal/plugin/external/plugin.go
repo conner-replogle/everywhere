@@ -52,6 +52,8 @@ type Plugin struct {
 	streams  map[string]*webrtc.DataChannel
 	sessions map[string]plugin.Session
 	nextID   int64
+	// removeAgents forgets the agents it added.
+	removeAgents []func()
 }
 
 // New makes a plugin from its directory and manifest.
@@ -105,9 +107,14 @@ func (p *Plugin) Dir() string { return p.dir }
 func (p *Plugin) Spec() Manifest { return p.m }
 
 func (p *Plugin) Manifest() plugin.Manifest {
+	requires := p.m.Requires
+	// Its agents are the agent plugin's to run.
+	if len(p.m.Contributes.Agents) > 0 && !slices.Contains(requires, "agent") {
+		requires = append(slices.Clip(requires), "agent")
+	}
 	return plugin.Manifest{
 		ID: p.m.ID, Title: p.m.Title, Version: p.m.Version, API: p.m.API,
-		Requires: p.m.Requires, Optional: p.m.Optional, Permissions: p.m.Permissions,
+		Requires: requires, Optional: p.m.Optional, Permissions: p.m.Permissions,
 		Web: p.m.Web != "", Settings: p.m.Settings, SettingsPage: p.m.SettingsPage, UI: p.m.Contributes.UI,
 		Icon: p.icon,
 	}
@@ -169,7 +176,27 @@ func (p *Plugin) Start(h plugin.Host) error {
 			return plugin.AgentContribution{SystemPrompt: []string{a.SystemPrompt}}
 		})
 	}
-	go p.supervise()
+	if len(c.Agents) > 0 {
+		svc, ok := plugin.Lookup[plugin.AgentService](h, plugin.ServiceAgent)
+		if !ok {
+			return errors.New("it adds agents, but the agent plugin isn't running")
+		}
+		for _, a := range c.Agents {
+			prog, err := p.resolve(a.Command[0])
+			if err != nil {
+				for _, remove := range p.removeAgents {
+					remove()
+				}
+				p.removeAgents = nil
+				return fmt.Errorf("agent %s: %w", a.Kind, err)
+			}
+			cmd := append([]string{prog}, a.Command[1:]...)
+			p.removeAgents = append(p.removeAgents, svc.AddAgent(h, plugin.AgentDef{Kind: a.Kind, Title: a.Title, Icon: p.icon, Command: cmd}))
+		}
+	}
+	if p.m.HasProcess() {
+		go p.supervise()
+	}
 	return nil
 }
 
@@ -183,7 +210,12 @@ func (p *Plugin) Stop() {
 	p.stopped = true
 	close(p.stopCh)
 	c, cmd, exited := p.c, p.cmd, p.exited
+	removeAgents := p.removeAgents
+	p.removeAgents = nil
 	p.mu.Unlock()
+	for _, remove := range removeAgents {
+		remove()
+	}
 	if c == nil || cmd == nil {
 		return
 	}
@@ -200,6 +232,9 @@ func (p *Plugin) Stop() {
 func (p *Plugin) Running() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if !p.m.HasProcess() {
+		return p.h != nil && !p.stopped
+	}
 	return p.c != nil
 }
 
@@ -229,9 +264,11 @@ func (p *Plugin) supervise() {
 
 func (p *Plugin) dataDir() string { return filepath.Join(p.h.DataDir(), "plugin-data", p.m.ID) }
 
-// command resolves the program: a path in the plugin's directory, or one on PATH.
-func (p *Plugin) command() (string, error) {
-	name := p.m.Command[0]
+// command resolves the program.
+func (p *Plugin) command() (string, error) { return p.resolve(p.m.Command[0]) }
+
+// resolve finds a program: a path in the plugin's directory, or one on PATH.
+func (p *Plugin) resolve(name string) (string, error) {
 	if filepath.IsAbs(name) {
 		return name, nil
 	}

@@ -9,14 +9,25 @@ import { asInput, EditPreview, isEdit, toolIcon, toolLabel, toolSummary } from "
 type Respond = (msg: Extract<AgentClientMsg, { t: "respond" }>) => void;
 
 /** A prompt waiting for the user, pinned above the composer. */
-export function PendingRequest({ request, cwd, respond }: { request: AgentRequest; cwd?: string; respond: Respond }) {
+export function PendingRequest({
+  request,
+  cwd,
+  respond,
+  agent,
+}: {
+  request: AgentRequest;
+  cwd?: string;
+  respond: Respond;
+  /** Another agent than Claude, by name: it takes a plain yes or no. */
+  agent?: string;
+}) {
   switch (request.kind) {
     case "question":
       return <QuestionCard request={request} respond={respond} />;
     case "plan":
       return <PlanCard request={request} respond={respond} />;
     default:
-      return <ToolCard request={request} cwd={cwd} respond={respond} />;
+      return <ToolCard request={request} cwd={cwd} respond={respond} agent={agent} />;
   }
 }
 
@@ -89,7 +100,7 @@ function DenyBox({ label, placeholder, onDeny }: { label: string; placeholder: s
   );
 }
 
-function ToolCard({ request, cwd, respond }: { request: AgentRequest; cwd?: string; respond: Respond }) {
+function ToolCard({ request, cwd, respond, agent }: { request: AgentRequest; cwd?: string; respond: Respond; agent?: string }) {
   const input = asInput(request.input);
   const Icon = toolIcon(request.toolName);
   const summary = toolSummary(request.toolName, input, cwd);
@@ -99,7 +110,7 @@ function ToolCard({ request, cwd, respond }: { request: AgentRequest; cwd?: stri
   return (
     <Card
       icon={<ShieldCheckIcon className="size-3.5 shrink-0" />}
-      title={request.title || `Claude wants to use ${toolLabel(request.toolName)}`}
+      title={request.title || `${agent ?? "Claude"} wants to use ${toolLabel(request.toolName)}`}
     >
       <div className="flex min-w-0 items-center gap-2">
         <Icon className="size-3.5 shrink-0 text-muted-foreground" />
@@ -122,7 +133,13 @@ function ToolCard({ request, cwd, respond }: { request: AgentRequest; cwd?: stri
             Allow for this session
           </Button>
         )}
-        <DenyBox label="Deny" placeholder="Tell Claude what to do instead (optional)" onDeny={(m) => decide("deny", m)} />
+        {agent ? (
+          <Button size="sm" variant="outline" onClick={() => decide("deny")}>
+            Deny
+          </Button>
+        ) : (
+          <DenyBox label="Deny" placeholder="Tell Claude what to do instead (optional)" onDeny={(m) => decide("deny", m)} />
+        )}
       </div>
     </Card>
   );

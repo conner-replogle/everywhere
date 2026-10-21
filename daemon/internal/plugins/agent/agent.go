@@ -1,7 +1,11 @@
-// Package agent is the agent plugin: Claude Code threads and tabs, the
-// agent: and upload: channels, signing claude in, and reading and driving
-// claude threads over the hub. Other plugins reach claude through the
-// AgentService it exports and add to claude's launch with ContributeAgent.
+// Package agent is the agent plugin: coding agents' threads and tabs, all
+// run by one engine (package agent) and drawn by the app's agent view:
+// Claude Code's through package claude, others' (OpenCode, and those
+// plugins add with AgentService.AddAgent) over the Agent Client Protocol
+// through package harness. It also serves the
+// upload: channel, signs claude in, and reads and drives agent threads over
+// the hub. Other plugins reach agents through the AgentService it exports
+// and add to claude's launch with ContributeAgent.
 package agent
 
 import (
@@ -16,6 +20,7 @@ import (
 	"github.com/pion/webrtc/v4"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/agent"
+	"github.com/conner-replogle/everywhere/daemon/internal/harness"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugin"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 )
@@ -38,7 +43,7 @@ func New() *Plugin { return &Plugin{} }
 
 func (p *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
-		ID: "agent", Title: "Claude Code", API: plugin.API, Builtin: true,
+		ID: "agent", Title: "Agents", API: plugin.API, Builtin: true,
 		Permissions: []string{plugin.PermExec, plugin.PermFSWrite, plugin.PermAgentTools, plugin.PermRemote},
 		Features: []string{protocol.FeatureClaude, protocol.FeatureWorktrees, protocol.FeatureAttachments, protocol.FeatureHistory,
 			protocol.FeatureRewind, protocol.FeatureClaudeUpdate, protocol.FeatureClaudeAuth, protocol.FeatureToken},
@@ -58,6 +63,13 @@ func (p *Plugin) Start(h plugin.Host) error {
 	clearMCPConfigs(p.mcpDir)
 	p.m.ThreadArgs = p.claudeArgs
 	h.Export(plugin.ServiceAgent, service{p})
+
+	// Other agents: a thread kind each, for those installed here, run by
+	// the same manager through their harness.
+	p.m.ThreadMCP = p.harnessMCP
+	for _, a := range harness.Available() {
+		h.AddKind(p.agentKind(a))
+	}
 
 	h.AddKind(plugin.KindHandler{
 		Kind: plugin.Kind{Kind: protocol.ThreadClaude, Thread: true},
@@ -151,7 +163,7 @@ func (p *Plugin) Start(h plugin.Host) error {
 		ThreadID string                  `json:"threadId"`
 		Msg      protocol.AgentClientMsg `json:"msg"`
 	}) (any, error) {
-		if _, err := p.claudeThread(r.ThreadID); err != nil {
+		if _, err := p.agentThread(r.ThreadID); err != nil {
 			return nil, err
 		}
 		if err := p.m.Request(r.ThreadID, r.Msg); err != nil {
@@ -177,13 +189,14 @@ func (p *Plugin) initialMode(t protocol.Thread, mode string) error {
 	return p.h.Store().SetAgentPermissionMode(t.ID, mode)
 }
 
-func (p *Plugin) claudeThread(id string) (protocol.Thread, error) {
+// agentThread is a thread of claude or another agent.
+func (p *Plugin) agentThread(id string) (protocol.Thread, error) {
 	t, err := p.h.Threads().Get(id)
 	if err != nil {
 		return t, err
 	}
-	if t.Kind != protocol.ThreadClaude {
-		return t, errors.New("not a claude thread")
+	if !agent.IsAgentKind(t.Kind) {
+		return t, errors.New("not an agent thread")
 	}
 	return t, nil
 }
@@ -212,7 +225,7 @@ type readParams struct {
 // (and before beforeSeq, if set). With waitMs, it first waits up to that
 // long for a turn in progress to finish or block on a prompt.
 func (p *Plugin) remoteRead(_ plugin.RPCContext, r readParams) (any, error) {
-	t, err := p.claudeThread(r.ThreadID)
+	t, err := p.agentThread(r.ThreadID)
 	if err != nil {
 		return nil, err
 	}
@@ -251,7 +264,40 @@ func (p *Plugin) remoteRead(_ plugin.RPCContext, r readParams) (any, error) {
 }
 
 // service is the AgentService other plugins use.
+// agentKind is the kind of another agent's threads.
+func (p *Plugin) agentKind(a harness.Agent) plugin.KindHandler {
+	return plugin.KindHandler{
+		Kind: plugin.Kind{Kind: a.Kind, Title: a.Title, Thread: true, View: "agent", Icon: a.Icon},
+		Created: func(t protocol.Thread, c plugin.CreateParams) error {
+			if strings.TrimSpace(c.Prompt) != "" {
+				return p.m.Request(t.ID, protocol.AgentClientMsg{T: "send", Text: c.Prompt})
+			}
+			return nil
+		},
+		Status: func(t protocol.Thread) (bool, string) { return p.m.Status(t.ID) },
+		Stop:   func(t protocol.Thread) { p.m.Kill(t.ID) },
+		Delete: func(t protocol.Thread, d plugin.DeleteParams) func() {
+			a, err := p.h.Store().AgentThread(t.ID)
+			if err != nil {
+				return func() { p.m.Kill(t.ID) }
+			}
+			return func() { p.m.Remove(t.ID, a, d.KeepWorktree) }
+		},
+	}
+}
+
 type service struct{ p *Plugin }
+
+func (s service) AddAgent(h plugin.Host, d plugin.AgentDef) func() {
+	a := harness.Agent{Kind: d.Kind, Title: d.Title, Icon: d.Icon, Command: d.Command}
+	forget := harness.Add(a)
+	h.AddKind(s.p.agentKind(a))
+	// Its threads stop with it; their history stays for when it's back.
+	return func() {
+		s.p.m.KillKind(a.Kind)
+		forget()
+	}
+}
 
 func (s service) Notify(threadID, name, text, prompt string, wake bool) {
 	s.p.m.ProcessEvent(threadID, name, text, prompt, wake)

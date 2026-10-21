@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/conner-replogle/everywhere/daemon/internal/harness"
 	"github.com/conner-replogle/everywhere/daemon/internal/mcp"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugin"
 )
@@ -93,4 +94,21 @@ func clearMCPConfigs(dir string) {
 // ClaudeArgs is what a claude process for the thread is started with, for tests.
 func (p *Plugin) ClaudeArgs(threadID, projectID string) ([]string, func(), error) {
 	return p.claudeArgs(threadID, projectID)
+}
+
+// harnessMCP gives another agent's thread the daemon's MCP server, with a
+// token of its own, and what plugins contribute that's reachable over HTTP.
+func (p *Plugin) harnessMCP(threadID, projectID string) ([]harness.MCPServer, func(), error) {
+	key, err := p.h.Threads().Owner(threadID)
+	if err != nil {
+		return nil, nil, err
+	}
+	endpoint, token, revoke, err := p.h.Tools().Grant(mcp.Caller{ThreadID: threadID, Browser: key})
+	if err != nil {
+		return nil, nil, err
+	}
+	return []harness.MCPServer{{
+		Name: plugin.ToolServerName, URL: endpoint,
+		Headers: map[string]string{"Authorization": "Bearer " + token},
+	}}, revoke, nil
 }

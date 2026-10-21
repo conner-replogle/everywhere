@@ -256,7 +256,7 @@ func eventually(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-type harness struct {
+type rig struct {
 	t      *testing.T
 	st     *store.Store
 	m      *Manager
@@ -266,7 +266,7 @@ type harness struct {
 	titles func(desc string, persist bool) (string, error)
 }
 
-func newHarness(t *testing.T) *harness {
+func newHarness(t *testing.T) *rig {
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -277,7 +277,7 @@ func newHarness(t *testing.T) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &harness{t: t, st: st, thread: th.ID}
+	h := &rig{t: t, st: st, thread: th.ID}
 	h.m = NewManager(st, t.TempDir(), func() {})
 	h.m.start = func(_ context.Context, o claude.Options) (process, error) {
 		p := &fakeProc{opts: o, msgs: make(chan claude.Message, 100), titles: h.titles}
@@ -290,7 +290,7 @@ func newHarness(t *testing.T) *harness {
 	return h
 }
 
-func (h *harness) proc(i int) *fakeProc {
+func (h *rig) proc(i int) *fakeProc {
 	h.t.Helper()
 	eventually(h.t, "claude to start", func() bool { h.mu.Lock(); defer h.mu.Unlock(); return len(h.procs) > i })
 	h.mu.Lock()
@@ -298,7 +298,7 @@ func (h *harness) proc(i int) *fakeProc {
 	return h.procs[i]
 }
 
-func (h *harness) attach(afterSeq int64) *fakeClient {
+func (h *rig) attach(afterSeq int64) *fakeClient {
 	c := &fakeClient{}
 	if err := h.m.Attach(h.thread, c, afterSeq, 0); err != nil {
 		h.t.Fatal(err)
@@ -306,9 +306,9 @@ func (h *harness) attach(afterSeq int64) *fakeClient {
 	return c
 }
 
-func (h *harness) do(c *fakeClient, msg protocol.AgentClientMsg) { h.m.Handle(h.thread, c, msg) }
+func (h *rig) do(c *fakeClient, msg protocol.AgentClientMsg) { h.m.Handle(h.thread, c, msg) }
 
-func (h *harness) waitStatus(c *fakeClient, status string) {
+func (h *rig) waitStatus(c *fakeClient, status string) {
 	h.t.Helper()
 	eventually(h.t, "status "+status, func() bool { return c.state().Status == status })
 }
@@ -429,7 +429,7 @@ func TestAttachLimitAndHistory(t *testing.T) {
 	}
 }
 
-func (h *harness) threadName() string {
+func (h *rig) threadName() string {
 	th, err := h.st.GetThread(h.thread)
 	if err != nil {
 		h.t.Fatal(err)
@@ -759,7 +759,7 @@ func gitRepo(t *testing.T) string {
 }
 
 // claudeThreadIn adds a project for dir and a claude thread in it.
-func (h *harness) claudeThreadIn(dir string) string {
+func (h *rig) claudeThreadIn(dir string) string {
 	h.t.Helper()
 	p, err := h.st.CreateProject(dir, "")
 	if err != nil {
@@ -1022,7 +1022,7 @@ func TestEffortAndThinking(t *testing.T) {
 
 // twoTurns runs two completed turns on proc 0 and returns the client and
 // the prompts' event ids.
-func (h *harness) twoTurns() (*fakeClient, [2]string) {
+func (h *rig) twoTurns() (*fakeClient, [2]string) {
 	h.t.Helper()
 	c := h.attach(0)
 	var ids [2]string
@@ -1395,14 +1395,14 @@ func TestSignInProblem(t *testing.T) {
 }
 
 func TestMarkDone(t *testing.T) {
-	done := func(h *harness) bool {
+	done := func(h *rig) bool {
 		th, err := h.st.GetThread(h.thread)
 		if err != nil {
 			h.t.Fatal(err)
 		}
 		return th.DoneAt != nil
 	}
-	turn := func(h *harness, c *fakeClient, text string) *fakeProc {
+	turn := func(h *rig, c *fakeClient, text string) *fakeProc {
 		h.do(c, protocol.AgentClientMsg{T: "send", Text: text})
 		p := h.proc(0)
 		h.waitStatus(c, "working")

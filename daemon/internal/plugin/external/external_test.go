@@ -13,10 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/conner-replogle/everywhere/daemon/internal/harness"
 	"github.com/conner-replogle/everywhere/daemon/internal/mcp"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugin"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugin/external"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugin/plugintest"
+	agentplugin "github.com/conner-replogle/everywhere/daemon/internal/plugins/agent"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	sdk "github.com/conner-replogle/everywhere/daemon/sdk/plugin"
 )
@@ -183,10 +185,21 @@ func TestManifestValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, mod := range map[string]func(*external.Manifest){
-		"reserved id":         func(m *external.Manifest) { m.ID = "agent" },
-		"bad id":              func(m *external.Manifest) { m.ID = "Hello World" },
-		"other api":           func(m *external.Manifest) { m.API = plugin.API + 1 },
-		"no command":          func(m *external.Manifest) { m.Command = nil },
+		"reserved id": func(m *external.Manifest) { m.ID = "agent" },
+		"bad id":      func(m *external.Manifest) { m.ID = "Hello World" },
+		"other api":   func(m *external.Manifest) { m.API = plugin.API + 1 },
+		"no command":  func(m *external.Manifest) { m.Command = nil; m.Contributes.RPC = []external.RPC{{Method: "hello.x"}} },
+		"agent of another kind": func(m *external.Manifest) {
+			m.Permissions = []string{plugin.PermExec}
+			m.Contributes.Agents = []external.Agent{{Kind: "claude", Title: "Claude", Command: []string{"x"}}}
+		},
+		"agent without exec": func(m *external.Manifest) {
+			m.Contributes.Agents = []external.Agent{{Kind: "hello", Title: "Hello", Command: []string{"x"}}}
+		},
+		"agent without command": func(m *external.Manifest) {
+			m.Permissions = []string{plugin.PermExec}
+			m.Contributes.Agents = []external.Agent{{Kind: "hello", Title: "Hello"}}
+		},
 		"unprefixed method":   func(m *external.Manifest) { m.Contributes.RPC = []external.RPC{{Method: "threads.list"}} },
 		"remote without perm": func(m *external.Manifest) { m.Contributes.RPC = []external.RPC{{Method: "hello.x", Remote: true}} },
 		"unprefixed channel":  func(m *external.Manifest) { m.Contributes.Channels = []string{"term:"} },
@@ -217,6 +230,48 @@ func TestManifestValidation(t *testing.T) {
 		if err := m.Validate(); err == nil {
 			t.Errorf("%s: accepted", name)
 		}
+	}
+}
+
+// A plugin can be just an agent: no process of its own, a thread kind the
+// agent plugin runs over ACP.
+func TestAgentPlugin(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "acme-acp"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "icon.svg"), []byte("<svg/>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := external.Manifest{
+		ID: "acme", Title: "Acme", API: plugin.API, Permissions: []string{plugin.PermExec}, Icon: "icon.svg",
+		Contributes: external.Contributes{Agents: []external.Agent{{Kind: "acme", Title: "Acme Agent", Command: []string{"acme-acp", "--acp"}}}},
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	r, _ := plugintest.Start(t, agentplugin.New())
+	p := external.New(dir, m)
+	if err := r.StartPlugin(p); err != nil {
+		t.Fatal(err)
+	}
+	if !p.Running() {
+		t.Fatal("not running")
+	}
+	k, ok := r.Kind("acme")
+	if !ok || k.View != "agent" || !k.Thread || k.Title != "Acme Agent" || !strings.HasPrefix(k.Icon, "data:image/svg+xml") {
+		t.Fatalf("kind %+v %v", k.Kind, ok)
+	}
+	a, ok := harness.ByKind("acme")
+	if !ok || strings.Join(a.Command, " ") != filepath.Join(dir, "acme-acp")+" --acp" {
+		t.Fatalf("agent %+v %v", a, ok)
+	}
+	r.StopPlugin("acme")
+	if _, ok := r.Kind("acme"); ok {
+		t.Fatal("kind stayed")
+	}
+	if _, ok := harness.ByKind("acme"); ok {
+		t.Fatal("agent stayed")
 	}
 }
 

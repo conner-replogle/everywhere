@@ -58,8 +58,10 @@ func (m *Manager) SaveUpload(threadID, id, name, mediaType string, size int64, r
 	if !uploadID.MatchString(id) {
 		return protocol.AgentAttachment{}, errors.New("bad upload id")
 	}
-	if _, err := m.store.AgentThread(threadID); err != nil {
+	if a, err := m.store.AgentThread(threadID); err != nil {
 		return protocol.AgentAttachment{}, err
+	} else if !IsAgentKind(a.Kind) {
+		return protocol.AgentAttachment{}, fmt.Errorf("thread %s is a %s thread", threadID, a.Kind)
 	}
 	name = cleanName(name)
 	kind := "file"

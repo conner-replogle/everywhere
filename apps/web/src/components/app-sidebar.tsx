@@ -1294,10 +1294,12 @@ function TuckedThreads({
 }
 
 function NewThreadItems({ entry, claude, onPick }: { entry: Entry; claude: boolean; onPick: (kind: ThreadKind) => void }) {
-  // Installed plugins' thread kinds (built-ins' are the two above).
-  const pluginKinds = (entry.info.data?.plugins ?? [])
-    .filter((p) => !p.builtin)
-    .flatMap((p) => (p.contributes.kinds ?? []).filter((k) => k.thread).map((k) => ({ ...k, Icon: pluginLogoIcon(p.icon) })));
+  // Other thread kinds: other agents, installed plugins' (the two above are drawn as they are).
+  const pluginKinds = (entry.info.data?.plugins ?? []).flatMap((p) =>
+    (p.contributes.kinds ?? [])
+      .filter((k) => k.thread && k.kind !== "terminal" && k.kind !== "claude")
+      .map((k) => ({ ...k, Icon: pluginLogoIcon(k.icon ?? p.icon) })),
+  );
   return (
     <>
       <DropdownMenuItem onSelect={() => onPick("terminal")}>
@@ -1387,21 +1389,21 @@ export function ThreadStatusDot({ thread: t, deviceId }: { thread: Thread; devic
 }
 
 function ThreadDot({ thread: t }: { thread: Thread }) {
-  const s = t.kind === "claude" ? t.agentStatus : undefined;
+  const s = t.agentStatus;
   if (s === "working" || s === "starting") {
-    return <span className="ml-auto size-1.5 shrink-0 animate-pulse rounded-full bg-primary" title="Claude is working" />;
+    return <span className="ml-auto size-1.5 shrink-0 animate-pulse rounded-full bg-primary" title="Working" />;
   }
   if (s === "waiting") {
-    return <span className="ml-auto size-1.5 shrink-0 rounded-full bg-warn" title="Claude is waiting for you" />;
+    return <span className="ml-auto size-1.5 shrink-0 rounded-full bg-warn" title="Waiting for you" />;
   }
   if (s === "error") {
-    return <span className="ml-auto size-1.5 shrink-0 rounded-full bg-destructive" title="Claude stopped with an error" />;
+    return <span className="ml-auto size-1.5 shrink-0 rounded-full bg-destructive" title="Stopped with an error" />;
   }
   if (!t.running) return null;
   return (
     <span
       className="ml-auto size-1.5 shrink-0 rounded-full bg-live"
-      title={t.kind === "claude" ? "Claude running" : "Shell running"}
+      title={t.kind === "terminal" ? "Shell running" : "Running"}
       aria-label="running"
     />
   );

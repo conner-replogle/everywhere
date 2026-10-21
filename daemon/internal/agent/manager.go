@@ -1,8 +1,12 @@
-// Package agent runs Claude conversations for claude threads. Each active
-// thread gets one claude process, started (or resumed) when a prompt
-// arrives and stopped after it has been idle for a while. Its output becomes
-// a persisted event log plus live state that browsers attach to, much like
-// term does for shells.
+// Package agent is the agent engine: it runs coding agents' conversations
+// for their threads. Each active thread gets one agent process, started (or
+// resumed) when a prompt arrives and stopped after it has been idle for a
+// while. Its output becomes a persisted event log plus live state that
+// browsers attach to, much like term does for shells.
+//
+// The process is reached through a harness (the process interface), which
+// speaks claude's stream: Claude Code's natively (package claude), other
+// agents' translated from the Agent Client Protocol (package harness).
 package agent
 
 import (
@@ -21,6 +25,7 @@ import (
 
 	"github.com/conner-replogle/everywhere/daemon/internal/claude"
 	"github.com/conner-replogle/everywhere/daemon/internal/gitx"
+	"github.com/conner-replogle/everywhere/daemon/internal/harness"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/store"
 )
@@ -56,7 +61,8 @@ type Store interface {
 	DeleteAgentEvents(threadID string, fromSeq, toSeq int64) error
 }
 
-// process is a running claude CLI; *claude.Session implements it.
+// process is a running agent behind its harness: *claude.Session for
+// claude, *harness.Conn for an ACP agent.
 type process interface {
 	Messages() <-chan claude.Message
 	Init() claude.InitResponse
@@ -87,6 +93,10 @@ type Manager struct {
 	// like an MCP server of the daemon's own with a token for that thread.
 	// release is called once that process has ended.
 	ThreadArgs func(threadID, projectID string) (args []string, release func(), err error)
+	// ThreadMCP, if set, gives another agent's thread (one run through a
+	// harness) the daemon's MCP servers, with a token for that thread;
+	// release is called once its process has ended.
+	ThreadMCP func(threadID, projectID string) (servers []harness.MCPServer, release func(), err error)
 	// Notify, if set, is told when a thread needs the user or finishes a
 	// turn (for push notifications). It's called on its own goroutine.
 	Notify func(protocol.HubNotify)
@@ -101,6 +111,8 @@ type Manager struct {
 	store    Store
 	onChange func() // called when a thread's running state or status changes
 	start    func(context.Context, claude.Options) (process, error)
+	// startAgent starts another agent (harness.Agents) for a thread.
+	startAgent func(context.Context, harness.StartOptions) (process, error)
 	// forkPoint finds the transcript entry before a prompt; see
 	// claude.ForkPoint.
 	forkPoint func(sessionID, promptID string) (string, error)
@@ -149,6 +161,13 @@ func NewManager(st Store, dataDir string, onChange func()) *Manager {
 		sessions:         map[string]*session{},
 	}
 	m.start = m.startClaude
+	m.startAgent = func(ctx context.Context, o harness.StartOptions) (process, error) {
+		c, err := harness.Start(ctx, o)
+		if err != nil {
+			return nil, err
+		}
+		return c, nil
+	}
 	m.forkPoint = m.transcriptForkPoint
 	return m
 }
@@ -162,7 +181,9 @@ func (m *Manager) Attach(threadID string, c Client, afterSeq int64, limit int) e
 		return err
 	}
 	s.do(func() { s.attach(c, afterSeq, limit) })
-	go m.checkClaude()
+	if s.agent == nil {
+		go m.checkClaude()
+	}
 	return nil
 }
 
@@ -296,6 +317,23 @@ func (m *Manager) Kill(threadID string) {
 	}
 }
 
+// KillKind stops the threads of another agent (a harness.Agent's kind),
+// as Kill does, for when the agent goes away.
+func (m *Manager) KillKind(kind string) {
+	m.mu.Lock()
+	var stop []*session
+	for id, s := range m.sessions {
+		if s.agent != nil && s.agent.Kind == kind {
+			stop = append(stop, s)
+			delete(m.sessions, id)
+		}
+	}
+	m.mu.Unlock()
+	for _, s := range stop {
+		s.stop()
+	}
+}
+
 // Remove cleans up after a deleted claude thread: its process, its
 // attachments and, unless keepWorktree, its worktree (the branch stays). a
 // is the thread as it was before deletion.
@@ -382,6 +420,9 @@ func (m *Manager) session(threadID string) (*session, error) {
 	a, err := m.store.AgentThread(threadID)
 	if err != nil {
 		return nil, err
+	}
+	if !IsAgentKind(a.Kind) {
+		return nil, fmt.Errorf("thread %s is a %s thread", threadID, a.Kind)
 	}
 	s := newSession(m, threadID, a)
 	m.sessions[threadID] = s
@@ -505,4 +546,14 @@ func LoginEnv(ctx context.Context) []string {
 
 func errorMsg(message string) protocol.AgentErrorMsg {
 	return protocol.AgentErrorMsg{T: "error", Message: message}
+}
+
+// IsAgentKind reports whether threads of kind run an agent: claude, or
+// another agent through a harness.
+func IsAgentKind(kind string) bool {
+	if kind == protocol.ThreadClaude {
+		return true
+	}
+	_, ok := harness.ByKind(kind)
+	return ok
 }

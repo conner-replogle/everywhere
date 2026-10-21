@@ -635,6 +635,8 @@ WHERE id = ?2 OR id = (SELECT parent_id FROM threads WHERE id = ?2)`, now(), thr
 
 // AgentThread is what the agent manager needs to run a claude thread.
 type AgentThread struct {
+	// Kind is the thread's kind: claude, or another agent's.
+	Kind      string
 	ProjectID string
 	Dir       string // the project directory, or the thread's scratch folder
 	// Scratch: the thread works in a folder of its own in Scratch.
@@ -665,20 +667,16 @@ type AgentThread struct {
 func (s *Store) AgentThread(threadID string) (AgentThread, error) {
 	var a AgentThread
 	var session, resumeAt, model, base, worktree, branch, ctxUsage, effort sql.NullString
-	var kind string
 	err := s.db.QueryRow(`
 SELECT t.project_id, `+threadDir+`, p.is_scratch, t.kind, t.agent_session_id, t.agent_resume_at, t.agent_model, t.agent_permission_mode,
        t.agent_workspace, t.agent_base_branch, t.agent_worktree, t.agent_branch, t.agent_continue, t.agent_context,
        t.agent_effort, t.agent_thinking, COALESCE(t.agent_worktree = par.agent_worktree, 0)
 FROM threads t JOIN projects p ON p.id = t.project_id LEFT JOIN threads par ON par.id = t.parent_id
 WHERE t.id = ?`, threadID,
-	).Scan(&a.ProjectID, &a.Dir, &a.Scratch, &kind, &session, &resumeAt, &model, &a.PermissionMode,
+	).Scan(&a.ProjectID, &a.Dir, &a.Scratch, &a.Kind, &session, &resumeAt, &model, &a.PermissionMode,
 		&a.Workspace, &base, &worktree, &branch, &a.Continue, &ctxUsage, &effort, &a.Thinking, &a.SharedWorktree)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
-	}
-	if err == nil && kind != protocol.ThreadClaude {
-		return a, fmt.Errorf("thread %s is a %s thread", threadID, kind)
 	}
 	a.SessionID, a.ResumeAt, a.Model = session.String, resumeAt.String, model.String
 	a.BaseBranch, a.Worktree, a.Branch = base.String, worktree.String, branch.String

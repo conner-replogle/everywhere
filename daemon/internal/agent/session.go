@@ -10,12 +10,14 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/claude"
 	"github.com/conner-replogle/everywhere/daemon/internal/gitx"
+	"github.com/conner-replogle/everywhere/daemon/internal/harness"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/store"
 )
@@ -55,7 +57,7 @@ var (
 	effortLevels    = []string{"low", "medium", "high", "xhigh", "max"}
 	// defaultThreadName matches names the store generates, which a first
 	// prompt replaces.
-	defaultThreadName = regexp.MustCompile(`^claude \d+$`)
+	defaultThreadName = regexp.MustCompile(`^[a-z][a-z0-9-]* \d+$`)
 )
 
 type published struct {
@@ -68,6 +70,8 @@ type published struct {
 type session struct {
 	m        *Manager
 	threadID string
+	// agent is the agent the thread runs through a harness; nil for claude.
+	agent *harness.Agent
 	// recapping: the turn in progress is only a /recap, shown as a quiet
 	// background task (the thread stays idle to everyone else).
 	recapping bool
@@ -149,8 +153,25 @@ func newSession(m *Manager, threadID string, a store.AgentThread) *session {
 			Thinking: a.Thinking,
 		},
 	}
+	if agent, ok := harness.ByKind(a.Kind); ok {
+		s.agent = &agent
+		s.state.Harness = &protocol.AgentHarness{Kind: agent.Kind, Title: agent.Title}
+		s.state.Models, s.state.Commands = []protocol.AgentModel{}, []protocol.AgentCommand{}
+		// The store's default modes are claude's; an agent's own are known once it starts.
+		if s.state.PermissionMode == "default" || s.state.PermissionMode == "auto" {
+			s.state.PermissionMode = ""
+		}
+	}
 	s.pub.Store(&published{status: statusStopped})
 	return s
+}
+
+// name is the agent's name, for messages.
+func (s *session) name() string {
+	if s.agent != nil {
+		return s.agent.Title
+	}
+	return "Claude"
 }
 
 // do runs f on the session goroutine. It's dropped if the session has
@@ -439,6 +460,9 @@ func (s *session) ensureProc() error {
 	if err != nil {
 		return fail(err)
 	}
+	if s.agent != nil {
+		return s.startAgent(ctx, a, dir, fail)
+	}
 	var extra []string
 	if s.m.ThreadArgs != nil {
 		// Without them claude still works, just without the daemon's tools.
@@ -492,6 +516,9 @@ func sessionSettings(effort string, thinking bool) map[string]any {
 // refreshLimits asks claude for the plan's usage windows, so they show
 // before the first turn reports them.
 func (s *session) refreshLimits() {
+	if s.agent != nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
 	defer cancel()
 	if u, err := s.proc.Usage(ctx); err == nil {
@@ -500,6 +527,9 @@ func (s *session) refreshLimits() {
 }
 
 func (s *session) setEffort(effort string) error {
+	if s.agent != nil {
+		return fmt.Errorf("%s has no effort setting", s.agent.Title)
+	}
 	if effort != "" && !slices.Contains(effortLevels, effort) {
 		return fmt.Errorf("unknown effort %q", effort)
 	}
@@ -522,6 +552,9 @@ func (s *session) setEffort(effort string) error {
 }
 
 func (s *session) setThinking(on bool) error {
+	if s.agent != nil {
+		return fmt.Errorf("%s has no thinking setting", s.agent.Title)
+	}
 	if s.proc != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), controlTimeout)
 		defer cancel()
@@ -649,6 +682,9 @@ func (s *session) interrupt() {
 // by forking claude's session just before the prompt on its next start;
 // the log loses the prompt and everything after it.
 func (s *session) rewind(id string, files bool) error {
+	if s.agent != nil {
+		return fmt.Errorf("%s threads can't be rolled back", s.agent.Title)
+	}
 	if s.turnActive {
 		return errors.New("stop claude before rolling back")
 	}
@@ -795,7 +831,11 @@ func (s *session) respond(msg protocol.AgentClientMsg) error {
 func ValidPermissionMode(mode string) bool { return slices.Contains(permissionModes, mode) }
 
 func (s *session) setMode(mode string) error {
-	if !ValidPermissionMode(mode) {
+	if s.agent != nil {
+		if !slices.ContainsFunc(s.state.Modes, func(m protocol.AgentMode) bool { return m.Value == mode }) {
+			return fmt.Errorf("%s has no mode %q", s.agent.Title, mode)
+		}
+	} else if !ValidPermissionMode(mode) {
 		return fmt.Errorf("unknown permission mode %q", mode)
 	}
 	if s.proc != nil {
@@ -1033,7 +1073,26 @@ func (s *session) onSystem(msg claude.Message) {
 			Commands []claude.SlashCommand `json:"commands"`
 		}
 		if msg.Decode(&f) == nil {
-			s.m.setCommands(f.Commands)
+			if s.agent != nil {
+				s.state.Commands = commandList(f.Commands)
+			} else {
+				s.m.setCommands(f.Commands)
+			}
+		}
+	case "harness_config":
+		s.onHarnessConfig(msg)
+	case "harness_usage":
+		var f struct{ Used, Size int }
+		if msg.Decode(&f) == nil && f.Size > 0 {
+			s.setContext(f.Used, f.Size)
+			if raw, err := json.Marshal(s.state.Context); err == nil {
+				_ = s.m.store.SetAgentContext(s.threadID, raw)
+			}
+		}
+	case "harness_notice":
+		var f struct{ Text string }
+		if msg.Decode(&f) == nil && f.Text != "" {
+			s.emit(protocol.AgentEvent{Type: "notice", Text: f.Text})
 		}
 	case "local_command_output":
 		var f struct {
@@ -1238,7 +1297,7 @@ func (s *session) onResult(msg claude.Message) {
 			}
 		}
 	}
-	if ev.Status == "completed" {
+	if ev.Status == "completed" && s.agent == nil {
 		s.m.noteAuthWorked()
 		s.refreshRetries = 0
 	}
@@ -1481,6 +1540,10 @@ func (s *session) broadcast(frame any) {
 
 func (s *session) stateMsg() protocol.AgentStateMsg {
 	st := s.state
+	if s.agent != nil {
+		// Another agent's models, commands and modes are its thread's own.
+		return protocol.AgentStateMsg{T: "state", State: st}
+	}
 	st.Models, st.Account = s.m.initInfo()
 	if st.Models == nil {
 		st.Models = []protocol.AgentModel{}
@@ -1690,4 +1753,76 @@ func contextFull(reason, text string) bool {
 	}
 	t := strings.ToLower(text)
 	return strings.Contains(t, "prompt is too long") || strings.Contains(t, "context window") && strings.Contains(t, "exceed")
+}
+
+// --- other agents (through a harness) --------------------------------------------
+
+// startAgent starts another agent's session for the thread, in dir.
+func (s *session) startAgent(ctx context.Context, a store.AgentThread, dir string, fail func(error) error) error {
+	var servers []harness.MCPServer
+	if s.m.ThreadMCP != nil {
+		var err error
+		// Without them the agent still works, just without the daemon's tools.
+		if servers, s.releaseArgs, err = s.m.ThreadMCP(s.threadID, a.ProjectID); err != nil {
+			slog.Warn("preparing the agent's MCP servers", "thread", s.threadID, "err", err)
+			servers, s.releaseArgs = nil, nil
+		}
+	}
+	p, err := s.m.startAgent(ctx, harness.StartOptions{
+		Agent: *s.agent, Dir: dir, Resume: a.SessionID, Model: a.Model, Mode: s.state.PermissionMode, MCP: servers,
+	})
+	if err != nil {
+		s.release()
+		return fail(fmt.Errorf("starting %s: %w", s.agent.Title, err))
+	}
+	s.proc, s.procMsgs = p, p.Messages()
+	if v, ok := p.(interface{ Version() string }); ok {
+		s.state.Harness.Version = v.Version()
+	}
+	s.state.Status = statusIdle
+	s.state.Workspace.Locked = true
+	return nil
+}
+
+// onHarnessConfig takes another agent's models and modes, and the ones it
+// has chosen.
+func (s *session) onHarnessConfig(msg claude.Message) {
+	type option struct{ Value, Label, Description string }
+	var f struct {
+		Models *[]option `json:"models"`
+		Modes  *[]option `json:"modes"`
+		Model  *string   `json:"model"`
+		Mode   *string   `json:"mode"`
+	}
+	if msg.Decode(&f) != nil {
+		return
+	}
+	if f.Models != nil {
+		s.state.Models = make([]protocol.AgentModel, 0, len(*f.Models))
+		for _, o := range *f.Models {
+			s.state.Models = append(s.state.Models, protocol.AgentModel{Value: o.Value, DisplayName: o.Label, Description: o.Description})
+		}
+	}
+	if f.Modes != nil {
+		s.state.Modes = make([]protocol.AgentMode, 0, len(*f.Modes))
+		for _, o := range *f.Modes {
+			s.state.Modes = append(s.state.Modes, protocol.AgentMode{Value: o.Value, Label: o.Label, Description: o.Description})
+		}
+	}
+	if f.Model != nil && *f.Model != "" {
+		s.state.Model = *f.Model
+	}
+	if f.Mode != nil && *f.Mode != "" {
+		s.notePermissionMode(*f.Mode)
+	}
+}
+
+// commandList is slash commands as the app lists them, by name.
+func commandList(cmds []claude.SlashCommand) []protocol.AgentCommand {
+	out := make([]protocol.AgentCommand, 0, len(cmds))
+	for _, c := range cmds {
+		out = append(out, protocol.AgentCommand{Name: c.Name, Description: c.Description, ArgumentHint: c.ArgumentHint})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }

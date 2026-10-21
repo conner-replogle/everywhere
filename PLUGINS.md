@@ -533,6 +533,26 @@ be another plugin of the same shape.
   agent contributions from every other plugin, `fs.write` for worktrees,
   the push plugin to deliver its notifications.
 
+**Other agents.** The agent plugin's engine (`internal/agent`) runs every
+coding agent's threads; what's specific to one agent is its harness, behind
+the engine's `process` interface. Claude Code's is `internal/claude`; any
+agent that speaks the Agent Client Protocol (OpenCode, Gemini CLI…) goes
+through `internal/harness`, which translates ACP into claude's stream. Each
+agent is a thread kind with `view: "agent"`, drawn by the same agent view
+(timeline, composer, permission cards, model and mode menus, attachments,
+worktrees, history); claude-only controls (effort, thinking, rewind,
+limits) hide for the others. Built-in agents are listed in
+`harness.Agents`; an installed plugin adds one in `plugin.json`, needing
+`exec` and no process of its own:
+
+```jsonc
+{
+  "id": "gemini", "title": "Gemini CLI", "api": 1, "icon": "gemini.svg",
+  "permissions": ["exec"],
+  "contributes": { "agents": [{ "kind": "gemini", "title": "Gemini", "command": ["gemini", "--experimental-acp"] }] }
+}
+```
+
 ### browser (built-in)
 - **Contributes**: tab kind `browser` (singleton, input capture); channel
   `browser:`; `browser_*` tools; video capture (the Chromium extension under

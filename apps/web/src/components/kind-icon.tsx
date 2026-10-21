@@ -37,16 +37,20 @@ export function pluginLogoIcon(src: string | undefined): LucideIcon {
   return ((props: { className?: string }) => <PluginLogo src={src} className={props.className} />) as unknown as LucideIcon;
 }
 
-/** The plugin providing a kind, among a device's plugins. */
-function kindPlugin(plugins: PluginInfo[] | undefined, kind: string): PluginInfo | undefined {
-  return plugins?.find((p) => !p.builtin && p.contributes.kinds?.some((k) => k.kind === kind));
+/** A kind's logo among a device's plugins: its own, or its plugin's. */
+function kindLogo(plugins: PluginInfo[] | undefined, kind: string): string | undefined {
+  for (const p of plugins ?? []) {
+    const k = p.contributes.kinds?.find((k) => k.kind === kind);
+    if (k) return k.icon ?? (p.builtin ? undefined : p.icon);
+  }
+  return undefined;
 }
 
 /** A kind's icon with what a device has: Claude's logo, a terminal, or its plugin's logo. */
 export function kindIcon(kind: ThreadKind | undefined, plugins?: PluginInfo[]): LucideIcon {
   if (kind === "claude") return ClaudeIcon as unknown as LucideIcon;
   if (!kind || kind === "terminal") return SquareTerminalIcon;
-  return pluginLogoIcon(kindPlugin(plugins, kind)?.icon);
+  return pluginLogoIcon(kindLogo(plugins, kind));
 }
 
 /** A thread's kind icon, on a device. */

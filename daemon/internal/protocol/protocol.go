@@ -583,6 +583,26 @@ type AgentState struct {
 	// ClaudeVersion is the Claude Code version the thread's claude runs, or
 	// would start with.
 	ClaudeVersion string `json:"claudeVersion,omitempty"`
+	// Modes are the agent's own modes, for agents other than claude (whose
+	// permission modes the app knows); PermissionMode is one of them.
+	Modes []AgentMode `json:"modes,omitempty"`
+	// Harness is set for agents other than claude: which, and the app
+	// shows only what they support.
+	Harness *AgentHarness `json:"harness,omitempty"`
+}
+
+// AgentMode is one of an agent's modes (OpenCode's build and plan).
+type AgentMode struct {
+	Value       string `json:"value"`
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+// AgentHarness is the agent a thread runs, when it isn't claude.
+type AgentHarness struct {
+	Kind    string `json:"kind"`
+	Title   string `json:"title"`
+	Version string `json:"version,omitempty"`
 }
 
 type AgentCommand struct {
@@ -887,6 +907,12 @@ type PluginKind struct {
 	Thread bool `json:"thread,omitempty"`
 	// Single: a thread has at most one tab of this kind.
 	Single bool `json:"single,omitempty"`
+	// View names a view the app draws this kind with, instead of the
+	// plugin's own web part: "agent" is the agent view (a conversation over
+	// an agent:<thread> channel).
+	View string `json:"view,omitempty"`
+	// Icon is the kind's logo as a data: URL, drawn in the text color.
+	Icon string `json:"icon,omitempty"`
 }
 
 // FeaturePlugins: device.info lists plugins, and rtc.* sessions.

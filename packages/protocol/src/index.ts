@@ -249,6 +249,10 @@ export interface PluginKind {
   thread?: boolean;
   /** A thread has at most one tab of this kind. */
   single?: boolean;
+  /** A view the app draws it with instead of a web part: "agent" is the agent view. */
+  view?: "agent" | (string & {});
+  /** Its logo, a data: URL, drawn in the text color. */
+  icon?: string;
 }
 
 /**
@@ -1084,7 +1088,8 @@ export type AgentClientMsg =
       /** question requests: question text -> chosen answer. */
       answers?: Record<string, string>;
     }
-  | { t: "setMode"; mode: PermissionMode }
+  /** Claude's permission modes, or another agent's own (AgentState.modes). */
+  | { t: "setMode"; mode: PermissionMode | (string & {}) }
   /** "" means claude's default model. */
   | { t: "setModel"; model: string }
   /** Before the first prompt only. baseBranch "" means the current branch. */
@@ -1148,6 +1153,22 @@ export interface AgentState {
   recapping?: boolean;
   /** The Claude Code version the thread's claude runs, or would start with. */
   claudeVersion?: string;
+  /** Another agent's own modes (OpenCode's build and plan); permissionMode is one of them. */
+  modes?: AgentMode[];
+  /** Set when the thread runs another agent than Claude; the view shows only what it supports. */
+  harness?: AgentHarness;
+}
+
+export interface AgentMode {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+export interface AgentHarness {
+  kind: string;
+  title: string;
+  version?: string;
 }
 
 export interface AgentCommand {

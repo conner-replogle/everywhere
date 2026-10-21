@@ -25,6 +25,7 @@ import { openWebTab } from "@/lib/web-tabs";
 import { cn, errorMessage } from "@/lib/utils";
 import { createThreadBus } from "@/plugins/bus";
 import { useExternalPlugins } from "@/plugins/external";
+import { agentViewKinds, isAgentKind } from "@/plugins/builtin/agent";
 import { BUILTIN, builtinTabKind, devicePlugins, tabKinds } from "@/plugins/registry";
 import {
   isLocal,
@@ -82,7 +83,8 @@ function ThreadPage() {
   // The plugins this device has: built-ins it runs, and external ones with a web part.
   const external = useExternalPlugins(entry);
   const plugins = useMemo(() => devicePlugins(info.data, external), [info.data, external]);
-  const kinds = useMemo(() => tabKinds(plugins), [plugins]);
+  // Built-ins' tab kinds, and other agents' (drawn with the agent view).
+  const kinds = useMemo(() => [...tabKinds(plugins), ...agentViewKinds(info.data?.plugins)], [plugins, info.data?.plugins]);
   const kindOf = (kind: TabKind): TabKindDef => kinds.find((k) => k.kind === kind) ?? builtinTabKind(kind) ?? unknownKind(kind);
   // One tab per kind, except kinds that are several things by nature (web pages).
   const multipleKinds = new Set(kinds.filter((k) => k.multiple).map((k) => k.kind));
@@ -280,10 +282,14 @@ function ThreadPage() {
 
   // Annotations go to the thread's claude, or else the last claude tab
   // opened here (only a mounted one has a composer to take them).
+  const isAgent = (kind: string) => isAgentKind(kind, info.data?.plugins);
   const claudeTarget =
-    thread?.kind === "claude"
+    thread && isAgent(thread.kind)
       ? thread.id
-      : [...opened].reverse().find((id) => panes.find((p) => p.id === id)?.kind === "claude");
+      : [...opened].reverse().find((id) => {
+          const p = panes.find((p) => p.id === id);
+          return !!p && isAgent(p.kind);
+        });
 
   const ctx: ThreadContext | undefined = thread && {
     deviceId,
@@ -605,7 +611,7 @@ function TabButton({
   const Icon = kind.icon;
   // The thread's own tab is named by its kind; the thread's name is above.
   const label = p.parentId ? p.name : kind.title;
-  const status = !isLocal(p) && p.kind === "claude" ? p.agentStatus : undefined;
+  const status = !isLocal(p) ? p.agentStatus : undefined;
   return (
     <div
       className={cn(

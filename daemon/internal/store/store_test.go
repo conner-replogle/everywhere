@@ -111,9 +111,10 @@ func TestAgentThreads(t *testing.T) {
 	projects, _ := s.ListProjects()
 	home := projects[0]
 
+	// Which kinds run agents is the agent plugin's to say; the store reports the kind.
 	term, _ := s.CreateThread(home.ID, "", "")
-	if _, err := s.AgentThread(term.ID); err == nil {
-		t.Error("AgentThread accepted a terminal thread")
+	if a, err := s.AgentThread(term.ID); err != nil || a.Kind != protocol.ThreadTerminal {
+		t.Errorf("AgentThread(terminal) = kind %q, %v", a.Kind, err)
 	}
 	// Plugins decide which kinds exist; the store only refuses malformed ones.
 	if _, err := s.CreateThread(home.ID, "", "bad kind!"); err == nil {

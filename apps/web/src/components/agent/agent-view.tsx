@@ -67,6 +67,9 @@ export interface ToolUse {
 /** Timeline items drawn at first; earlier ones load on request. */
 const PAGE = 150;
 
+// Features of the engine rather than of claude.
+const shared = ["attachments", "history", "worktrees"];
+
 export function AgentView({
   peer,
   threadId,
@@ -127,9 +130,14 @@ export function AgentView({
     if (uses.length) onToolUsesRef.current?.(uses);
   }, [agent.events]);
   const { info } = useDevice();
-  const features = info.data?.features ?? [];
+  // Another agent than Claude: what it supports, and its name.
+  const harness = state?.harness;
+  const name = harness?.title ?? "Claude";
+  // Claude's features, as the device reports them; other agents run on the
+  // same engine, so they share those that aren't claude's own.
+  const features = (info.data?.features ?? []).filter((f) => !harness || shared.includes(f));
   // Before the thread has run, models and commands come from a probe of the device's claude.
-  const needModels = features.includes("worktrees") && !!state && state.models.length === 0;
+  const needModels = features.includes("worktrees") && !!state && !harness && state.models.length === 0;
   const agentInfo = useRpc(peer, "agent.info", {}, [], needModels);
   const models = state?.models.length ? state.models : (agentInfo.data?.models ?? []);
   const commands = state?.commands?.length ? state.commands : (agentInfo.data?.commands ?? []);
@@ -165,7 +173,7 @@ export function AgentView({
   const compact = () => user.send({ t: "send", text: "/compact" });
   const claudeAuth = useClaudeAuth();
   const [signingIn, setSigningIn] = useState(false);
-  const onSignIn = signedOut(claudeAuth.data) ? () => setSigningIn(true) : undefined;
+  const onSignIn = !harness && signedOut(claudeAuth.data) ? () => setSigningIn(true) : undefined;
   const prefs = usePrefs();
   useAutoRecap({
     threadId,
@@ -290,7 +298,7 @@ export function AgentView({
               ))}
             </div>
           )}
-          {agent.synced && agent.events.length === 0 && <EmptyState scratch={scratch} />}
+          {agent.synced && agent.events.length === 0 && <EmptyState scratch={scratch} name={harness?.title} />}
           <Timeline
             items={items}
             peer={peer}
@@ -323,7 +331,7 @@ export function AgentView({
         {archived ? (
           <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-3 px-4 pt-1 pb-5 @min-[48rem]:pb-8">
             <p className="min-w-0 flex-1 text-[13px] text-muted-foreground">
-              {archived.error ?? "This thread is archived. Restore it to keep going; Claude picks up where it left off."}
+              {archived.error ?? "This thread is archived. Restore it to keep going; {name} picks up where it left off."}
             </p>
             <Button size="sm" variant="secondary" onClick={archived.onRestore}>
               <ArchiveRestoreIcon />
@@ -333,12 +341,12 @@ export function AgentView({
         ) : (
           <div className="mx-auto grid max-w-3xl gap-2 px-4 pt-1 pb-5 @min-[48rem]:pb-8">
             {state?.pending.map((r) => (
-              <PendingRequest key={r.id} request={r} cwd={workdir} respond={user.send} />
+              <PendingRequest key={r.id} request={r} cwd={workdir} respond={user.send} agent={harness?.title} />
             ))}
             {claudeAuth.data && onSignIn && <SignedOutBanner auth={claudeAuth.data} onSignIn={onSignIn} />}
             <ResumeBanner threadId={threadId} context={state?.context} canCompact={canCompact} onCompact={compact} />
             {aboveComposer}
-            <StatusBar agent={agent} />
+            <StatusBar agent={agent} name={name} />
             <Composer
               agent={user}
               busy={busy}
@@ -350,8 +358,9 @@ export function AgentView({
               limits={limits}
               git={git.data}
               canAttach={features.includes("attachments")}
+              name={name}
             />
-            {agentInfo.data && !agentInfo.data.available && (
+            {!harness && agentInfo.data && !agentInfo.data.available && (
               <p className="text-xs text-destructive">Claude isn't usable on this device: {agentInfo.data.error}</p>
             )}
           </div>
@@ -406,7 +415,17 @@ function RewindDialog({
   );
 }
 
-function EmptyState({ scratch }: { scratch?: boolean }) {
+function EmptyState({ scratch, name }: { scratch?: boolean; name?: string }) {
+  if (name) {
+    return (
+      <div className="py-16 text-center text-muted-foreground">
+        <p className="text-[15px] text-foreground">{scratch ? "What do you need done on this computer?" : `Start a conversation with ${name}`}</p>
+        <p className="mt-1">
+          It runs on this device with your {name} setup, in {scratch ? "a fresh Scratch folder of its own" : "the project directory"}.
+        </p>
+      </div>
+    );
+  }
   return (
     <div className="py-16 text-center text-muted-foreground">
       <p className="text-[15px] text-foreground">
@@ -421,7 +440,7 @@ function EmptyState({ scratch }: { scratch?: boolean }) {
   );
 }
 
-function StatusBar({ agent }: { agent: AgentThread }) {
+function StatusBar({ agent, name }: { agent: AgentThread; name: string }) {
   const { state } = agent;
   if (agent.closed) {
     return (
@@ -448,7 +467,7 @@ function StatusBar({ agent }: { agent: AgentThread }) {
     return (
       <Notice tone="error">
         <span className="flex-1 whitespace-pre-wrap">
-          Claude stopped: {state.error}
+          {name} stopped: {state.error}
           <span className="text-muted-foreground"> Send a message to start it again.</span>
         </span>
       </Notice>
@@ -482,6 +501,7 @@ function Composer({
   limits,
   git,
   canAttach,
+  name,
 }: {
   agent: AgentThread;
   busy: boolean;
@@ -493,6 +513,8 @@ function Composer({
   limits: AgentLimit[] | undefined;
   git: Parameters<typeof WorkspacePicker>[0]["git"];
   canAttach: boolean;
+  /** The agent's name, for the placeholder. */
+  name: string;
 }) {
   // Kept per thread, so switching threads or tabs doesn't lose it.
   const [text, setText] = useState(() => loadDraft(threadId));
@@ -581,7 +603,9 @@ function Composer({
   }, [text]);
 
   // A prompt sent mid-recap would join the recap's turn; it's only a few seconds.
-  const canSend = ready && !recapping && !files.uploading && (text.trim() !== "" || files.ready.length > 0);
+  // Other agents take one prompt per turn: nothing joins a turn in progress.
+  const oneAtATime = !!state?.harness && active;
+  const canSend = ready && !recapping && !oneAtATime && !files.uploading && (text.trim() !== "" || files.ready.length > 0);
   const submit = () => {
     if (!canSend) return;
     const attachments = files.ready.map((a) => a.id);
@@ -667,10 +691,12 @@ function Composer({
           !ready
             ? "Connecting…"
             : active
-              ? "Add to the current turn… (Esc to stop)"
+              ? oneAtATime
+                ? `${name} is working… (Esc to stop)`
+                : "Add to the current turn… (Esc to stop)"
               : suggestion
                 ? suggestion
-                : "Ask Claude to do something… (/ for commands)"
+                : `Ask ${name} to do something… (/ for commands)`
         }
         className={cn(
           "block max-h-60 w-full resize-none bg-transparent px-3 pt-2.5 pb-1 outline-none placeholder:text-muted-foreground disabled:opacity-50",
@@ -732,14 +758,20 @@ function Composer({
           }}
           onClearError={() => setRewriteError(undefined)}
         />
-        <ModeMenu state={state} disabled={!ready} onPick={(mode) => agent.send({ t: "setMode", mode })} />
+        {state?.harness ? (
+          state.modes?.length ? (
+            <AgentModeMenu state={state} disabled={!ready} onPick={(mode) => agent.send({ t: "setMode", mode })} />
+          ) : null
+        ) : (
+          <ModeMenu state={state} disabled={!ready} onPick={(mode) => agent.send({ t: "setMode", mode })} />
+        )}
         <ModelMenu
           state={state}
           models={models}
           disabled={!ready}
           onPick={(model) => agent.send({ t: "setModel", model })}
         />
-        {state?.thinking !== undefined && (
+        {state?.thinking !== undefined && !state.harness && (
           <ReasoningMenu
             model={model}
             effort={state.effort ?? ""}
@@ -752,7 +784,7 @@ function Composer({
         {/* One line that wraps as a piece, the branch name giving way first,
             so a meter never ends up alone on a row. */}
         <span className="flex max-w-full min-w-0 items-center gap-1">
-          {state && (
+          {state && !state.harness && (
             <WorkspacePicker
               workspace={state.workspace}
               git={git}
@@ -853,6 +885,33 @@ function ModeMenu({
   );
 }
 
+/** Another agent's own modes (OpenCode's build and plan). */
+function AgentModeMenu({ state, disabled, onPick }: { state: AgentState; disabled: boolean; onPick: (mode: string) => void }) {
+  const modes = state.modes ?? [];
+  const current = modes.find((m) => m.value === state.permissionMode);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild disabled={disabled}>
+        <Button variant="ghost" size="sm" className="h-6 px-2 font-normal">
+          {current?.label ?? (state.permissionMode || "Mode")}
+          <ChevronDownIcon className="size-3" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" side="top">
+        <DropdownMenuLabel>Mode</DropdownMenuLabel>
+        {modes.map((m) => (
+          <DropdownMenuItem key={m.value} onSelect={() => onPick(m.value)}>
+            <div className="grid">
+              <span className={cn(m.value === current?.value && "text-primary")}>{m.label}</span>
+              {m.description && <span className="text-xs text-muted-foreground">{m.description}</span>}
+            </div>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 /** What the model button says: for claude's default, the model it stands for. */
 function modelName(m: AgentModel, models: AgentModel[]): string {
   if (m.value !== "default") return m.displayName;
@@ -887,11 +946,19 @@ function ModelMenu({
           <ChevronDownIcon className="size-3" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" side="top">
+      <DropdownMenuContent align="start" side="top" className="max-h-96 overflow-y-auto">
         <DropdownMenuLabel className="flex items-baseline justify-between gap-4">
           Model
-          {state?.claudeVersion && (
-            <span className="text-[11px] font-normal text-muted-foreground">Claude Code {state.claudeVersion}</span>
+          {state?.harness ? (
+            state.harness.version && (
+              <span className="text-[11px] font-normal text-muted-foreground">
+                {state.harness.title} {state.harness.version}
+              </span>
+            )
+          ) : (
+            state?.claudeVersion && (
+              <span className="text-[11px] font-normal text-muted-foreground">Claude Code {state.claudeVersion}</span>
+            )
           )}
         </DropdownMenuLabel>
         {models.map((m) => (

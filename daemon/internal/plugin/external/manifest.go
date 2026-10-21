@@ -36,8 +36,9 @@ type Manifest struct {
 	Requires    []string `json:"requires,omitempty"`
 	Optional    []string `json:"optional,omitempty"`
 	// Command runs the plugin: a program in its directory (or on PATH) and
-	// its arguments. It starts in the plugin's data directory.
-	Command     []string    `json:"command"`
+	// its arguments. It starts in the plugin's data directory. A plugin that
+	// only adds agents (and settings) needs none.
+	Command     []string    `json:"command,omitempty"`
 	Permissions []string    `json:"permissions,omitempty"`
 	Contributes Contributes `json:"contributes"`
 	// Web is the directory of its web part (index.tsx), if it has one.
@@ -60,6 +61,8 @@ type Contributes struct {
 	Kinds    []Kind    `json:"kinds,omitempty"`
 	Events   []string  `json:"events,omitempty"`
 	Agent    *AgentAdd `json:"agent,omitempty"`
+	// Agents are coding agents it adds, run as threads drawn like claude's.
+	Agents []Agent `json:"agents,omitempty"`
 	// UI is drawn by the app in its own places, from the plugin's methods.
 	UI *protocol.PluginUI `json:"ui,omitempty"`
 }
@@ -90,6 +93,16 @@ type Kind struct {
 	Single bool   `json:"single,omitempty"`
 }
 
+// Agent is a coding agent that speaks the Agent Client Protocol (ACP).
+type Agent struct {
+	// Kind is its threads' kind.
+	Kind  string `json:"kind"`
+	Title string `json:"title"`
+	// Command runs it as an ACP agent, in the thread's directory: a program
+	// in the plugin's directory (or on PATH) and its arguments.
+	Command []string `json:"command"`
+}
+
 // AgentAdd is what the plugin adds to every claude launch.
 type AgentAdd struct {
 	SystemPrompt string `json:"systemPrompt,omitempty"`
@@ -102,11 +115,18 @@ var (
 
 // Reserved are ids external plugins can't take: the core's and built-ins'.
 var Reserved = []string{plugin.CoreID, "plugins", "terminal", "agent", "browser", "desktop", "files", "processes",
-	"telemetry", "dashboards", "scratch", "git", "clone", "code", "share", "done", "web", "everywhere"}
+	"telemetry", "dashboards", "scratch", "git", "clone", "code", "share", "done", "web", "everywhere",
+	// The agents the agent plugin runs (package harness), whose ids are their threads' kinds.
+	"opencode"}
 
 // ToolName is a plugin tool's name on the daemon's MCP server.
 func (m Manifest) ToolName(name string) string {
 	return strings.ReplaceAll(m.ID, "-", "_") + "_" + name
+}
+
+// HasProcess: it runs a program of its own.
+func (m Manifest) HasProcess() bool {
+	return len(m.Command) > 0 && strings.TrimSpace(m.Command[0]) != ""
 }
 
 // Validate checks a manifest: namespaced names, and permissions for what it
@@ -126,8 +146,14 @@ func (m Manifest) Validate() error {
 	if strings.TrimSpace(m.Title) == "" {
 		bad("give it a title")
 	}
-	if len(m.Command) == 0 || strings.TrimSpace(m.Command[0]) == "" {
-		bad("give a command to run it")
+	if !m.HasProcess() {
+		if len(m.Command) > 0 {
+			bad("give a command to run it")
+		}
+		c := m.Contributes
+		if len(c.RPC)+len(c.Channels)+len(c.Sessions)+len(c.Tools)+len(c.Kinds)+len(c.Events) > 0 || c.UI != nil {
+			bad("give a command to run it, to serve what it contributes")
+		}
 	}
 	known := []string{plugin.PermFSRead, plugin.PermFSWrite, plugin.PermExec, plugin.PermPTY, plugin.PermNetLoopback,
 		plugin.PermAgentTools, plugin.PermAgentNotify, plugin.PermAgentRead, plugin.PermAgentLaunch, plugin.PermBrowser,
@@ -169,6 +195,20 @@ func (m Manifest) Validate() error {
 	}
 	if m.Contributes.Agent != nil && !has(plugin.PermAgentLaunch) {
 		bad("adding to claude's launch needs the %q permission", plugin.PermAgentLaunch)
+	}
+	for _, a := range m.Contributes.Agents {
+		if a.Kind != m.ID && !strings.HasPrefix(a.Kind, m.ID+".") {
+			bad("agent kind %q: use %q or start it with %q", a.Kind, m.ID, m.ID+".")
+		}
+		if strings.TrimSpace(a.Title) == "" {
+			bad("agent %q needs a title", a.Kind)
+		}
+		if len(a.Command) == 0 || strings.TrimSpace(a.Command[0]) == "" {
+			bad("agent %q needs a command", a.Kind)
+		}
+	}
+	if len(m.Contributes.Agents) > 0 && !has(plugin.PermExec) {
+		bad("agents need the %q permission", plugin.PermExec)
 	}
 	for _, k := range m.Contributes.Kinds {
 		if k.Kind != m.ID && !strings.HasPrefix(k.Kind, m.ID+".") {

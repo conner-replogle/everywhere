@@ -33,6 +33,22 @@ type AgentService interface {
 	Status(threadID string) (running bool, status string)
 	// Conversation is the thread's log, oldest first (up to limit events).
 	Conversation(threadID string, limit int) ([]json.RawMessage, error)
+	// AddAgent adds a coding agent that speaks the Agent Client Protocol:
+	// threads of its kind run it, drawn by the agent view. The kind is the
+	// caller's (h is the caller's host); remove stops its threads and
+	// forgets it, for when the caller stops.
+	AddAgent(h Host, a AgentDef) (remove func())
+}
+
+// AgentDef is a coding agent another plugin adds.
+type AgentDef struct {
+	// Kind is its threads' kind.
+	Kind  string
+	Title string
+	// Icon is its logo, a data: URL.
+	Icon string
+	// Command runs it as an ACP agent (in the thread's directory).
+	Command []string
 }
 
 // TerminalService is the terminal plugin's.
