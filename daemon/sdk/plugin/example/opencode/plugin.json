@@ -1,0 +1,42 @@
+{
+  "id": "opencode",
+  "title": "OpenCode",
+  "version": "0.1.0",
+  "api": 1,
+  "description": "OpenCode threads, like Claude threads: OpenCode working in the thread's directory, with its tool calls, permission prompts and questions.",
+  "icon": "icon.svg",
+  "command": ["./opencode-plugin"],
+  "permissions": ["exec", "net.loopback"],
+  "contributes": {
+    "rpc": [
+      { "method": "opencode.state" },
+      { "method": "opencode.prompt" },
+      { "method": "opencode.abort" },
+      { "method": "opencode.permission" },
+      { "method": "opencode.question" },
+      { "method": "opencode.models" },
+      { "method": "opencode.badges" }
+    ],
+    "kinds": [{ "kind": "opencode", "title": "OpenCode", "thread": true }],
+    "ui": {
+      "threadBadges": { "method": "opencode.badges" },
+      "deviceMenu": [{ "label": "OpenCode docs", "icon": "external", "href": "https://opencode.ai/docs" }]
+    }
+  },
+  "web": "web",
+  "settings": [
+    {
+      "key": "command",
+      "type": "string",
+      "title": "OpenCode command",
+      "description": "The opencode program, if it isn't on the daemon's PATH.",
+      "default": "opencode"
+    },
+    {
+      "key": "model",
+      "type": "string",
+      "title": "Default model",
+      "description": "provider/model, e.g. anthropic/claude-sonnet-4-5. Empty: OpenCode's own default."
+    }
+  ]
+}

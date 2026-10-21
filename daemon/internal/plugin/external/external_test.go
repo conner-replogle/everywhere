@@ -446,3 +446,16 @@ func TestSettingsAndKV(t *testing.T) {
 		t.Error("no hello.kv.changed event")
 	}
 }
+
+// The SDK's example plugins install as they are.
+func TestExampleManifests(t *testing.T) {
+	dirs, _ := filepath.Glob("../../../sdk/plugin/example/*")
+	if len(dirs) == 0 {
+		t.Fatal("no example plugins found")
+	}
+	for _, dir := range dirs {
+		if _, err := external.ReadManifest(dir); err != nil {
+			t.Errorf("%s: %v", filepath.Base(dir), err)
+		}
+	}
+}

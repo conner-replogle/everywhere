@@ -46,6 +46,9 @@ type Manifest struct {
 	Settings []protocol.PluginSetting `json:"settings,omitempty"`
 	// SettingsPage: its web part also has a settings view (usePlugin().view).
 	SettingsPage bool `json:"settingsPage,omitempty"`
+	// Icon is its logo, a .svg or .png file in its directory (at most
+	// IconMaxBytes), shown for its kinds' threads and tabs.
+	Icon string `json:"icon,omitempty"`
 }
 
 // Contributes is what a plugin declares it serves.
@@ -243,6 +246,14 @@ func (m Manifest) Validate() error {
 	}
 	if m.Web != "" && (filepath.IsAbs(m.Web) || strings.Contains(filepath.Clean(m.Web), "..")) {
 		bad("web %q must be a directory inside the plugin", m.Web)
+	}
+	if m.Icon != "" {
+		if filepath.IsAbs(m.Icon) || strings.Contains(filepath.Clean(m.Icon), "..") {
+			bad("icon %q must be a file inside the plugin", m.Icon)
+		}
+		if _, ok := iconTypes[strings.ToLower(filepath.Ext(m.Icon))]; !ok {
+			bad("icon %q: use an .svg or .png", m.Icon)
+		}
 	}
 	return errors.Join(errs...)
 }

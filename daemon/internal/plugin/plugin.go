@@ -56,6 +56,8 @@ type Manifest struct {
 	Settings     []protocol.PluginSetting `json:"settings,omitempty"`
 	SettingsPage bool                     `json:"settingsPage,omitempty"`
 	UI           *protocol.PluginUI       `json:"ui,omitempty"`
+	// Icon: see protocol.PluginInfo.
+	Icon string `json:"icon,omitempty"`
 	// Features are the device features (protocol.Feature*) this plugin
 	// stands for, reported in device.info for web apps from before plugins.
 	Features []string `json:"-"`
@@ -72,7 +74,7 @@ func (m Manifest) Info() protocol.PluginInfo {
 		ID: m.ID, Title: m.Title, Version: m.Version, API: m.API, Builtin: m.Builtin,
 		Requires: m.Requires, Optional: m.Optional, Permissions: m.Permissions,
 		Contributes: m.Contributes, Web: m.Web,
-		Settings: m.Settings, SettingsPage: m.SettingsPage, UI: m.UI,
+		Settings: m.Settings, SettingsPage: m.SettingsPage, UI: m.UI, Icon: m.Icon,
 	}
 }
 

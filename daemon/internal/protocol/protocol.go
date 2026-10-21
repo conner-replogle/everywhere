@@ -795,6 +795,9 @@ type PluginInfo struct {
 	// UI is what the app draws for it in its own places (sidebar, thread
 	// header, device menu), from data the plugin gives.
 	UI *PluginUI `json:"ui,omitempty"`
+	// Icon is an installed plugin's logo, as a data: URL (SVG or PNG), drawn
+	// in the app's text color for its kinds' threads and tabs.
+	Icon string `json:"icon,omitempty"`
 }
 
 // PluginSetting is one setting in a plugin's settings form.

@@ -166,6 +166,8 @@ export interface PluginInfo {
   settingsPage?: boolean;
   /** What the app draws for it in its own places, from its methods' data. */
   ui?: PluginUI;
+  /** An installed plugin's logo, a data: URL (SVG or PNG). */
+  icon?: string;
 }
 
 export interface PluginSetting {
@@ -394,7 +396,8 @@ export interface ProjectIcon {
   rev: string;
 }
 
-export type ThreadKind = "terminal" | "claude";
+/** A thread kind: the built-ins, or a plugin's (contributes.kinds with thread). */
+export type ThreadKind = "terminal" | "claude" | (string & {});
 
 /**
  * A claude thread's status:

@@ -13,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import type { DevicePeer } from "@/lib/peer";
 import { errorMessage } from "@/lib/utils";
 import { PluginBoundary } from "./boundary";
+import { pluginLogoIcon } from "@/components/kind-icon";
 import { pluginIcon, runAction, usePluginData } from "./data";
 import { pluginSettings, setPluginSettings } from "./settings";
 import { definePlugin, type PaneContext, type ThreadContext, type WebPlugin } from "./types";
@@ -44,7 +45,7 @@ function externalPlugin(info: PluginInfo): WebPlugin {
     tabs: (info.contributes.kinds ?? []).map((k) => ({
       kind: k.kind,
       title: k.title || info.title,
-      icon: PuzzleIcon,
+      icon: pluginLogoIcon(info.icon),
       single: k.single,
       capture: "all",
       render: (ctx: PaneContext) => (

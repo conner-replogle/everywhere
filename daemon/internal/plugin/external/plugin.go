@@ -40,6 +40,7 @@ type Plugin struct {
 	m     Manifest
 	dir   string
 	stamp string
+	icon  string
 	h     plugin.Host
 
 	mu       sync.Mutex
@@ -55,7 +56,29 @@ type Plugin struct {
 
 // New makes a plugin from its directory and manifest.
 func New(dir string, m Manifest) *Plugin {
-	return &Plugin{m: m, dir: dir, stamp: Stamp(dir, m), stopCh: make(chan struct{}), streams: map[string]*webrtc.DataChannel{}, sessions: map[string]plugin.Session{}}
+	return &Plugin{m: m, dir: dir, stamp: Stamp(dir, m), icon: readIcon(dir, m), stopCh: make(chan struct{}), streams: map[string]*webrtc.DataChannel{}, sessions: map[string]plugin.Session{}}
+}
+
+// IconMaxBytes is the most a plugin's icon file may be.
+const IconMaxBytes = 32 << 10
+
+var iconTypes = map[string]string{".svg": "image/svg+xml", ".png": "image/png"}
+
+// readIcon reads a plugin's icon as a data: URL; "" if it has none, or it's
+// missing or too big (logged: the plugin works without it).
+func readIcon(dir string, m Manifest) string {
+	if m.Icon == "" {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(dir, filepath.Clean(m.Icon)))
+	if err == nil && len(b) > IconMaxBytes {
+		err = fmt.Errorf("it's over %d KB", IconMaxBytes>>10)
+	}
+	if err != nil {
+		slog.Warn("plugin icon not shown", "plugin", m.ID, "err", err)
+		return ""
+	}
+	return "data:" + iconTypes[strings.ToLower(filepath.Ext(m.Icon))] + ";base64," + base64.StdEncoding.EncodeToString(b)
 }
 
 // Stamp says which build of a plugin is installed: its program's size and
@@ -86,6 +109,7 @@ func (p *Plugin) Manifest() plugin.Manifest {
 		ID: p.m.ID, Title: p.m.Title, Version: p.m.Version, API: p.m.API,
 		Requires: p.m.Requires, Optional: p.m.Optional, Permissions: p.m.Permissions,
 		Web: p.m.Web != "", Settings: p.m.Settings, SettingsPage: p.m.SettingsPage, UI: p.m.Contributes.UI,
+		Icon: p.icon,
 	}
 }
 
