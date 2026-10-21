@@ -492,7 +492,7 @@ func TestSettingsAndKV(t *testing.T) {
 		t.Error("the web part wrote settings through kv")
 	}
 	changed := false
-	for _, e := range c.Events {
+	for _, e := range c.Broadcasts() {
 		if ev, ok := e.(plugin.KVChangedEvent); ok && ev.Event == "hello.kv.changed" && ev.Scope == "thread:t1" {
 			changed = true
 		}

@@ -933,8 +933,25 @@ function ModelMenu({
   const configured = state?.model ?? "";
   const current = models.find((m) => m.value === (configured || "default"));
   const label = current ? modelName(current, models) : configured || "Default model";
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  // The menu focuses itself as it opens; the search field takes it after.
+  const focusSearch = useCallback((el: HTMLInputElement | null) => {
+    if (el) requestAnimationFrame(() => el.focus());
+  }, []);
+  const q = query.trim().toLowerCase();
+  const shown = q
+    ? models.filter((m) => [m.displayName, m.value, m.description ?? ""].some((s) => s.toLowerCase().includes(q)))
+    : models;
+  const pick = (m: AgentModel) => onPick(m.value === "default" ? "" : m.value);
   return (
-    <DropdownMenu>
+    <DropdownMenu
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (!o) setQuery("");
+      }}
+    >
       <DropdownMenuTrigger asChild disabled={disabled || models.length === 0}>
         <Button
           variant="ghost"
@@ -946,7 +963,11 @@ function ModelMenu({
           <ChevronDownIcon className="size-3" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" side="top" className="max-h-96 overflow-y-auto">
+      <DropdownMenuContent
+        align="start"
+        side="top"
+        className="max-h-96 w-72 overflow-y-auto"
+      >
         <DropdownMenuLabel className="flex items-baseline justify-between gap-4">
           Model
           {state?.harness ? (
@@ -961,14 +982,38 @@ function ModelMenu({
             )
           )}
         </DropdownMenuLabel>
-        {models.map((m) => (
-          <DropdownMenuItem key={m.value} onSelect={() => onPick(m.value === "default" ? "" : m.value)}>
+        <div className="sticky top-0 z-10 bg-popover px-1 pb-1">
+          <input
+            ref={focusSearch}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              // The menu's own keys (typeahead, arrows) would take the field's.
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                e.currentTarget.closest("[role=menu]")?.querySelector<HTMLElement>("[role=menuitem]")?.focus();
+              } else if (e.key === "Enter" && shown[0]) {
+                e.preventDefault();
+                pick(shown[0]);
+                setOpen(false);
+                setQuery("");
+              }
+              if (e.key !== "Escape") e.stopPropagation();
+            }}
+            placeholder="Search models"
+            aria-label="Search models"
+            className="h-7 w-full rounded-sm border border-input bg-transparent px-2 text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring"
+          />
+        </div>
+        {shown.map((m) => (
+          <DropdownMenuItem key={m.value} onSelect={() => pick(m)}>
             <div className="grid">
               <span className={cn(m === current && "text-primary")}>{m.displayName}</span>
               {m.description && <span className="text-xs text-muted-foreground">{m.description}</span>}
             </div>
           </DropdownMenuItem>
         ))}
+        {shown.length === 0 && <div className="px-2 py-1.5 text-sm text-muted-foreground">No models match.</div>}
       </DropdownMenuContent>
     </DropdownMenu>
   );

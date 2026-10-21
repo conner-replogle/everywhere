@@ -157,9 +157,13 @@ func newSession(m *Manager, threadID string, a store.AgentThread) *session {
 		s.agent = &agent
 		s.state.Harness = &protocol.AgentHarness{Kind: agent.Kind, Title: agent.Title}
 		s.state.Models, s.state.Commands = []protocol.AgentModel{}, []protocol.AgentCommand{}
-		// The store's default modes are claude's; an agent's own are known once it starts.
+		// The store's default modes are claude's; an agent's own are known
+		// once it starts, or from the last of its kind that did.
 		if s.state.PermissionMode == "default" || s.state.PermissionMode == "auto" {
 			s.state.PermissionMode = ""
+		}
+		if c, ok := m.agentConfigLocked(agent.Kind); ok { // newSession runs with m.mu held
+			s.applyAgentConfig(c)
 		}
 	}
 	s.pub.Store(&published{status: statusStopped})
@@ -1768,8 +1772,13 @@ func (s *session) startAgent(ctx context.Context, a store.AgentThread, dir strin
 			servers, s.releaseArgs = nil, nil
 		}
 	}
+	// What the user chose; the state may show the agent's defaults.
+	mode := a.PermissionMode
+	if mode == "default" || mode == "auto" { // claude's, the store's default
+		mode = ""
+	}
 	p, err := s.m.startAgent(ctx, harness.StartOptions{
-		Agent: *s.agent, Dir: dir, Resume: a.SessionID, Model: a.Model, Mode: s.state.PermissionMode, MCP: servers,
+		Agent: *s.agent, Dir: dir, Resume: a.SessionID, Model: a.Model, Mode: mode, MCP: servers,
 	})
 	if err != nil {
 		s.release()
@@ -1787,34 +1796,23 @@ func (s *session) startAgent(ctx context.Context, a store.AgentThread, dir strin
 // onHarnessConfig takes another agent's models and modes, and the ones it
 // has chosen.
 func (s *session) onHarnessConfig(msg claude.Message) {
-	type option struct{ Value, Label, Description string }
-	var f struct {
-		Models *[]option `json:"models"`
-		Modes  *[]option `json:"modes"`
-		Model  *string   `json:"model"`
-		Mode   *string   `json:"mode"`
-	}
-	if msg.Decode(&f) != nil {
+	c, ok := decodeAgentConfig(msg)
+	if !ok {
 		return
 	}
-	if f.Models != nil {
-		s.state.Models = make([]protocol.AgentModel, 0, len(*f.Models))
-		for _, o := range *f.Models {
-			s.state.Models = append(s.state.Models, protocol.AgentModel{Value: o.Value, DisplayName: o.Label, Description: o.Description})
-		}
+	if c.Models != nil {
+		s.state.Models = c.Models
 	}
-	if f.Modes != nil {
-		s.state.Modes = make([]protocol.AgentMode, 0, len(*f.Modes))
-		for _, o := range *f.Modes {
-			s.state.Modes = append(s.state.Modes, protocol.AgentMode{Value: o.Value, Label: o.Label, Description: o.Description})
-		}
+	if c.Modes != nil {
+		s.state.Modes = c.Modes
 	}
-	if f.Model != nil && *f.Model != "" {
-		s.state.Model = *f.Model
+	if c.Model != "" {
+		s.state.Model = c.Model
 	}
-	if f.Mode != nil && *f.Mode != "" {
-		s.notePermissionMode(*f.Mode)
+	if c.Mode != "" {
+		s.notePermissionMode(c.Mode)
 	}
+	go s.m.noteAgentConfig(s.agent.Kind, c)
 }
 
 // commandList is slash commands as the app lists them, by name.

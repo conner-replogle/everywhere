@@ -2,7 +2,9 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -206,7 +208,7 @@ func TestHarnessThread(t *testing.T) {
 	m.Handle(th.ID, c2, protocol.AgentClientMsg{T: "send", Text: "something slow"})
 	eventually(t, "the slow turn", func() bool { return c2.state().Status == statusWorking })
 	m.Handle(th.ID, c2, protocol.AgentClientMsg{T: "interrupt"})
-	eventually(t, "the interrupted turn", lastTurnEnded(c2))
+	eventually(t, "the interrupted turn", func() bool { return len(c2.events()) > before+1 && lastTurnEnded(c2)() })
 	evs := c2.events()
 	if last := evs[len(evs)-1]; last.Status != "interrupted" {
 		t.Fatalf("after interrupt: %q", summary(evs, before))
@@ -216,4 +218,52 @@ func TestHarnessThread(t *testing.T) {
 		t.Fatal("setEffort worked")
 	}
 	eventually(t, "the thread's status", func() bool { running, status := m.Status(th.ID); return running && status == statusIdle })
+}
+
+// A thread that hasn't started offers its agent's models and modes: probed
+// once per kind, without a prompt, and kept for the next daemon.
+func TestAgentConfigBeforeStart(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(acptest.Env, "1")
+	saved := harness.Agents
+	harness.Agents = []harness.Agent{{Kind: "fake", Title: "Fake", Command: []string{exe}}}
+	t.Cleanup(func() { harness.Agents = saved })
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	projects, _ := st.ListProjects()
+	th, err := st.CreateThread(projects[0].ID, "", "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataDir := t.TempDir()
+	m := NewManager(st, dataDir, func() {})
+	c := &recorder{}
+	if err := m.Attach(th.ID, c, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the probed config", func() bool { s := c.state(); return len(s.Models) == 2 && len(s.Modes) == 2 })
+	s := c.state()
+	if s.Status != statusStopped || s.PermissionMode != "build" || len(c.events()) != 0 {
+		t.Fatalf("state %+v, events %v", s, c.events())
+	}
+	// A model chosen now is the one it starts with.
+	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "setModel", Model: "m2"})
+	eventually(t, "the model", func() bool { return c.state().Model == "m2" })
+	m.Shutdown()
+
+	m2 := NewManager(st, dataDir, func() {})
+	t.Cleanup(m2.Shutdown)
+	m2.startAgent = func(context.Context, harness.StartOptions) (process, error) { return nil, errors.New("no probe") }
+	c2 := &recorder{}
+	if err := m2.Attach(th.ID, c2, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the saved config", func() bool { s := c2.state(); return len(s.Models) == 2 && s.Model == "m2" })
 }

@@ -143,6 +143,11 @@ type Manager struct {
 	login       *pendingLogin
 
 	probeMu sync.Mutex // one Info probe at a time
+
+	// Other agents' configs, by kind; see agentConfig.
+	agentDir     string
+	agentConfigs map[string]agentConfig
+	probing      map[string]bool
 }
 
 // How long Info reuses what the last claude start reported.
@@ -159,6 +164,9 @@ func NewManager(st Store, dataDir string, onChange func()) *Manager {
 		store:            st,
 		onChange:         onChange,
 		sessions:         map[string]*session{},
+		agentDir:         filepath.Join(dataDir, "agents"),
+		agentConfigs:     map[string]agentConfig{},
+		probing:          map[string]bool{},
 	}
 	m.start = m.startClaude
 	m.startAgent = func(ctx context.Context, o harness.StartOptions) (process, error) {
@@ -183,6 +191,8 @@ func (m *Manager) Attach(threadID string, c Client, afterSeq int64, limit int) e
 	s.do(func() { s.attach(c, afterSeq, limit) })
 	if s.agent == nil {
 		go m.checkClaude()
+	} else {
+		go m.probeAgent(*s.agent)
 	}
 	return nil
 }
