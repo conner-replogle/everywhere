@@ -59,6 +59,8 @@ export interface OpenTabOptions {
   input?: string;
   /** Its initial tab state. */
   state?: string;
+  /** A new tab even if the kind has one (a terminal for a command to type in). */
+  another?: boolean;
 }
 
 /** What a thread page gives its plugins. */
@@ -129,8 +131,10 @@ export interface TabKindDef {
   /** Its name in menus, and the thread's own tab's label. */
   title: string;
   icon: LucideIcon;
-  /** A thread has at most one (the daemon's manifest can say so too). */
+  /** A thread has at most one, as with every kind unless it's multiple (the daemon's manifest can say so too). */
   single?: boolean;
+  /** A thread can have several (web pages: each its own link). Others open the one it has. */
+  multiple?: boolean;
   /** Which input in it keeps the thread's tab: keys only (a terminal), or pointer too. */
   capture?: "keys" | "all";
   /** Unmounted when not shown, rather than kept (the browser streams only while shown). */
@@ -225,7 +229,7 @@ export interface SidebarSectionProps {
   toggle(key: string): void;
   isActive(entry: DeviceContextValue, t: Thread): boolean;
   /** A thread row as the sidebar draws it. */
-  threadRow(entry: DeviceContextValue, t: Thread, opts?: { idle?: boolean }): ReactNode;
+  threadRow(entry: DeviceContextValue, t: Thread, opts?: { idle?: boolean; detail?: string; flat?: boolean }): ReactNode;
   /** Splits threads into listed, done and idle (idle after idleAfterMs). */
   split(entry: DeviceContextValue, threads: Thread[], idleAfterMs: number): { listed: Thread[]; done: Thread[]; idle: Thread[] };
   /** The "N done" and "N idle" rows for a group's tucked threads. */

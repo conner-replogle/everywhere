@@ -8,7 +8,6 @@ import { OpenLinkContext, RunInTerminalContext } from "@/components/agent/markdo
 import { useDevice } from "@/components/device-context";
 import { RenameDialog } from "@/components/rename-dialog";
 import { SplitArea } from "@/components/split-area";
-import { ThreadTabs } from "@/components/thread-tabs";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -85,10 +84,8 @@ function ThreadPage() {
   const plugins = useMemo(() => devicePlugins(info.data, external), [info.data, external]);
   const kinds = useMemo(() => tabKinds(plugins), [plugins]);
   const kindOf = (kind: TabKind): TabKindDef => kinds.find((k) => k.kind === kind) ?? builtinTabKind(kind) ?? unknownKind(kind);
-  const singleKinds = new Set([
-    ...kinds.filter((k) => k.single).map((k) => k.kind),
-    ...(info.data?.plugins ?? []).flatMap((p) => (p.contributes.kinds ?? []).filter((k) => k.single).map((k) => k.kind)),
-  ]);
+  // One tab per kind, except kinds that are several things by nature (web pages).
+  const multipleKinds = new Set(kinds.filter((k) => k.multiple).map((k) => k.kind));
 
   // Daemons from before tabs still have their project's browser, as a fixed tab.
   const legacyBrowser = !!info.data && !features.includes("tabs") && !archived && !!thread;
@@ -207,8 +204,9 @@ function ThreadPage() {
 
   const openTab = async (kind: TabKind, opts: OpenTabOptions = {}): Promise<Tab | undefined> => {
     const focus = opts.focus ?? true;
-    const single = singleKinds.has(kind);
-    const existing = single && tabs.data?.find((t) => t.kind === kind);
+    const single = !multipleKinds.has(kind) && !opts.another;
+    // The thread is its own kind's tab (a Claude thread has its Claude).
+    const existing = single && (thread?.kind === kind ? (thread as Tab) : tabs.data?.find((t) => t.kind === kind));
     if (existing) {
       if (focus) setActive(existing.id);
       return existing;
@@ -240,7 +238,7 @@ function ThreadPage() {
   // Opens a terminal tab with a command typed in (not run), e.g. one that needs sudo.
   const runInTerminal =
     canTab && features.includes("scratch")
-      ? (command: string) => void openTab("terminal", { name: "Terminal", input: command })
+      ? (command: string) => void openTab("terminal", { name: "Terminal", input: command, another: true })
       : null;
 
   // A shown tab closing: with a split, the other pane takes the view; else its neighbour.
@@ -381,29 +379,15 @@ function ThreadPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-11 shrink-0 items-center gap-3 border-b bg-sidebar pr-3 pl-12 md:h-9 md:pl-1">
-        <ThreadTabs
-          deviceId={deviceId}
-          threadId={threadId}
-          title={
-            thread && project
-              ? `${thread.name} — ${inScratch ? `Scratch on ${device.name || info.data?.hostname || "this device"}: ` : ""}${workdir.data?.worktree || inScratch ? (workdir.data?.path ?? thread.scratchDir ?? project.path) : project.path}`
-              : undefined
-          }
-        />
-        {ctx &&
-          plugins.flatMap((p) => (p.threadHeader ?? []).map((Item, i) => <Item key={`${p.id}:${i}`} ctx={ctx} />))}
-        {archived ? (
-          <span className="ml-auto shrink-0 rounded-sm bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-            Archived
-          </span>
-        ) : (
-          active && activeKind?.status?.(active, reports[active.id])
-        )}
-      </div>
-      {(canTab || legacyBrowser) && thread && (
-        <div className="flex h-8 shrink-0 items-stretch border-b bg-sidebar">
-          <div role="tablist" aria-label="Tabs" className="flex min-w-0 items-stretch overflow-x-auto">
+      {thread && (
+        // The thread's bar: its tabs, then what plugins put in its header and its status.
+        // On phones it leaves room for the sidebar's button.
+        <div className="flex h-11 shrink-0 items-stretch border-b bg-sidebar pl-12 md:h-8 md:pl-0">
+          <div
+            role="tablist"
+            aria-label="Tabs"
+            className={cn("flex min-w-0 items-stretch overflow-x-auto", !(canTab || legacyBrowser) && "hidden")}
+          >
             {panes.map((p) => {
               const local = isLocal(p);
               const closable = !!p.parentId && (canTab || local);
@@ -460,10 +444,17 @@ function ThreadPage() {
               </DropdownMenuContent>
             </DropdownMenu>
           )}
+          <div className="ml-auto flex min-w-0 shrink-0 items-center gap-2 pl-2">
           {error && !archived && (
-            <span className="ml-auto self-center truncate px-3 text-xs text-destructive" title={error}>
+            <span className="min-w-0 max-w-64 truncate text-xs text-destructive" title={error}>
               {error}
             </span>
+          )}
+          {ctx && plugins.flatMap((p) => (p.threadHeader ?? []).map((Item, i) => <Item key={`${p.id}:${i}`} ctx={ctx} />))}
+          {archived ? (
+            <span className="shrink-0 rounded-sm bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">Archived</span>
+          ) : (
+            active && activeKind?.status?.(active, reports[active.id])
           )}
           {panes.length > 1 && (
             <DropdownMenu>
@@ -471,7 +462,7 @@ function ThreadPage() {
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  className={cn("mr-1 self-center", !error && "ml-auto", splitPane && "text-primary")}
+                  className={cn("mr-1 self-center", splitPane && "text-primary")}
                   aria-label="Split view"
                   title="Split view: two tabs at once"
                 >
@@ -511,6 +502,7 @@ function ThreadPage() {
               </DropdownMenuContent>
             </DropdownMenu>
           )}
+          </div>
         </div>
       )}
       <OpenLinkContext.Provider value={thread && !archived ? openUrl : null}>

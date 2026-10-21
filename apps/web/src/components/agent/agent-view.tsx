@@ -299,6 +299,7 @@ export function AgentView({
             working={state?.status === "working"}
             compacting={state?.compacting}
             recapping={state?.recapping}
+            onCancelRecap={archived ? undefined : () => agent.send({ t: "interrupt" })}
             onCompact={canCompact ? compact : undefined}
             onSignIn={archived ? undefined : onSignIn}
             onRewind={features.includes("rewind") && !archived && !busy ? onRewind : undefined}

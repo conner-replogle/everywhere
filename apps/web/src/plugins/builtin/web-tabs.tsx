@@ -22,6 +22,7 @@ export const webTabs = definePlugin({
       title: "Web page",
       icon: AppWindowIcon,
       local: true,
+      multiple: true,
       create: async (ctx) => {
         const address = await ctx.prompt({
           title: "Open a web page",

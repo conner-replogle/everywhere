@@ -21,6 +21,7 @@ import {
   MoreHorizontalIcon,
   PencilIcon,
   PinIcon,
+  PuzzleIcon,
   PlusIcon,
   RotateCcwIcon,
   RotateCwIcon,
@@ -44,6 +45,7 @@ import { NewProjectDialog } from "@/components/new-project-dialog";
 import { PresenceDot } from "@/components/presence-dot";
 import { RenameDialog } from "@/components/rename-dialog";
 import { scratchProject } from "@/components/scratch";
+import { ClaudeIcon, KindIcon, pluginLogoIcon } from "@/components/kind-icon";
 import { BUILTIN, devicePlugins } from "@/plugins/registry";
 import { Button } from "@/components/ui/button";
 import {
@@ -106,7 +108,8 @@ type GroupBy = "project" | "device" | "none";
 
 const COLLAPSED_KEY = "ew:collapsed";
 const ARCHIVED_OPEN_KEY = "ew:archived-open";
-const DEVICES_COLLAPSED_KEY = "ew:devices-collapsed";
+// Devices start collapsed: what's kept is that they were opened.
+const DEVICES_OPEN_KEY = "ew:devices-open";
 // Read when drawing, not at load: plugins import parts of the sidebar.
 /** Sections plugins add above Projects (Scratch), in order. */
 const sidebarSections = () => BUILTIN.flatMap((p) => p.sidebar?.sections ?? []).sort((a, b) => a.order - b.order);
@@ -237,7 +240,13 @@ export function AppSidebar({
   const { collapsed, toggle } = useCollapsed();
   const view = useSidebarView();
   const [archivedOpen, setArchivedOpen] = useState(() => localStorage.getItem(ARCHIVED_OPEN_KEY) === "1");
-  const [devicesCollapsed, setDevicesCollapsed] = useState(() => localStorage.getItem(DEVICES_COLLAPSED_KEY) === "1");
+  const [devicesCollapsed, setDevicesCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(DEVICES_OPEN_KEY) !== "1";
+    } catch {
+      return true;
+    }
+  });
   const [pending, setPending] = useState<Pending>(null);
   // Deleting a claude thread that has a worktree: also remove the worktree?
   const [removeWorktree, setRemoveWorktree] = useState(true);
@@ -504,7 +513,7 @@ export function AppSidebar({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start">
-              <NewThreadItems claude={claude} onPick={(kind) => newThread(entry, p.id, kind)} />
+              <NewThreadItems entry={entry} claude={claude} onPick={(kind) => newThread(entry, p.id, kind)} />
             </DropdownMenuContent>
           </DropdownMenu>
           <DropdownMenu>
@@ -524,7 +533,7 @@ export function AppSidebar({
                 {deviceName(entry)}:{p.path}
               </div>
               <DropdownMenuSeparator />
-              <NewThreadItems claude={claude} onPick={(kind) => newThread(entry, p.id, kind)} />
+              <NewThreadItems entry={entry} claude={claude} onPick={(kind) => newThread(entry, p.id, kind)} />
               {!p.isHome && (
                 <>
                   <DropdownMenuItem onSelect={() => setPending({ kind: "rename-project", entry, project: p })}>
@@ -614,6 +623,8 @@ export function AppSidebar({
               thread={t}
               active={isActive(entry, t)}
               idle={opts?.idle ? idleAge(entry, t) : undefined}
+              detail={opts?.detail}
+              flat={opts?.flat}
               actions={threadActions(entry, t, opts?.idle)}
             />
           )}
@@ -635,7 +646,7 @@ export function AppSidebar({
               { idleDays },
             )
           }
-          newThreadItems={(entry, onPick) => <NewThreadItems claude={hasFeature(entry, "claude")} onPick={onPick} />}
+          newThreadItems={(entry, onPick) => <NewThreadItems entry={entry} claude={hasFeature(entry, "claude")} onPick={onPick} />}
           onError={setActionError}
         />
       ))}
@@ -847,7 +858,7 @@ export function AppSidebar({
               const next = !devicesCollapsed;
               setDevicesCollapsed(next);
               try {
-                localStorage.setItem(DEVICES_COLLAPSED_KEY, next ? "1" : "0");
+                localStorage.setItem(DEVICES_OPEN_KEY, next ? "0" : "1");
               } catch {
                 // Only a convenience.
               }
@@ -1200,11 +1211,7 @@ function ThreadRow({
           flat ? "pl-2" : "pl-7",
         )}
       >
-        {t.kind === "claude" ? (
-          <SparklesIcon className={cn("size-3.5 shrink-0", active ? "text-primary" : "text-muted-foreground")} />
-        ) : (
-          <SquareTerminalIcon className={cn("size-3.5 shrink-0", active ? "text-primary" : "text-muted-foreground")} />
-        )}
+        <KindIcon kind={t.kind} deviceId={deviceId} className={cn("size-3.5 shrink-0", active ? "text-primary" : "text-muted-foreground")} />
         <span className="grid min-w-0">
           <span className={cn("truncate", !active && (idle ? "text-muted-foreground" : "text-foreground/85"))}>
             {t.name}
@@ -1286,7 +1293,11 @@ function TuckedThreads({
   );
 }
 
-function NewThreadItems({ claude, onPick }: { claude: boolean; onPick: (kind: ThreadKind) => void }) {
+function NewThreadItems({ entry, claude, onPick }: { entry: Entry; claude: boolean; onPick: (kind: ThreadKind) => void }) {
+  // Installed plugins' thread kinds (built-ins' are the two above).
+  const pluginKinds = (entry.info.data?.plugins ?? [])
+    .filter((p) => !p.builtin)
+    .flatMap((p) => (p.contributes.kinds ?? []).filter((k) => k.thread).map((k) => ({ ...k, Icon: pluginLogoIcon(p.icon) })));
   return (
     <>
       <DropdownMenuItem onSelect={() => onPick("terminal")}>
@@ -1298,9 +1309,15 @@ function NewThreadItems({ claude, onPick }: { claude: boolean; onPick: (kind: Th
         onSelect={() => onPick("claude")}
         title={claude ? undefined : "Update the daemon to use Claude threads (run `everywhere update` on the device)"}
       >
-        <SparklesIcon />
+        <ClaudeIcon />
         {claude ? "New Claude thread" : "Claude needs a daemon update"}
       </DropdownMenuItem>
+      {pluginKinds.map((k) => (
+        <DropdownMenuItem key={k.kind} onSelect={() => onPick(k.kind)}>
+          <k.Icon />
+          New {k.title} thread
+        </DropdownMenuItem>
+      ))}
     </>
   );
 }

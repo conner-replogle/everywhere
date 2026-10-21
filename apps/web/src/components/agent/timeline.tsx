@@ -71,7 +71,8 @@ export function buildItems(events: LoggedEvent[]): Item[] {
       }
       if (e.type === "turn" && e.status !== "started") {
         recap = null;
-        if (e.status === "completed") continue;
+        // A recap stopped on purpose leaves nothing to show.
+        if (e.status === "completed" || e.status === "interrupted") continue;
       }
     }
     switch (e.type) {
@@ -121,6 +122,7 @@ export const Timeline = memo(function Timeline({
   working,
   compacting,
   recapping,
+  onCancelRecap,
   onRewind,
   onCompact,
   onSignIn,
@@ -134,6 +136,8 @@ export const Timeline = memo(function Timeline({
   compacting?: boolean;
   /** The turn is only a /recap: shown quietly, its text only once it's a card. */
   recapping?: boolean;
+  /** Stops a recap in progress. */
+  onCancelRecap?: () => void;
   /** Sends /compact; offered when a turn fails because the context is full. */
   onCompact?: () => void;
   /** Signs claude in; offered when a turn failed for it, while it's still signed out. */
@@ -158,6 +162,11 @@ export const Timeline = memo(function Timeline({
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <HistoryIcon className="size-3.5 animate-pulse" />
           Recapping…
+          {onCancelRecap && (
+            <button type="button" className="rounded px-1 underline-offset-2 hover:text-foreground hover:underline" onClick={onCancelRecap}>
+              Cancel
+            </button>
+          )}
         </div>
       )}
       {!recapping &&

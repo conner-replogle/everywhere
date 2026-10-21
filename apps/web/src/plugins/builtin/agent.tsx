@@ -1,7 +1,8 @@
 // The agent plugin: Claude Code threads and tabs, and Settings → Claude.
 
 import type { AgentStatus } from "@everywhere/protocol";
-import { SparklesIcon } from "lucide-react";
+import { SparklesIcon, type LucideIcon } from "lucide-react";
+import { ClaudeIcon } from "@/components/kind-icon";
 import { lazy, Suspense } from "react";
 import { getPrefs } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
@@ -18,7 +19,7 @@ export const agent = definePlugin({
     {
       kind: "claude",
       title: "Claude",
-      icon: SparklesIcon,
+      icon: ClaudeIcon as unknown as LucideIcon,
       createParams: async () => {
         const mode = (await getPrefs()).defaultPermissionMode;
         return mode ? { permissionMode: mode } : {};
