@@ -23,6 +23,8 @@ import (
 	"github.com/conner-replogle/everywhere/daemon/internal/hub"
 	"github.com/conner-replogle/everywhere/daemon/internal/ice"
 	"github.com/conner-replogle/everywhere/daemon/internal/peer"
+	"github.com/conner-replogle/everywhere/daemon/internal/plugin/external"
+	"github.com/conner-replogle/everywhere/daemon/internal/plugins/builtin"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/service"
 	"github.com/conner-replogle/everywhere/daemon/internal/store"
@@ -40,6 +42,7 @@ Usage:
   everywhere service install|uninstall           manage the background service
   everywhere update                              install the latest release
   everywhere desktop enable|disable|status       allow remote desktop of this machine's screen
+  everywhere plugin list|install|enable|disable|remove   manage plugins installed on this machine
   everywhere uninstall [--purge]                 remove the service and binary (--purge: config and data too,
                                                  but Scratch folders only with --purge-scratch)
   everywhere version
@@ -69,6 +72,8 @@ func main() {
 		err = selfUpdate()
 	case "desktop":
 		err = desktopCmd(args)
+	case "plugin", "plugins":
+		err = pluginCmd(args)
 	case "uninstall":
 		err = uninstall(args)
 	case "version", "--version", "-v":
@@ -151,16 +156,18 @@ func daemon(args []string) error {
 
 	hostname, _ := os.Hostname()
 	home, _ := os.UserHomeDir()
-	features := []string{protocol.FeatureClaude, protocol.FeatureUpdate, protocol.FeatureWorktrees, protocol.FeatureAttachments, protocol.FeatureHistory, protocol.FeatureArchive, protocol.FeatureTabs, protocol.FeatureRewind, protocol.FeatureIcons, protocol.FeatureClone, protocol.FeatureGitStatus, protocol.FeatureClaudeUpdate, protocol.FeatureMkdir, protocol.FeatureProcesses, protocol.FeatureScratch, protocol.FeatureClaudeAuth, protocol.FeatureDone, protocol.FeatureToken}
-	if runtime.GOOS == "linux" || runtime.GOOS == "windows" {
-		features = append(features, protocol.FeatureDesktop)
-	}
+	// The core's features; plugins add theirs.
+	features := []string{protocol.FeatureUpdate, protocol.FeatureArchive, protocol.FeatureTabs, protocol.FeatureIcons, protocol.FeatureMkdir}
+	manager, installed := external.Load(config.PluginsDir(), config.PluginEnabled, config.SetPluginEnabled)
+	all := append(append(builtin.Plugins(), manager), installed...)
 	srv := peer.NewServer(st, protocol.DeviceInfo{
 		Hostname: hostname, Home: home, OS: runtime.GOOS, Arch: runtime.GOARCH, Version: version.Version,
 		Features: features,
-	}, config.DataDir())
+	}, config.DataDir(), all...)
 	defer srv.Shutdown()
+	manager.Attach(srv.Plugins())
 	srv.DesktopEnabled = config.DesktopEnabled
+	srv.PluginEnabled = config.PluginEnabled
 	srv.ICEServers = (&ice.Provider{Server: cfg.Server, Credential: credential}).Servers
 	go srv.ICEServers() // warm the cache so the first connection doesn't wait
 
@@ -173,7 +180,6 @@ func daemon(args []string) error {
 	}
 	srv.SetSignaler(hc.Send)
 	srv.SetNotifier(hc.Notify)
-	go srv.ContinueAgents() // turns interrupted by an update
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

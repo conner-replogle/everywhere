@@ -1,6 +1,6 @@
 // REST wrappers for the Worker (auth, device registry, enrollment, GitHub).
 
-import type { Project } from "@everywhere/protocol";
+import type { PluginSettingView, Project } from "@everywhere/protocol";
 import type { Prefs } from "@/lib/prefs";
 
 export interface User {
@@ -160,6 +160,14 @@ export const api = {
 
   /** The account's Claude token, as far as the app sees it: whether it's set, its last characters, when. */
   claudeToken: () => request<ClaudeTokenInfo>("GET", "/api/claude/token"),
+  /** A plugin's account settings, as the browser may see them. */
+  pluginSettings: (id: string) => request<Record<string, PluginSettingView>>("GET", `/api/plugin-settings/${encodeURIComponent(id)}`),
+  setPluginSettings: (id: string, values: Record<string, unknown>, secrets: string[]) =>
+    request<{ values: Record<string, PluginSettingView>; devices: Record<string, string> }>(
+      "PUT",
+      `/api/plugin-settings/${encodeURIComponent(id)}`,
+      { values, secrets },
+    ),
   /** Sets it, sending it to every connected device; devices maps each to "ok" or what went wrong. */
   setClaudeToken: (token: string) => request<ClaudeTokenResult>("PUT", "/api/claude/token", { token }),
   removeClaudeToken: () => request<ClaudeTokenResult>("DELETE", "/api/claude/token"),

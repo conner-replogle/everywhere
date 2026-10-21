@@ -43,7 +43,8 @@ import { Logo } from "@/components/logo";
 import { NewProjectDialog } from "@/components/new-project-dialog";
 import { PresenceDot } from "@/components/presence-dot";
 import { RenameDialog } from "@/components/rename-dialog";
-import { canScratch, scratchProject, scratchThreads, startScratch } from "@/components/scratch";
+import { scratchProject } from "@/components/scratch";
+import { BUILTIN, devicePlugins } from "@/plugins/registry";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -63,7 +64,6 @@ import {
   isDone,
   isIdle,
   lastTouched,
-  SCRATCH_IDLE_AFTER_MS,
   touchKey,
   touchThread,
   useThreadTouches,
@@ -107,10 +107,11 @@ type GroupBy = "project" | "device" | "none";
 const COLLAPSED_KEY = "ew:collapsed";
 const ARCHIVED_OPEN_KEY = "ew:archived-open";
 const DEVICES_COLLAPSED_KEY = "ew:devices-collapsed";
-/** How many Scratch threads a device shows in the sidebar; the rest are on its page. */
-const SCRATCH_SHOWN = 5;
-/** The Scratch section as a whole, in the same collapsed set as its devices. */
-const SCRATCH_SECTION_KEY = "scratch";
+// Read when drawing, not at load: plugins import parts of the sidebar.
+/** Sections plugins add above Projects (Scratch), in order. */
+const sidebarSections = () => BUILTIN.flatMap((p) => p.sidebar?.sections ?? []).sort((a, b) => a.order - b.order);
+/** What plugins show on a thread's row (running processes). */
+const threadBadges = () => BUILTIN.flatMap((p) => p.sidebar?.threadBadges ?? []);
 const VIEW_KEY = "ew:sidebar-view";
 
 interface SidebarView {
@@ -599,32 +600,45 @@ export function AppSidebar({
           <HubStatus />
         </span>
       </div>
-      <ScratchSection
-        split={(entry, threads) => splitIdle(threads, (thread) => ({ entry, thread }), SCRATCH_IDLE_AFTER_MS)}
-        tucked={(entry, part) =>
-          tucked(
-            `scratch:${entry.deviceId}`,
-            part,
-            (t) => (
-              <ThreadRow
-                key={t.id}
-                deviceId={entry.deviceId}
-                thread={t}
-                active={isActive(entry, t)}
-                idle={idleAge(entry, t)}
-                actions={threadActions(entry, t, true)}
-              />
-            ),
-            { idleDays: Math.round(SCRATCH_IDLE_AFTER_MS / DAY_MS) },
-          )
-        }
-        entries={list}
-        collapsed={collapsed}
-        toggle={toggle}
-        isActive={isActive}
-        threadActions={threadActions}
-        onError={setActionError}
-      />
+      {sidebarSections().map(({ component: Section }, i) => (
+        <Section
+          key={i}
+          entries={list}
+          collapsed={collapsed}
+          toggle={toggle}
+          isActive={isActive}
+          threadRow={(entry, t, opts) => (
+            <ThreadRow
+              key={t.id}
+              deviceId={entry.deviceId}
+              thread={t}
+              active={isActive(entry, t)}
+              idle={opts?.idle ? idleAge(entry, t) : undefined}
+              actions={threadActions(entry, t, opts?.idle)}
+            />
+          )}
+          split={(entry, threads, after) => splitIdle(threads, (thread) => ({ entry, thread }), after)}
+          tucked={(key, entry, part, idleDays) =>
+            tucked(
+              key,
+              part,
+              (t) => (
+                <ThreadRow
+                  key={t.id}
+                  deviceId={entry.deviceId}
+                  thread={t}
+                  active={isActive(entry, t)}
+                  idle={idleAge(entry, t)}
+                  actions={threadActions(entry, t, true)}
+                />
+              ),
+              { idleDays },
+            )
+          }
+          newThreadItems={(entry, onPick) => <NewThreadItems claude={hasFeature(entry, "claude")} onPick={onPick} />}
+          onError={setActionError}
+        />
+      ))}
 
       <div className="flex h-9 shrink-0 items-center pr-1.5 pl-3">
         <span className="text-xs font-medium text-muted-foreground">Projects</span>
@@ -987,168 +1001,6 @@ export function AppSidebar({
   );
 }
 
-/**
- * Scratch, per device: its newest threads, a way to start one, and the
- * device's page (with the rest) a click away.
- */
-function ScratchSection({
-  entries,
-  collapsed,
-  toggle,
-  isActive,
-  threadActions,
-  onError,
-  split,
-  tucked,
-}: {
-  entries: Entry[];
-  collapsed: Set<string>;
-  toggle: (key: string) => void;
-  isActive: (entry: Entry, t: Thread) => boolean;
-  threadActions: (entry: Entry, t: Thread) => React.ReactNode;
-  onError: (message: string | null) => void;
-  /** Splits a device's Scratch threads into listed, done and idle (after a day). */
-  split: (entry: Entry, threads: Thread[]) => { listed: Thread[]; done: Thread[]; idle: Thread[] };
-  /** The "done" and "idle" rows for a device's tucked Scratch threads. */
-  tucked: (entry: Entry, part: { done: Thread[]; idle: Thread[] }) => React.ReactNode;
-}) {
-  const navigate = useNavigate();
-  const { deviceId: activeDeviceId, threadId: activeThreadId } = useParams({ strict: false });
-  const rows = entries.filter((e) => !!scratchProject(e)).sort((a, b) => deviceName(a).localeCompare(deviceName(b)));
-  if (rows.length === 0) return null;
-
-  async function start(entry: Entry, kind: ThreadKind) {
-    onError(null);
-    try {
-      const t = await startScratch(entry, kind);
-      const key = `scratch:${entry.deviceId}`;
-      if (collapsed.has(key)) toggle(key);
-      await navigate({ to: "/d/$deviceId/t/$threadId", params: { deviceId: entry.deviceId, threadId: t.id } });
-    } catch (e) {
-      onError(errorMessage(e));
-    }
-  }
-
-  const sectionCollapsed = collapsed.has(SCRATCH_SECTION_KEY);
-  const threadCount = rows.reduce((n, e) => n + scratchThreads(e).length, 0);
-
-  return (
-    <div className="max-h-[40%] shrink-0 overflow-y-auto border-b px-1.5 pt-1 pb-1.5">
-      <button
-        type="button"
-        onClick={() => toggle(SCRATCH_SECTION_KEY)}
-        className="flex h-7 w-full items-center gap-1.5 rounded-md pl-1.5 text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none pointer-coarse:h-9"
-        aria-expanded={!sectionCollapsed}
-      >
-        <ChevronRightIcon className={cn("size-3 shrink-0 transition-transform", !sectionCollapsed && "rotate-90")} />
-        Scratch
-        {sectionCollapsed && threadCount > 0 && <span className="tabular-nums">{threadCount}</span>}
-      </button>
-      {!sectionCollapsed && (
-        <ul className="flex flex-col gap-px">
-          {rows.map((entry) => {
-            const key = `scratch:${entry.deviceId}`;
-            const isCollapsed = collapsed.has(key);
-            const all = scratchThreads(entry);
-            const { listed: threads, ...part } = split(entry, all);
-            const live = canScratch(entry);
-            const onPage = entry.deviceId === activeDeviceId && !activeThreadId;
-            return (
-              <li key={key} className={cn(!connected(entry) && "opacity-50")}>
-                <div
-                  className={cn(
-                    "group flex h-7 items-center rounded-md pr-1 pointer-coarse:h-10",
-                    onPage ? "bg-accent text-accent-foreground" : "hover:bg-accent/60",
-                  )}
-                >
-                  <button
-                    type="button"
-                    onClick={() => toggle(key)}
-                    className="flex h-full shrink-0 items-center rounded-md pl-1.5 focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none"
-                    aria-expanded={!isCollapsed}
-                    aria-label={isCollapsed ? `Show ${deviceName(entry)}'s Scratch threads` : `Hide ${deviceName(entry)}'s Scratch threads`}
-                  >
-                    <ChevronRightIcon
-                      className={cn("size-3 shrink-0 text-muted-foreground transition-transform", !isCollapsed && "rotate-90")}
-                    />
-                  </button>
-                  <Link
-                    to="/d/$deviceId"
-                    params={{ deviceId: entry.deviceId }}
-                    className="flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-md pl-1.5 focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none"
-                    title={`${deviceName(entry)}: Scratch, home and projects`}
-                  >
-                    <MonitorIcon className="size-3.5 shrink-0 text-muted-foreground" />
-                    <span className="truncate">{deviceName(entry)}</span>
-                    {isCollapsed && threads.length > 0 && (
-                      <span className="text-xs text-muted-foreground tabular-nums">{threads.length}</span>
-                    )}
-                  </Link>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon-sm"
-                        disabled={!live}
-                        className="hidden group-hover:inline-flex focus-visible:inline-flex data-[state=open]:inline-flex pointer-coarse:inline-flex pointer-coarse:size-8"
-                        aria-label={`New Scratch thread on ${deviceName(entry)}`}
-                        title="New Scratch thread"
-                      >
-                        <PlusIcon />
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="start">
-                      <DropdownMenuLabel>New in a fresh Scratch folder</DropdownMenuLabel>
-                      <NewThreadItems claude={hasFeature(entry, "claude")} onPick={(kind) => void start(entry, kind)} />
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-                </div>
-                {!isCollapsed && (
-                  <ul className="flex flex-col gap-px pb-1">
-                    {threads.slice(0, SCRATCH_SHOWN).map((t) => (
-                      <ThreadRow
-                        key={t.id}
-                        deviceId={entry.deviceId}
-                        thread={t}
-                        active={isActive(entry, t)}
-                        actions={threadActions(entry, t)}
-                      />
-                    ))}
-                    {tucked(entry, part)}
-                    {threads.length > SCRATCH_SHOWN && (
-                      <li>
-                        <Link
-                          to="/d/$deviceId"
-                          params={{ deviceId: entry.deviceId }}
-                          className="flex h-6 items-center pl-7 text-xs text-muted-foreground hover:text-foreground pointer-coarse:h-9"
-                        >
-                          All {all.length} on {deviceName(entry)}
-                        </Link>
-                      </li>
-                    )}
-                    {all.length === 0 && live && (
-                      <li>
-                        <Link
-                          to="/d/$deviceId"
-                          params={{ deviceId: entry.deviceId }}
-                          className="flex h-6 items-center gap-1.5 pl-7 text-xs text-muted-foreground hover:text-foreground pointer-coarse:h-9"
-                        >
-                          <PlusIcon className="size-3" />
-                          Start something on {deviceName(entry)}
-                        </Link>
-                      </li>
-                    )}
-                  </ul>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </div>
-  );
-}
-
 /** A device in the sidebar footer: its state, updates, and what's done per device. */
 function DeviceRow({
   debugging,
@@ -1165,10 +1017,7 @@ function DeviceRow({
   const update = useUpdateCheck();
   const claudeUpdate = useClaudeUpdateCheck();
   const claudeAuth = useClaudeAuth();
-  const navigate = useNavigate();
   const live = conn.state === "connected";
-  const hasDesktop = live && !!info.data?.features?.includes("desktop");
-  const openDesktop = () => void navigate({ to: "/d/$deviceId/desktop", params: { deviceId: device.id } });
   const [updating, setUpdating] = useState<"device" | "claude" | "signIn" | null>(null);
   const deviceUpdate = live && update.data?.available ? update.data : undefined;
   const claudeNew = live && claudeUpdate.data?.available ? claudeUpdate.data : undefined;
@@ -1235,12 +1084,10 @@ function DeviceRow({
               <FolderPlusIcon />
               New project…
             </DropdownMenuItem>
-            {hasDesktop && (
-              <DropdownMenuItem onSelect={openDesktop}>
-                <MonitorIcon />
-                Remote desktop
-              </DropdownMenuItem>
-            )}
+            {live &&
+              devicePlugins(info.data).flatMap((p) =>
+                (p.device?.menu ?? []).map((Item, i) => <Item key={`${p.id}:${i}`} entry={entry} />),
+              )}
             {conn.state === "failed" && (
               <DropdownMenuItem onSelect={() => peer.retry()}>
                 <RotateCcwIcon />
@@ -1372,10 +1219,10 @@ function ThreadRow({
             >
               {idle.days}d
             </span>
-            <ThreadStatusDot thread={t} />
+            <ThreadStatusDot thread={t} deviceId={deviceId} />
           </span>
         ) : (
-          <ThreadStatusDot thread={t} />
+          <ThreadStatusDot thread={t} deviceId={deviceId} />
         )}
       </Link>
       <DropdownMenu>
@@ -1508,17 +1355,15 @@ function ProjectGlyph({ entry, project: p, enabled }: { entry: Entry; project: P
 }
 
 /** Mint means live (shell or idle claude); claude threads also show what they're doing. */
-export function ThreadStatusDot({ thread: t }: { thread: Thread }) {
+export function ThreadStatusDot({ thread: t, deviceId }: { thread: Thread; deviceId?: string }) {
   const dot = <ThreadDot thread={t} />;
-  if (!t.processes) return dot;
+  const badges = threadBadges();
+  if (badges.length === 0) return dot;
   return (
     <span className="ml-auto flex shrink-0 items-center gap-1.5">
-      <span
-        className="rounded-sm bg-live/15 px-1 text-[10px] text-live tabular-nums"
-        title={`${t.processes} process${t.processes === 1 ? "" : "es"} running`}
-      >
-        {t.processes}
-      </span>
+      {badges.map((Badge, i) => (
+        <Badge key={i} thread={t} deviceId={deviceId} />
+      ))}
       {dot}
     </span>
   );

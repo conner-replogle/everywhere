@@ -83,7 +83,7 @@ export function ThreadTabs({ deviceId, threadId, title }: { deviceId: string; th
               <Icon className={cn("size-3.5 shrink-0", active && "text-primary")} />
               <span className={cn("truncate", active && "font-medium", r.preview && "italic")}>{name}</span>
               {r.preview && <span className="sr-only">(preview)</span>}
-              {thread && <ThreadStatusDot thread={thread} />}
+              {thread && <ThreadStatusDot thread={thread} deviceId={r.deviceId} />}
             </Link>
             {r.preview && (
               <button

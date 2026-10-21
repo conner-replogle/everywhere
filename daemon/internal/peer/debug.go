@@ -30,7 +30,7 @@ func (p *peer) debug() protocol.PeerDebug {
 		ConnectedForMs:     time.Since(p.started).Milliseconds(),
 	}
 	p.mu.Lock()
-	d.OpenTerminals = len(p.terms)
+	d.OpenTerminals = p.open[protocol.TermChannelPrefix]
 	p.mu.Unlock()
 
 	if sctp := p.pc.SCTP(); sctp != nil && sctp.Transport() != nil {

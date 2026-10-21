@@ -289,4 +289,67 @@ declare module "everywhere" {
   export function formatDuration(seconds: number): string;
   /** Joins class names, later Tailwind classes winning. */
   export function cn(...classes: (string | false | null | undefined)[]): string;
+
+  // --- plugins ---------------------------------------------------------------
+  //
+  // An installed plugin's web part (web/index.tsx) runs in this same frame,
+  // default-exporting the view of its tab kind. usePlugin() is its way out:
+  // its own methods and channels on the device, its tab's state, links.
+
+  /** A data channel to the plugin's process (a label its plugin.json declares). */
+  export interface PluginChannel {
+    send(data: string | ArrayBuffer): void;
+    onMessage(fn: (data: string | ArrayBuffer) => void): () => void;
+    close(): void;
+  }
+
+  /** A plugin's key/value state on the device. scope is "" (its own), "thread:<id>" or "project:<id>" (deleted with them). */
+  export interface PluginKV {
+    get<T = unknown>(scope: string, key: string): Promise<T | undefined>;
+    set(scope: string, key: string, value: unknown): Promise<void>;
+    delete(scope: string, key: string): Promise<void>;
+    list(scope: string, prefix?: string): Promise<{ key: string; value: unknown }[]>;
+    scopes(prefix?: string): Promise<string[]>;
+  }
+
+  /** A setting as the browser sees it: secrets only say whether they're set, and how they end. */
+  export interface PluginSettingValue {
+    value?: unknown;
+    set: boolean;
+    hint?: string;
+  }
+
+  export interface Plugin {
+    /** The plugin's id. */
+    id: string;
+    /** Whether this is a tab of one of its kinds, or its settings page (settingsPage in plugin.json). */
+    view: "tab" | "settings";
+    /** Its key/value state. */
+    kv: PluginKV;
+    /** Its settings (plugin.json's settings): reading them, and saving changed ones (null clears one). */
+    settings: {
+      get(): Promise<Record<string, PluginSettingValue>>;
+      set(values: Record<string, unknown>): Promise<Record<string, PluginSettingValue>>;
+    };
+    /** The tab showing it. */
+    pane: { id: string; kind: string; name: string };
+    /** The thread the tab is in. */
+    threadId: string;
+    /** Calls one of the plugin's methods ("<id>.<name>") on the device. */
+    call<T = unknown>(method: string, params?: unknown): Promise<T>;
+    /** The tab's saved state, as setTabState left it. */
+    tabState: string | undefined;
+    setTabState(state: string): void;
+    /** Opens a link as a web tab next to this one. */
+    openUrl(url: string): void;
+    /** Opens a channel "<id>/<name>" to the plugin's process. */
+    channel(name: string, options?: { ordered?: boolean }): Promise<PluginChannel>;
+    /** Calls fn with the plugin's events ("<id>.…") while mounted. */
+    useEvent(fn: (event: { event: string } & Record<string, unknown>) => void): void;
+  }
+
+  /** In a plugin's web part: the plugin. Throws in a dashboard. */
+  export function usePlugin(): Plugin;
+  /** A key of the plugin's state, kept current as it changes (from anywhere): [value, set]; set(undefined) deletes it. */
+  export function useKV<T>(scope: string, key: string): [T | undefined, (value: T | undefined) => Promise<void>];
 }

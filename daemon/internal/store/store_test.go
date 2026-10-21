@@ -115,8 +115,9 @@ func TestAgentThreads(t *testing.T) {
 	if _, err := s.AgentThread(term.ID); err == nil {
 		t.Error("AgentThread accepted a terminal thread")
 	}
-	if _, err := s.CreateThread(home.ID, "", "bogus"); err == nil {
-		t.Error("unknown kind accepted")
+	// Plugins decide which kinds exist; the store only refuses malformed ones.
+	if _, err := s.CreateThread(home.ID, "", "bad kind!"); err == nil {
+		t.Error("malformed kind accepted")
 	}
 	th, err := s.CreateThread(home.ID, "", protocol.ThreadClaude)
 	if err != nil || th.Name != "claude 1" || th.Kind != protocol.ThreadClaude {
@@ -233,8 +234,8 @@ func TestTabs(t *testing.T) {
 			t.Fatalf("CreateTab(%s): %v", kind, err)
 		}
 	}
-	if _, err := s.CreateTab(th.ID, "bogus", ""); err == nil {
-		t.Error("unknown kind accepted")
+	if _, err := s.CreateTab(th.ID, "bad kind!", ""); err == nil {
+		t.Error("malformed kind accepted")
 	}
 	tabs, err := s.ListTabs(th.ID)
 	if err != nil || len(tabs) != 5 {
@@ -492,5 +493,48 @@ func TestThreadDone(t *testing.T) {
 	}
 	if err := s.SetThreadDone("nope", true); err == nil {
 		t.Fatal("marked a missing thread done")
+	}
+}
+
+func TestPluginKV(t *testing.T) {
+	s := open(t)
+	if err := s.KVSet("notes", "thread:t1", "text", json.RawMessage(`"hi"`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.KVSet("notes", "", "count", json.RawMessage(`3`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.KVSet("other", "thread:t1", "text", json.RawMessage(`"theirs"`)); err != nil {
+		t.Fatal(err)
+	}
+	v, ok, err := s.KVGet("notes", "thread:t1", "text")
+	if err != nil || !ok || string(v) != `"hi"` {
+		t.Fatalf("get = %s %v %v", v, ok, err)
+	}
+	for _, bad := range []struct{ scope, key, value string }{
+		{"thread:t1", "", `1`}, {"nowhere", "k", `1`}, {"", "k", `not json`},
+	} {
+		if err := s.KVSet("notes", bad.scope, bad.key, json.RawMessage(bad.value)); err == nil {
+			t.Errorf("set %+v accepted", bad)
+		}
+	}
+	if list, _ := s.KVList("notes", "thread:t1", "", 0); len(list) != 1 || list[0].Key != "text" {
+		t.Errorf("list = %+v", list)
+	}
+	if scopes, _ := s.KVScopes("notes", "thread:"); len(scopes) != 1 || scopes[0] != "thread:t1" {
+		t.Errorf("scopes = %v", scopes)
+	}
+	// A thread's state goes with it, every plugin's.
+	if err := s.KVDeleteScope("thread:t1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := s.KVGet("other", "thread:t1", "text"); ok {
+		t.Error("thread state survived")
+	}
+	if _, ok, _ := s.KVGet("notes", "", "count"); !ok {
+		t.Error("plugin-wide state went too")
+	}
+	if err := s.KVSet("notes", "", "big", json.RawMessage(`"`+strings.Repeat("x", KVMaxValue)+`"`)); err == nil {
+		t.Error("oversized value accepted")
 	}
 }

@@ -99,7 +99,7 @@ export function notifyText(n: Pick<HubNotify, "kind" | "tool">): string {
  * rpc: the daemon answers rpc requests (see RemoteMethods). claudeToken: it
  * takes the account's Claude token (agent.setToken), sent when it connects.
  */
-export type HubFeature = "rpc" | "claudeToken";
+export type HubFeature = "rpc" | "claudeToken" | "pluginSettings";
 
 /** Sent by the hub to a daemon. `from` is a browser connection id. */
 export type HubToDaemon =
@@ -138,6 +138,115 @@ export interface DeviceInfo {
   version: string;
   /** What the daemon supports beyond V1; absent on daemons older than this field. */
   features?: DeviceFeature[];
+  /** The plugins running on the device (feature "plugins"); absent on older daemons. */
+  plugins?: PluginInfo[];
+}
+
+/**
+ * A plugin running on a device: what it is, what it uses of the device
+ * (permissions), and what it serves. See PLUGINS.md.
+ */
+export interface PluginInfo {
+  id: string;
+  title: string;
+  version?: string;
+  /** The plugin API revision it's built for. */
+  api: number;
+  /** Compiled into the daemon (its web part ships with the app). */
+  builtin?: boolean;
+  requires?: string[];
+  optional?: string[];
+  permissions?: string[];
+  contributes: PluginContributes;
+  /** An external plugin with a web part the device builds (plugins.web). */
+  web?: boolean;
+  /** What the app draws its settings form from. */
+  settings?: PluginSetting[];
+  /** Its web part has a settings view too. */
+  settingsPage?: boolean;
+  /** What the app draws for it in its own places, from its methods' data. */
+  ui?: PluginUI;
+}
+
+export interface PluginSetting {
+  key: string;
+  type: "string" | "text" | "number" | "boolean" | "select" | "secret";
+  title: string;
+  description?: string;
+  default?: unknown;
+  options?: string[];
+  /** device (the default): kept on the device. account: kept by the account, sent to every device. */
+  scope?: "device" | "account";
+}
+
+/** A setting's value as the browser sees it: secrets only say whether they're set, and how they end. */
+export interface PluginSettingView {
+  value?: unknown;
+  set: boolean;
+  hint?: string;
+}
+
+/**
+ * What a plugin shows in the app's own places. Sources name one of its
+ * methods, which the app calls for data and again on "<id>.ui.changed",
+ * "<id>.kv.changed" and threads.changed.
+ */
+export interface PluginUI {
+  /** A sidebar section; the method answers PluginSidebar. */
+  sidebar?: { method: string };
+  /** Badges on thread rows; the method answers {threadId: PluginBadge}. */
+  threadBadges?: { method: string };
+  /** Buttons in a thread's header; the method gets {threadId} and answers PluginAction[]. */
+  threadHeader?: { method: string };
+  deviceMenu?: PluginAction[];
+}
+
+export interface PluginSidebar {
+  title: string;
+  rows: PluginSidebarRow[];
+}
+
+export interface PluginSidebarRow {
+  label: string;
+  detail?: string;
+  badge?: PluginBadge;
+  icon?: string;
+  /** Opens this thread. */
+  threadId?: string;
+  action?: PluginAction;
+}
+
+export interface PluginBadge {
+  text: string;
+  tone?: "muted" | "live" | "warn";
+}
+
+/** Calls one of the plugin's methods (a thread header's also get threadId), opens one of its tab kinds, or a link. */
+export interface PluginAction {
+  label: string;
+  icon?: string;
+  call?: string;
+  params?: unknown;
+  openTab?: string;
+  href?: string;
+}
+
+export interface PluginContributes {
+  rpc?: string[];
+  channels?: string[];
+  sessions?: string[];
+  kinds?: PluginKind[];
+  tools?: string[];
+}
+
+export interface PluginKind {
+  kind: string;
+  /** Its name in menus (external plugins'). */
+  title?: string;
+  /** Threads can be of this kind; otherwise it's a tab kind only. */
+  thread?: boolean;
+  /** A thread has at most one tab of this kind. */
+  single?: boolean;
 }
 
 /**
@@ -161,6 +270,7 @@ export interface DeviceInfo {
  * agent's thread_done tool.
  */
 export type DeviceFeature =
+  | "plugins"
   | "claude"
   | "update"
   | "worktrees"
@@ -330,8 +440,11 @@ export interface ScratchUsage {
   truncated?: boolean;
 }
 
-/** What a tab shows: a thread kind, the project's browser, or its files. */
-export type TabKind = ThreadKind | "browser" | "files" | "desktop" | "processes";
+/** The tab kinds built-in plugins provide. */
+export type BuiltinTabKind = ThreadKind | "browser" | "files" | "desktop" | "processes";
+
+/** What a tab shows: a kind some plugin provides (see PluginInfo.contributes.kinds). */
+export type TabKind = BuiltinTabKind | (string & {});
 
 /**
  * A tab opened inside a thread. Terminal and claude tabs are threads of
@@ -763,6 +876,15 @@ export interface RpcMethods {
    */
   "desktop.candidate": [{ id: string; candidate: IceCandidate }, Record<string, never>];
   "desktop.stop": [{ id: string }, Record<string, never>];
+  /**
+   * Opens a session of a kind a plugin serves (e.g. "desktop"): a
+   * PeerConnection of its own, for media. sdp is the browser's offer; params
+   * are the plugin's. The daemon's candidates arrive as rtc.candidate events;
+   * rtc.closed says it ended on the device's side. Feature "plugins".
+   */
+  "rtc.open": [{ kind: string; sdp: string; params?: unknown }, { id: string; sdp: string }];
+  "rtc.candidate": [{ id: string; candidate: IceCandidate }, Record<string, never>];
+  "rtc.close": [{ id: string }, Record<string, never>];
 }
 export type RpcMethod = keyof RpcMethods;
 
@@ -772,7 +894,7 @@ export type RpcMethod = keyof RpcMethods;
  * for callers without a WebRTC connection.
  */
 export interface RemoteMethods
-  extends Omit<RpcMethods, "debug.peer" | "device.update" | `desktop.${string}`> {
+  extends Omit<RpcMethods, "debug.peer" | "device.update" | `desktop.${string}` | `rtc.${string}`> {
   // Coding tools for MCP agents. Relative paths (and cwd) are resolved against
   // the thread's working directory (its worktree, if any), else the project,
   // else home.
@@ -792,6 +914,8 @@ export interface RemoteMethods
   /** projects.clone, with a token answering git's HTTPS credential prompt. */
   "projects.clone": [{ url: string; path: string; name?: string; token?: string }, Project];
   "threads.get": [{ threadId: string }, Thread];
+  /** A plugin's account settings, whole (sealed in the hub, sent to each device that takes them). */
+  "plugins.setAccountSettings": [{ id: string; values: Record<string, unknown> }, Record<string, never>];
   /**
    * A claude thread's state and the newest limit events after afterSeq (and
    * before beforeSeq). waitMs: first wait up to that long (at most 50s) for
@@ -892,6 +1016,8 @@ export type RpcEvent =
   | { event: "clones.changed" }
   | { event: "git.changed" }
   | { event: "threads.changed" }
+  /** Plugins started or stopped on the device: device.info changed. */
+  | { event: "plugins.changed" }
   /** The device's Claude Code was signed out or in, or a sign-in started or ended. */
   | { event: "claude.auth" }
   /** A thread's processes started, stopped or made progress (at most 4 a second). */
@@ -899,7 +1025,11 @@ export type RpcEvent =
   /** A project's telemetry got new data: by experiment, the metrics that did. */
   | { event: "telemetry.changed"; home: string; experiments: Record<string, string[]> }
   /** One of a desktop session's ICE candidates (trickle ICE); see desktop.start. */
-  | { event: "desktop.candidate"; id: string; candidate: IceCandidate };
+  | { event: "desktop.candidate"; id: string; candidate: IceCandidate }
+  /** One of a plugin session's ICE candidates; see rtc.open. */
+  | { event: "rtc.candidate"; id: string; candidate: IceCandidate }
+  /** A plugin session ended on the device's side (taken over, or the plugin stopped). */
+  | { event: "rtc.closed"; id: string; reason?: string };
 
 /**
  * File channel `file:<id>`, one per read. The client sends `read`; the daemon

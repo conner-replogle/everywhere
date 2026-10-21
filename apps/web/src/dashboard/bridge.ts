@@ -42,8 +42,29 @@ export const THEME_VARS = [
   "--chart-4",
 ] as const;
 
+/** A plugin's web part: which plugin, in which tab. */
+export interface PluginFrameInfo {
+  id: string;
+  /** A tab of one of its kinds, or its settings page. */
+  view: "tab" | "settings";
+  pane: { id: string; kind: string; name: string };
+  threadId: string;
+  tabState?: string;
+}
+
 export type FrameRequest =
   | { method: "file"; params: { path: string } }
+  /** Plugins: one of the plugin's own methods. */
+  | { method: "plugin.call"; params: { method: string; params?: unknown } }
+  | { method: "plugin.setTabState"; params: { state: string } }
+  | { method: "plugin.openUrl"; params: { url: string } }
+  /** Plugins: a data channel to the plugin's process; the reply is a MessagePort. */
+  | { method: "plugin.channel"; params: { name: string; ordered?: boolean } }
+  /** Plugins: its own key/value state (the app fixes which plugin's). */
+  | { method: "plugin.kv"; params: { method: string; scope?: string; key?: string; value?: unknown; prefix?: string } }
+  /** Plugins: its settings, as the browser may see them, and saving them. */
+  | { method: "plugin.settings"; params: Record<string, never> }
+  | { method: "plugin.setSettings"; params: { values: Record<string, unknown> } }
   | { method: "log"; params: { tail?: number; grep?: string } }
   | { method: "setState"; params: { key: string; value: unknown } }
   | { method: "query"; params: { query: TelemetryQuery } }
@@ -60,6 +81,10 @@ export interface FileReply {
 /** From the app to the frame. */
 export type ToFrame =
   | { t: "init"; js: string; css?: string; process: Process; theme: FrameTheme }
+  /** A plugin's web part instead of a dashboard. */
+  | { t: "plugin-init"; js: string; css?: string; plugin: PluginFrameInfo; theme: FrameTheme }
+  /** One of the plugin's events from the device. */
+  | { t: "plugin-event"; event: unknown }
   | { t: "process"; process: Process }
   | { t: "theme"; theme: FrameTheme }
   /** The project's telemetry got new data: by experiment, the metrics that did. */

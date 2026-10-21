@@ -1,0 +1,8 @@
+{
+  "name": "@everywhere/plugin-sdk",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "typecheck": "tsc -p .", "test": "bun test test/" },
+  "devDependencies": { "typescript": "^7.0.2", "@types/bun": "latest" }
+}

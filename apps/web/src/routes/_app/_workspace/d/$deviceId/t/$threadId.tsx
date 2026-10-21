@@ -1,33 +1,13 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import type { AgentStatus, DesktopSource, Tab, TabKind, Thread } from "@everywhere/protocol";
-import {
-  ActivityIcon,
-  AppWindowIcon,
-  ArchiveRestoreIcon,
-  ArrowLeftRightIcon,
-  Columns2Icon,
-  FolderInputIcon,
-  FolderPlusIcon,
-  FolderTreeIcon,
-  GlobeIcon,
-  type LucideIcon,
-  MonitorIcon,
-  MoreHorizontalIcon,
-  PlusIcon,
-  SparklesIcon,
-  SquareTerminalIcon,
-  XIcon,
-} from "lucide-react";
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import type { Tab, TabKind } from "@everywhere/protocol";
+import { ArrowLeftRightIcon, Columns2Icon, PlusIcon, PuzzleIcon, XIcon } from "lucide-react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { CenteredMessage } from "@/components/centered-message";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { OpenLinkContext, RunInTerminalContext } from "@/components/agent/markdown";
 import { useDevice } from "@/components/device-context";
-import { ContinueDialog, PromoteDialog } from "@/components/scratch-actions";
 import { RenameDialog } from "@/components/rename-dialog";
 import { SplitArea } from "@/components/split-area";
-import { GitChip } from "@/components/git-chip";
-import { TerminalView, type WriterState } from "@/components/terminal-view";
 import { ThreadTabs } from "@/components/thread-tabs";
 import { Button } from "@/components/ui/button";
 import {
@@ -40,61 +20,24 @@ import {
 import { sendToComposer } from "@/lib/composer-inbox";
 import { hub } from "@/lib/hub";
 import { useRpc } from "@/lib/peer";
-import { getPrefs } from "@/lib/prefs";
 import { touchThread } from "@/lib/idle-threads";
 import { isInputKey, retainThread, visitThread } from "@/lib/recent-threads";
-import { closeWebTab, openWebTab, renameWebTab, useWebTabs } from "@/lib/web-tabs";
+import { openWebTab } from "@/lib/web-tabs";
 import { cn, errorMessage } from "@/lib/utils";
-
-// Loaded on demand so terminal-only use skips the markdown stack.
-const AgentView = lazy(() => import("@/components/agent/agent-view").then((m) => ({ default: m.AgentView })));
-const BrowserView = lazy(() => import("@/components/browser/browser-view").then((m) => ({ default: m.BrowserView })));
-const FilesView = lazy(() => import("@/components/files/files-view").then((m) => ({ default: m.FilesView })));
-const DesktopView = lazy(() => import("@/components/desktop/desktop-view").then((m) => ({ default: m.DesktopView })));
-const WebView = lazy(() => import("@/components/web/web-view").then((m) => ({ default: m.WebView })));
-const ProcessesView = lazy(() =>
-  import("@/components/processes/processes-view").then((m) => ({ default: m.ProcessesView })),
-);
-
-/** A tab kind, or a web tab: a page shown in this browser, which only this browser knows of. */
-type PaneKind = TabKind | "web";
-
-const KIND_ICON: Record<PaneKind, LucideIcon> = {
-  terminal: SquareTerminalIcon,
-  claude: SparklesIcon,
-  browser: GlobeIcon,
-  files: FolderTreeIcon,
-  desktop: MonitorIcon,
-  processes: ActivityIcon,
-  web: AppWindowIcon,
-};
-
-const KIND_LABEL: Record<PaneKind, string> = {
-  terminal: "Terminal",
-  claude: "Claude",
-  browser: "Browser (device)",
-  files: "Files",
-  desktop: "Desktop",
-  processes: "Processes",
-  web: "Web page",
-};
-
-/**
- * A web tab as a pane: a page loaded here in an iframe (links from processes
- * and Claude open in one). Unlike the browser tab, it runs in this browser
- * and Claude can't see or drive it.
- */
-interface WebPane {
-  id: string;
-  kind: "web";
-  name: string;
-  url: string;
-  parentId: string;
-  tabState?: undefined;
-}
-
-/** The thread itself, one of its tabs, or a web tab. */
-type Pane = (Thread & { parentId?: undefined; tabState?: undefined }) | Tab | WebPane;
+import { createThreadBus } from "@/plugins/bus";
+import { useExternalPlugins } from "@/plugins/external";
+import { BUILTIN, builtinTabKind, devicePlugins, tabKinds } from "@/plugins/registry";
+import {
+  isLocal,
+  type LocalTab,
+  type OpenTabOptions,
+  type Pane,
+  type PaneContext,
+  type PromptOptions,
+  type SlotName,
+  type TabKindDef,
+  type ThreadContext,
+} from "@/plugins/types";
 
 export const Route = createFileRoute("/_app/_workspace/d/$deviceId/t/$threadId")({
   // tab: the pane shown (the thread itself if absent); split: one shown beside it.
@@ -104,6 +47,22 @@ export const Route = createFileRoute("/_app/_workspace/d/$deviceId/t/$threadId")
   }),
   component: ThreadPage,
 });
+
+/** A kind no plugin here provides: its tab still shows, saying why it can't. */
+function unknownKind(kind: TabKind): TabKindDef {
+  return {
+    kind,
+    title: kind,
+    icon: PuzzleIcon,
+    menu: false,
+    render: () => (
+      <CenteredMessage
+        title="This tab's plugin isn't available"
+        body={`Showing a "${kind}" tab needs a plugin this device or this version of the app doesn't have.`}
+      />
+    ),
+  };
+}
 
 function ThreadPage() {
   const { deviceId, threadId } = Route.useParams();
@@ -121,18 +80,29 @@ function ThreadPage() {
   const tabs = useRpc(peer, "tabs.list", { threadId }, ["threads.changed"], canTab);
   const workdir = useRpc(peer, "threads.workdir", { id: threadId }, ["threads.changed"], canTab);
 
+  // The plugins this device has: built-ins it runs, and external ones with a web part.
+  const external = useExternalPlugins(entry);
+  const plugins = useMemo(() => devicePlugins(info.data, external), [info.data, external]);
+  const kinds = useMemo(() => tabKinds(plugins), [plugins]);
+  const kindOf = (kind: TabKind): TabKindDef => kinds.find((k) => k.kind === kind) ?? builtinTabKind(kind) ?? unknownKind(kind);
+  const singleKinds = new Set([
+    ...kinds.filter((k) => k.single).map((k) => k.kind),
+    ...(info.data?.plugins ?? []).flatMap((p) => (p.contributes.kinds ?? []).filter((k) => k.single).map((k) => k.kind)),
+  ]);
+
   // Daemons from before tabs still have their project's browser, as a fixed tab.
   const legacyBrowser = !!info.data && !features.includes("tabs") && !archived && !!thread;
   const legacyTab: Tab | undefined =
     legacyBrowser && thread
       ? { ...thread, id: `${thread.id}:browser`, kind: "browser", name: "Browser", parentId: thread.id }
       : undefined;
-  const webTabs = useWebTabs(deviceId, threadId);
-  const webPanes: WebPane[] = archived
-    ? []
-    : webTabs.map((t) => ({ id: t.id, kind: "web", name: t.name, url: t.url, parentId: threadId }));
+  // Tabs only this browser knows of (web pages), from plugins that keep them. Every
+  // built-in's hook runs, in a fixed order, whether or not the device has it.
+  const localByPlugin = BUILTIN.map((p) => (p.localTabs ? p.localTabs.use(deviceId, threadId) : []));
+  const localPanes: LocalTab[] = archived ? [] : localByPlugin.flat();
+  const localOwner = (t: LocalTab) => BUILTIN[localByPlugin.findIndex((l) => l.some((x) => x.id === t.id))];
   const panes: Pane[] = thread
-    ? [thread, ...(canTab ? (tabs.data ?? []) : []), ...(legacyTab ? [legacyTab] : []), ...webPanes]
+    ? [thread, ...(canTab ? (tabs.data ?? []) : []), ...(legacyTab ? [legacyTab] : []), ...localPanes]
     : [];
   // A tab that's gone (closed elsewhere) falls back to the thread.
   const primary = panes.find((p) => p.id === tabParam) ?? thread;
@@ -180,11 +150,13 @@ function ThreadPage() {
     setFocusSide("primary");
   };
 
-  // Terminal and claude panes stay mounted once opened, so switching tabs
-  // keeps their scrollback and drafts. The browser only streams while shown.
+  // Panes stay mounted once opened, so switching tabs keeps a terminal's
+  // scrollback and a claude draft; kinds that ask to are unmounted when hidden.
   const [opened, setOpened] = useState<Set<string>>(() => new Set());
   const activeId = primary?.id;
   const splitId = splitPane?.id;
+  // The thread's plugins talk to each other on its bus.
+  const bus = useMemo(() => createThreadBus(), [threadId]);
   // Before the effect below, so a new thread starts empty and then opens.
   useEffect(() => {
     setOpened(new Set());
@@ -212,21 +184,16 @@ function ThreadPage() {
     }
   }, [activeId, splitId]);
 
-  const [writers, setWriters] = useState<Record<string, WriterState>>({});
+  // What panes report for the header's status (a terminal's writer role).
+  const [reports, setReports] = useState<Record<string, unknown>>({});
   const [error, setError] = useState<string | null>(null);
-  const [renaming, setRenaming] = useState<Tab | WebPane | null>(null);
-  // Asking for an address for a new web tab.
-  const [askingUrl, setAskingUrl] = useState(false);
-  const [closing, setClosing] = useState<Tab | null>(null);
-  const [moving, setMoving] = useState<"promote" | "continue" | "toScratch" | null>(null);
-  const browserClosedAt = useRef(0);
-  const desktopClosedAt = useRef(0);
-  const processesClosedAt = useRef(0);
-  // A process for the processes tab to show (picked in a claude tab's overview).
-  const [processShow, setProcessShow] = useState<{ id: string; at: number } | undefined>();
-  const creatingDesktop = useRef(false);
-  // What the thread's claude opened on the desktop, for its Desktop tab to show.
-  const [desktopShow, setDesktopShow] = useState<{ tabId: string; source: DesktopSource; at: number } | null>(null);
+  const [renaming, setRenaming] = useState<Pane | null>(null);
+  const [asking, setAsking] = useState<(PromptOptions & { resolve: (v: string | null) => void }) | null>(null);
+  const [closing, setClosing] = useState<{ pane: Tab; title: string; description: string; confirmLabel: string } | null>(
+    null,
+  );
+  const closedAt = useRef<Record<string, number>>({});
+  const openingTab = useRef<Record<string, boolean>>({});
 
   const restore = async () => {
     setError(null);
@@ -238,25 +205,33 @@ function ThreadPage() {
     }
   };
 
-  const openingTab = useRef<Partial<Record<TabKind, boolean>>>({});
-  const openTab = async (kind: TabKind, focus = true) => {
-    // One browser per thread (a second tab would show the same page), and one processes tab.
-    const single = kind === "browser" || kind === "processes";
+  const openTab = async (kind: TabKind, opts: OpenTabOptions = {}): Promise<Tab | undefined> => {
+    const focus = opts.focus ?? true;
+    const single = singleKinds.has(kind);
     const existing = single && tabs.data?.find((t) => t.kind === kind);
     if (existing) {
       if (focus) setActive(existing.id);
-      return;
+      return existing;
     }
-    if (single && openingTab.current[kind]) return;
+    if (single && openingTab.current[kind]) return undefined;
     openingTab.current[kind] = true;
     setError(null);
     try {
-      const mode = kind === "claude" ? (await getPrefs()).defaultPermissionMode : undefined;
-      const t = await peer.call("tabs.create", { threadId, kind, ...(mode ? { permissionMode: mode } : {}) });
+      const extra = (await kindOf(kind).createParams?.()) ?? {};
+      const t = await peer.call("tabs.create", {
+        threadId,
+        kind,
+        ...extra,
+        ...(opts.name ? { name: opts.name } : {}),
+        ...(opts.input ? { input: opts.input } : {}),
+      });
+      if (opts.state) await peer.call("tabs.setState", { id: t.id, state: opts.state });
       tabs.refetch();
       if (focus) setActive(t.id);
+      return t as Tab;
     } catch (e) {
       setError(errorMessage(e));
+      return undefined;
     } finally {
       openingTab.current[kind] = false;
     }
@@ -265,22 +240,11 @@ function ThreadPage() {
   // Opens a terminal tab with a command typed in (not run), e.g. one that needs sudo.
   const runInTerminal =
     canTab && features.includes("scratch")
-      ? (command: string) => {
-          void (async () => {
-            setError(null);
-            try {
-              const t = await peer.call("tabs.create", { threadId, kind: "terminal", name: "Terminal", input: command });
-              tabs.refetch();
-              setActive(t.id);
-            } catch (e) {
-              setError(errorMessage(e));
-            }
-          })();
-        }
+      ? (command: string) => void openTab("terminal", { name: "Terminal", input: command })
       : null;
 
   // A shown tab closing: with a split, the other pane takes the view; else its neighbour.
-  const leave = (t: Tab | WebPane) => {
+  const leave = (t: Pane) => {
     if (t.id === splitPane?.id) {
       show(primary!.id);
       setFocusSide("primary");
@@ -296,19 +260,111 @@ function ThreadPage() {
     show((panes[i + 1] ?? panes[i - 1] ?? thread!).id);
   };
 
-  const closeTab = async (t: Tab | WebPane) => {
-    if (t.kind === "web") {
+  const closeTab = async (t: Pane) => {
+    if (isLocal(t)) {
       leave(t);
-      closeWebTab(deviceId, threadId, t.id);
+      localOwner(t)?.localTabs?.close(deviceId, threadId, t.id);
       return;
     }
-    if (t.kind === "browser") browserClosedAt.current = Date.now();
-    if (t.kind === "desktop") desktopClosedAt.current = Date.now();
-    if (t.kind === "processes") processesClosedAt.current = Date.now();
+    closedAt.current[t.kind] = Date.now();
     leave(t);
     await peer.call("tabs.close", { id: t.id });
     tabs.refetch();
   };
+
+  // Links (a process's web UI, one in Claude's reply) open as a web tab here,
+  // not in the device's browser: you're the one looking.
+  const openUrl = (url: string) => {
+    const t = openWebTab(deviceId, threadId, url);
+    keep();
+    setActive(t.id);
+  };
+
+  // Annotations go to the thread's claude, or else the last claude tab
+  // opened here (only a mounted one has a composer to take them).
+  const claudeTarget =
+    thread?.kind === "claude"
+      ? thread.id
+      : [...opened].reverse().find((id) => panes.find((p) => p.id === id)?.kind === "claude");
+
+  const ctx: ThreadContext | undefined = thread && {
+    deviceId,
+    threadId,
+    thread,
+    project,
+    scratchProject: scratch,
+    entry,
+    peer,
+    generation: conn.generation,
+    info: info.data,
+    deviceName: device.name || info.data?.hostname || "the device",
+    workdir: workdir.data,
+    cwd: workdir.data?.path ?? thread.scratchDir ?? project?.path,
+    inScratch,
+    archived,
+    canTab,
+    tabs: tabs.data ?? [],
+    hasPlugin: (id) => plugins.some((p) => p.id === id),
+    hasFeature: (f) => features.includes(f),
+    keep,
+    setActive,
+    openTab,
+    closedRecently: (kind, ms) => Date.now() - (closedAt.current[kind] ?? 0) < ms,
+    openUrl,
+    sendToClaude: claudeTarget
+      ? (draft) => {
+          if (!sendToComposer(claudeTarget, draft)) return false;
+          keep();
+          setActive(claudeTarget);
+          return true;
+        }
+      : undefined,
+    prompt: (o) => new Promise((resolve) => setAsking({ ...o, resolve })),
+    error,
+    setError,
+    restore,
+    emit: bus.emit,
+    on: bus.on,
+  };
+  // Plugins' handlers get the page as it is when the event comes.
+  const ctxRef = useRef(ctx);
+  ctxRef.current = ctx;
+  useEffect(() => {
+    const offs = plugins.flatMap((p) =>
+      Object.entries(p.on ?? {}).map(([event, fn]) =>
+        bus.on(event as never, (payload: never) => {
+          const c = ctxRef.current;
+          if (c) (fn as (payload: unknown, ctx: ThreadContext) => void)(payload, c);
+        }),
+      ),
+    );
+    return () => offs.forEach((off) => off());
+  }, [bus, plugins]);
+
+  const paneContext = (p: Pane): PaneContext => ({
+    ...ctx!,
+    pane: p,
+    shown: p.id === primary?.id || p.id === splitPane?.id,
+    setTabState: (state) => void peer.call("tabs.setState", { id: p.id, state }).catch(() => {}),
+    slot: (name: SlotName) =>
+      plugins.map((pl) => {
+        const fn = pl.slots?.[name];
+        return fn ? <Fragment key={pl.id}>{fn(paneContext(p))}</Fragment> : null;
+      }),
+    report: (value) => setReports((r) => (r[p.id] === value ? r : { ...r, [p.id]: value })),
+    plugins,
+  });
+
+  // Input to a pane keeps the thread's tab. (Claude panes report sends
+  // themselves: typing a draft isn't enough.)
+  const inputCapture = (capture: "keys" | "all") => ({
+    onKeyDownCapture: (e: React.KeyboardEvent) => isInputKey(e) && keep(),
+    onPasteCapture: keep,
+    onDropCapture: keep,
+    // Phone keyboards type through input events, without telling keydown the key.
+    onInputCapture: keep,
+    ...(capture === "all" ? { onPointerDownCapture: keep } : {}),
+  });
 
   if (threads.data && !thread) {
     return (
@@ -320,204 +376,8 @@ function ThreadPage() {
     );
   }
 
-  // Annotations from the browser go to the thread's claude, or else the last
-  // claude tab opened here (only a mounted one has a composer to take them).
-  const claudeTarget =
-    thread?.kind === "claude"
-      ? thread.id
-      : [...opened].reverse().find((id) => panes.find((p) => p.id === id)?.kind === "claude");
-  const onBrowserUse = () => {
-    // Open the browser as a tab, but not right after the user closed it.
-    if (!canTab || Date.now() - browserClosedAt.current < 120_000) return;
-    void openTab("browser", false);
-  };
-
-  const onProcessUse = () => {
-    // Show processes as a tab, but not right after the user closed it.
-    if (!canTab || !features.includes("processes") || Date.now() - processesClosedAt.current < 120_000) return;
-    void openTab("processes", false);
-  };
-
-  const openProcess = (id?: string) => {
-    if (id) setProcessShow({ id, at: Date.now() });
-    void openTab("processes");
-  };
-
-  // Links (a process's web UI, one in Claude's reply) open as a web tab here,
-  // not in the device's browser: you're the one looking.
-  const openUrl = (url: string) => {
-    const t = openWebTab(deviceId, threadId, url);
-    keep();
-    setActive(t.id);
-  };
-
-  // source: what claude opened, if it did; fallback: what a new tab shows otherwise.
-  const onDesktopUse = (source: DesktopSource | undefined, fallback: DesktopSource) => {
-    // Show the desktop as a tab, but not right after the user closed it.
-    if (!canTab || Date.now() - desktopClosedAt.current < 120_000) return;
-    const existing = tabs.data?.find((t) => t.kind === "desktop");
-    if (existing) {
-      if (source) {
-        setDesktopShow({ tabId: existing.id, source, at: Date.now() });
-        void peer.call("tabs.setState", { id: existing.id, state: JSON.stringify({ source }) }).catch(() => {});
-      }
-      return;
-    }
-    if (creatingDesktop.current) return;
-    creatingDesktop.current = true;
-    void (async () => {
-      try {
-        const t = await peer.call("tabs.create", { threadId, kind: "desktop" });
-        await peer.call("tabs.setState", { id: t.id, state: JSON.stringify({ source: source ?? fallback }) });
-        tabs.refetch();
-      } catch (e) {
-        setError(errorMessage(e));
-      } finally {
-        creatingDesktop.current = false;
-      }
-    })();
-  };
-
-  // Input to a terminal, or to the page or desktop a tab drives, keeps the
-  // thread's tab. (Claude panes report sends themselves: typing a draft isn't enough.)
-  const inputCapture = (kind: TabKind) => ({
-    onKeyDownCapture: (e: React.KeyboardEvent) => isInputKey(e) && keep(),
-    onPasteCapture: keep,
-    onDropCapture: keep,
-    // Phone keyboards type through input events, without telling keydown the key.
-    onInputCapture: keep,
-    ...(kind !== "terminal" ? { onPointerDownCapture: keep } : {}),
-  });
-
-  const renderPane = (p: Pane) => {
-    if (!thread) return null;
-    switch (p.kind) {
-      case "claude":
-        return (
-          <Suspense>
-            <AgentView
-              // Restoring reattaches: archiving closed the thread's session.
-              key={`${p.id}:${archived}`}
-              archived={p.id === threadId && archived ? { onRestore: restore, error } : undefined}
-              peer={peer}
-              threadId={p.id}
-              projectId={thread.projectId}
-              generation={conn.generation}
-              cwd={workdir.data?.path ?? thread.scratchDir ?? project?.path}
-              scratch={inScratch}
-              onBrowserUse={onBrowserUse}
-              onDesktopUse={features.includes("desktop") ? onDesktopUse : undefined}
-              onProcessUse={onProcessUse}
-              onInteract={keep}
-              processes={
-                canTab && features.includes("processes") ? { threadId, onOpen: openProcess, onOpenUrl: openUrl } : undefined
-              }
-            />
-          </Suspense>
-        );
-      case "terminal":
-        return archived ? (
-          <CenteredMessage
-            title="This terminal is archived"
-            body={error ?? `Its shell was stopped. Restore it to start a new shell in the ${inScratch ? "same folder" : "project"}.`}
-          >
-            <Button variant="outline" size="sm" onClick={restore}>
-              <ArchiveRestoreIcon />
-              Restore
-            </Button>
-          </CenteredMessage>
-        ) : (
-          <TerminalView
-            key={p.id}
-            peer={peer}
-            threadId={p.id}
-            generation={conn.generation}
-            active={p.id === primary?.id || p.id === splitPane?.id}
-            onInteract={keep}
-            onWriterChange={(w) => setWriters((ws) => (ws[p.id] === w ? ws : { ...ws, [p.id]: w }))}
-          />
-        );
-      case "browser":
-        return (
-          <Suspense>
-            <BrowserView
-              peer={peer}
-              threadId={legacyBrowser ? thread.projectId : threadId}
-              generation={conn.generation}
-              remoteOs={info.data?.os}
-              onAnnotate={
-                claudeTarget
-                  ? (draft) => {
-                      if (!sendToComposer(claudeTarget, draft)) return false;
-                      keep();
-                      setActive(claudeTarget);
-                      return true;
-                    }
-                  : undefined
-              }
-            />
-          </Suspense>
-        );
-      case "files":
-        return (
-          <Suspense>
-            <FilesView
-              peer={peer}
-              root={workdir.data?.path ?? project?.path ?? "~"}
-              initialState={p.tabState}
-              onStateChange={(state) => void peer.call("tabs.setState", { id: p.id, state }).catch(() => {})}
-            />
-          </Suspense>
-        );
-      case "desktop":
-        return (
-          <Suspense>
-            <DesktopView
-              peer={peer}
-              deviceId={deviceId}
-              deviceName={device.name || info.data?.hostname || "the device"}
-              active={p.id === primary?.id || p.id === splitPane?.id}
-              show={desktopShow?.tabId === p.id ? desktopShow : undefined}
-              onAnnotate={
-                claudeTarget
-                  ? (draft) => {
-                      if (!sendToComposer(claudeTarget, draft)) return false;
-                      keep();
-                      setActive(claudeTarget);
-                      return true;
-                    }
-                  : undefined
-              }
-              tab={{
-                id: p.id,
-                state: p.tabState,
-                onStateChange: (state) => void peer.call("tabs.setState", { id: p.id, state }).catch(() => {}),
-              }}
-            />
-          </Suspense>
-        );
-      case "web":
-        return (
-          <Suspense>
-            <WebView url={p.url} />
-          </Suspense>
-        );
-      case "processes":
-        return (
-          <Suspense>
-            <ProcessesView
-              peer={peer}
-              threadId={threadId}
-              generation={conn.generation}
-              initialState={p.tabState}
-              onStateChange={(state) => void peer.call("tabs.setState", { id: p.id, state }).catch(() => {})}
-              onOpenUrl={openUrl}
-              show={processShow}
-            />
-          </Suspense>
-        );
-    }
-  };
+  const activeKind = active && kindOf(active.kind);
+  const newTabKinds = kinds.filter((k) => k.menu !== false && (k.local ? !archived : canTab));
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -531,93 +391,48 @@ function ThreadPage() {
               : undefined
           }
         />
-        {inScratch && (
-          <Link
-            to="/d/$deviceId"
-            params={{ deviceId }}
-            className="hidden shrink-0 rounded-sm px-1.5 py-0.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground sm:block"
-            title="Scratch: this thread works in a folder of its own"
-          >
-            Scratch
-          </Link>
-        )}
-        {features.includes("gitStatus") && !archived && !inScratch && <GitChip peer={peer} threadId={threadId} />}
-        {thread && !archived && features.includes("scratch") && (inScratch || (thread.kind === "claude" && scratch)) && (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon-sm" className="shrink-0" aria-label="Thread actions" title="Thread actions">
-                <MoreHorizontalIcon />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {inScratch && canTab && (
-                <DropdownMenuItem onSelect={() => void openTab("files")}>
-                  <FolderTreeIcon />
-                  Open its folder
-                </DropdownMenuItem>
-              )}
-              {inScratch && (
-                <DropdownMenuItem onSelect={() => setMoving("promote")}>
-                  <FolderPlusIcon />
-                  Make this a project…
-                </DropdownMenuItem>
-              )}
-              {thread.kind === "claude" && (
-                <>
-                  {inScratch && <DropdownMenuSeparator />}
-                  <DropdownMenuItem onSelect={() => setMoving("continue")}>
-                    <FolderInputIcon />
-                    Continue in a project…
-                  </DropdownMenuItem>
-                  {!inScratch && scratch && (
-                    <DropdownMenuItem onSelect={() => setMoving("toScratch")}>
-                      <MonitorIcon />
-                      Continue in Scratch…
-                    </DropdownMenuItem>
-                  )}
-                </>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        )}
+        {ctx &&
+          plugins.flatMap((p) => (p.threadHeader ?? []).map((Item, i) => <Item key={`${p.id}:${i}`} ctx={ctx} />))}
         {archived ? (
           <span className="ml-auto shrink-0 rounded-sm bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
             Archived
           </span>
-        ) : active?.kind === "claude" ? (
-          <AgentStatusLabel status={active.agentStatus} />
-        ) : active?.kind === "terminal" ? (
-          <WriterLabel writer={writers[active.id] ?? "pending"} />
-        ) : null}
+        ) : (
+          active && activeKind?.status?.(active, reports[active.id])
+        )}
       </div>
       {(canTab || legacyBrowser) && thread && (
         <div className="flex h-8 shrink-0 items-stretch border-b bg-sidebar">
           <div role="tablist" aria-label="Tabs" className="flex min-w-0 items-stretch overflow-x-auto">
-            {panes.map((p) => (
-              <TabButton
-                key={p.id}
-                pane={p}
-                active={p.id === active?.id}
-                shown={p.id === primary?.id || p.id === splitPane?.id}
-                split={!!splitPane}
-                running={p.kind === "processes" ? thread?.processes : undefined}
-                onSelect={() => select(p.id)}
-                onRename={p.parentId && (canTab || p.kind === "web") ? () => (keep(), setRenaming(p)) : undefined}
-                onClose={
-                  p.parentId && (canTab || p.kind === "web")
-                    ? () => {
-                        keep();
-                        const t = p;
-                        // Closing a claude tab deletes its conversation.
-                        if (t.kind === "claude" && t.lastOpenedAt) setClosing(t);
-                        else void closeTab(t).catch((e: unknown) => setError(errorMessage(e)));
-                      }
-                    : undefined
-                }
-              />
-            ))}
+            {panes.map((p) => {
+              const local = isLocal(p);
+              const closable = !!p.parentId && (canTab || local);
+              return (
+                <TabButton
+                  key={p.id}
+                  pane={p}
+                  kind={kindOf(p.kind)}
+                  active={p.id === active?.id}
+                  shown={p.id === primary?.id || p.id === splitPane?.id}
+                  split={!!splitPane}
+                  badge={kindOf(p.kind).badge?.(p, thread)}
+                  onSelect={() => select(p.id)}
+                  onRename={closable ? () => (keep(), setRenaming(p)) : undefined}
+                  onClose={
+                    closable
+                      ? () => {
+                          keep();
+                          const confirm = !local ? kindOf(p.kind).confirmClose?.(p) : null;
+                          if (confirm && !local) setClosing({ pane: p as Tab, ...confirm });
+                          else void closeTab(p).catch((e: unknown) => setError(errorMessage(e)));
+                        }
+                      : undefined
+                  }
+                />
+              );
+            })}
           </div>
-          {canTab && (
+          {(canTab || !archived) && newTabKinds.length > 0 && ctx && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="icon-sm" className="mx-1 self-center" aria-label="New tab" title="New tab">
@@ -625,21 +440,23 @@ function ThreadPage() {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start">
-                {(["terminal", "claude", "browser", "files", "desktop", "processes"] as const)
-                  .filter((k) => (k !== "claude" && k !== "desktop" && k !== "processes") || features.includes(k))
-                  .map((k) => {
-                    const Icon = KIND_ICON[k];
-                    return (
-                      <DropdownMenuItem key={k} onSelect={() => (keep(), void openTab(k))}>
-                        <Icon />
-                        {KIND_LABEL[k]}
-                      </DropdownMenuItem>
-                    );
-                  })}
-                <DropdownMenuItem onSelect={() => setAskingUrl(true)}>
-                  <AppWindowIcon />
-                  {KIND_LABEL.web}…
-                </DropdownMenuItem>
+                {newTabKinds.map((k) => {
+                  const Icon = k.icon;
+                  return (
+                    <DropdownMenuItem
+                      key={k.kind}
+                      onSelect={() => {
+                        keep();
+                        if (k.create) void k.create(ctx);
+                        else void openTab(k.kind);
+                      }}
+                    >
+                      <Icon />
+                      {k.title}
+                      {k.create ? "…" : ""}
+                    </DropdownMenuItem>
+                  );
+                })}
               </DropdownMenuContent>
             </DropdownMenu>
           )}
@@ -665,14 +482,15 @@ function ThreadPage() {
                 {panes
                   .filter((p) => p.id !== primary?.id && p.id !== splitPane?.id)
                   .map((p) => {
-                    const Icon = KIND_ICON[p.kind];
+                    const k = kindOf(p.kind);
+                    const Icon = k.icon;
                     return (
                       <DropdownMenuItem
                         key={p.id}
                         onSelect={() => (splitPane ? select(p.id) : openSplit(p.id))}
                       >
                         <Icon />
-                        <span className="truncate">{p.parentId ? p.name : KIND_LABEL[p.kind]}</span>
+                        <span className="truncate">{p.parentId ? p.name : k.title}</span>
                         <span className="ml-auto pl-3 text-xs text-muted-foreground">{splitPane ? "here" : "beside"}</span>
                       </DropdownMenuItem>
                     );
@@ -702,40 +520,35 @@ function ThreadPage() {
         split={!!splitPane}
         focused={side}
         onFocus={setFocusSide}
-        items={panes
-          .filter((p) => p.id === primary?.id || p.id === splitPane?.id || (p.kind !== "browser" && opened.has(p.id)))
-          .map((p) => ({
-            id: p.id,
-            side: p.id === primary?.id ? "primary" : p.id === splitPane?.id ? "split" : "hidden",
-            node: renderPane(p),
-            props: {
-              role: "tabpanel",
-              ...(p.kind === "terminal" || p.kind === "browser" || p.kind === "desktop" ? inputCapture(p.kind) : {}),
-            },
-          }))}
+        items={
+          ctx
+            ? panes
+                .filter(
+                  (p) =>
+                    p.id === primary?.id || p.id === splitPane?.id || (!kindOf(p.kind).unmountHidden && opened.has(p.id)),
+                )
+                .map((p) => {
+                  const k = kindOf(p.kind);
+                  return {
+                    id: p.id,
+                    side: p.id === primary?.id ? "primary" : p.id === splitPane?.id ? "split" : "hidden",
+                    node: k.render(paneContext(p)),
+                    props: { role: "tabpanel", ...(k.capture ? inputCapture(k.capture) : {}) },
+                  };
+                })
+            : []
+        }
       />
       </RunInTerminalContext.Provider>
       </OpenLinkContext.Provider>
-      {thread && (
-        <>
-          <PromoteDialog entry={entry} thread={thread} open={moving === "promote"} onOpenChange={(o) => !o && setMoving(null)} />
-          <ContinueDialog
-            entry={entry}
-            thread={thread}
-            open={moving === "continue" || moving === "toScratch"}
-            only={moving === "toScratch" ? scratch : undefined}
-            onOpenChange={(o) => !o && setMoving(null)}
-          />
-        </>
-      )}
       <RenameDialog
         open={!!renaming}
         onOpenChange={(o) => !o && setRenaming(null)}
         title="Rename tab"
         initial={renaming?.name ?? ""}
         onSubmit={async (name) => {
-          if (renaming?.kind === "web") {
-            renameWebTab(deviceId, threadId, renaming.id, name);
+          if (renaming && isLocal(renaming)) {
+            localOwner(renaming)?.localTabs?.rename(deviceId, threadId, renaming.id, name);
             return;
           }
           await peer.call("threads.rename", { id: renaming!.id, name });
@@ -743,25 +556,30 @@ function ThreadPage() {
         }}
       />
       <RenameDialog
-        open={askingUrl}
-        onOpenChange={setAskingUrl}
-        title="Open a web page"
-        initial=""
-        label="Address"
-        placeholder="https://example.com"
-        submitLabel="Open"
-        onSubmit={async (address) => {
-          const url = /^[a-z][a-z0-9+.-]*:\/\//i.test(address.trim()) ? address.trim() : `https://${address.trim()}`;
-          openUrl(url);
+        open={!!asking}
+        onOpenChange={(o) => {
+          if (!o && asking) {
+            asking.resolve(null);
+            setAsking(null);
+          }
+        }}
+        title={asking?.title ?? ""}
+        initial={asking?.initial ?? ""}
+        label={asking?.label}
+        placeholder={asking?.placeholder}
+        submitLabel={asking?.submitLabel}
+        onSubmit={async (value) => {
+          asking?.resolve(value);
+          setAsking(null);
         }}
       />
       <ConfirmDialog
         open={!!closing}
         onOpenChange={(o) => !o && setClosing(null)}
-        title="Close Claude tab?"
-        description="Its conversation is deleted with it."
-        confirmLabel="Close tab"
-        onConfirm={() => closeTab(closing!)}
+        title={closing?.title ?? ""}
+        description={closing?.description ?? ""}
+        confirmLabel={closing?.confirmLabel ?? "Close"}
+        onConfirm={() => closeTab(closing!.pane)}
       />
     </div>
   );
@@ -769,31 +587,33 @@ function ThreadPage() {
 
 function TabButton({
   pane: p,
+  kind,
   active,
   shown,
   split,
-  running,
+  badge: running,
   onSelect,
   onRename,
   onClose,
 }: {
   pane: Pane;
+  kind: TabKindDef;
   /** In the focused pane. */
   active: boolean;
   /** In either pane. */
   shown: boolean;
   /** Two panes are shown. */
   split: boolean;
-  /** How many processes are running, for the processes tab. */
-  running?: number;
+  /** A count on the tab (running processes…). */
+  badge?: number;
   onSelect: () => void;
   onRename?: () => void;
   onClose?: () => void;
 }) {
-  const Icon = KIND_ICON[p.kind];
+  const Icon = kind.icon;
   // The thread's own tab is named by its kind; the thread's name is above.
-  const label = p.parentId ? p.name : KIND_LABEL[p.kind];
-  const status = p.kind === "claude" ? p.agentStatus : undefined;
+  const label = p.parentId ? p.name : kind.title;
+  const status = !isLocal(p) && p.kind === "claude" ? p.agentStatus : undefined;
   return (
     <div
       className={cn(
@@ -840,44 +660,5 @@ function TabButton({
         </button>
       )}
     </div>
-  );
-}
-
-function WriterLabel({ writer }: { writer: WriterState }) {
-  return (
-    <span
-      className={cn(
-        "ml-auto shrink-0 rounded-sm px-1.5 py-0.5 text-xs",
-        writer === "writer" && "text-live",
-        writer === "viewer" && "bg-warn/10 text-warn",
-        (writer === "pending" || writer === "exited") && "text-muted-foreground",
-      )}
-    >
-      {{ writer: "Writing", viewer: "Read-only", exited: "Exited", pending: "Attaching…" }[writer]}
-    </span>
-  );
-}
-
-const STATUS_LABELS: Record<AgentStatus, string> = {
-  stopped: "Stopped",
-  starting: "Starting…",
-  idle: "Idle",
-  working: "Working",
-  waiting: "Needs you",
-  error: "Error",
-};
-
-function AgentStatusLabel({ status = "stopped" }: { status?: AgentStatus }) {
-  return (
-    <span
-      className={cn(
-        "ml-auto shrink-0 rounded-sm px-1.5 py-0.5 text-xs text-muted-foreground",
-        status === "working" && "text-primary",
-        status === "waiting" && "bg-warn/10 text-warn",
-        status === "error" && "bg-destructive/10 text-destructive",
-      )}
-    >
-      {STATUS_LABELS[status]}
-    </span>
   );
 }

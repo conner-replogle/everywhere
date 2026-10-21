@@ -3,7 +3,6 @@ import type {
   ClientToHub,
   DaemonToHub,
   HubErrorCode,
-  HubNotify,
   HubFeature,
   HubToClient,
   HubToDaemon,
@@ -11,11 +10,11 @@ import type {
   RemoteMethods,
   SignalData,
 } from "@everywhere/protocol";
-import { HUB_PING, HUB_PONG, notifyNeedsYou, notifyText } from "@everywhere/protocol";
-import { randomId, sha256 } from "./crypto";
-import { open, seal } from "./secretbox";
+import { HUB_PING, HUB_PONG } from "@everywhere/protocol";
+import { randomId } from "./crypto";
+import { WORKER_PLUGINS } from "./plugins";
+import type { HubHost, WorkerPlugin } from "./plugins/types";
 import { versionAtLeast } from "./version";
-import { deliver, type PushOptions } from "./webpush";
 
 type Attachment =
   | { kind: "device"; id: string; since?: number; features?: HubFeature[] }
@@ -24,17 +23,6 @@ type Attachment =
    * active: someone is using the tab and it shows alerts itself.
    */
   | { kind: "client"; id: string; session: string; viewing?: string; active?: boolean };
-
-/** The account's Claude token, in the hub's storage. */
-const CLAUDE_TOKEN_KEY = "claudeToken";
-interface StoredClaudeToken {
-  sealed: string;
-  /** Its last four characters, to tell tokens apart in Settings. */
-  hint: string;
-  setAt: number;
-}
-
-export type ClaudeTokenInfo = { set: false } | { set: true; hint: string; setAt: number };
 
 /** How a relayed rpc request ended. */
 export type DeviceRpcResult<T = unknown> =
@@ -53,9 +41,8 @@ interface PendingRpc {
 const DEVICE_SILENT_MS = 60_000;
 const SWEEP_INTERVAL_MS = 30_000;
 
-// Several permission prompts can arrive at once (parallel tool calls); one
-// notification per thread and kind in this window is enough.
-const NOTIFY_THROTTLE_MS = 5_000;
+/** Hub features the core serves; plugins add theirs. */
+const CORE_FEATURES: HubFeature[] = ["rpc"];
 
 export const HUB_KIND_HEADER = "x-ew-kind";
 export const HUB_ID_HEADER = "x-ew-id";
@@ -71,8 +58,6 @@ export const HUB_SESSION_HEADER = "x-ew-session";
 export class AccountHub extends DurableObject<Env> {
   /** rpc requests waiting on a daemon. In memory: the caller's request keeps the DO awake. */
   private pending = new Map<string, PendingRpc>();
-  /** When each thread last caused a notification of each kind. In memory: losing it only risks a repeat. */
-  private lastNotified = new Map<string, number>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -151,10 +136,14 @@ export class AccountHub extends DurableObject<Env> {
         return;
       }
       if (Array.isArray(m.features)) {
-        const features = m.features.filter((f): f is HubFeature => f === "rpc" || f === "claudeToken");
+        const known = new Set([...CORE_FEATURES, ...WORKER_PLUGINS.flatMap((p) => p.hubFeatures ?? [])]);
+        const features = m.features.filter((f): f is HubFeature => known.has(f));
         ws.serializeAttachment({ ...me, features } satisfies Attachment);
-        // A daemon that takes the account's Claude token gets it as it connects.
-        if (features.includes("claudeToken")) this.ctx.waitUntil(this.sendClaudeToken(me.id));
+        // Plugins hear of daemons that serve their features (the Claude token goes to those that take it).
+        for (const p of WORKER_PLUGINS) {
+          const theirs = features.filter((f) => p.hubFeatures?.includes(f));
+          if (p.onDaemonHello && theirs.length) this.ctx.waitUntil(p.onDaemonHello(this.host(p), me.id, theirs));
+        }
       }
       return;
     }
@@ -170,17 +159,61 @@ export class AccountHub extends DurableObject<Env> {
       );
       return;
     }
-    if (m.t === "notify") {
-      if (isNotify(m)) this.ctx.waitUntil(this.notify(me.id, m));
-      return;
-    }
     if (isSignal(m)) {
       const target = this.socket(`client:${m.to}`);
       if (!target) return this.fail(ws, "client_gone", `client ${m.to} is gone`);
       send(target, { t: "signal", from: me.id, sid: m.sid, data: m.data } satisfies HubToClient);
       return;
     }
+    // Messages plugins own (notify: push notifications).
+    const t = (m as { t?: unknown } | null)?.t;
+    const owner = typeof t === "string" ? WORKER_PLUGINS.find((p) => p.daemonMessages?.[t]) : undefined;
+    if (owner && typeof t === "string") {
+      this.ctx.waitUntil(owner.daemonMessages![t]!(this.host(owner), me.id, m));
+      return;
+    }
     this.fail(ws, "bad_message", "unknown message");
+  }
+
+  /** Calls a plugin's hub method (from the plugin's routes; see callHub). */
+  async plugin(id: string, method: string, args: unknown): Promise<unknown> {
+    const p = WORKER_PLUGINS.find((x) => x.id === id);
+    const fn = p?.hubMethods?.[method];
+    if (!p || !fn) throw new Error(`no hub method ${id}.${method}`);
+    return fn(this.host(p), args);
+  }
+
+  /** What the hub gives a plugin: its own storage keys, rpc to daemons, the browsers. */
+  private host(p: WorkerPlugin): HubHost {
+    const key = (k: string) => (p.legacyStorageKeys?.includes(k) ? k : `plugin:${p.id}:${k}`);
+    return {
+      env: this.env,
+      storage: {
+        get: (k) => this.ctx.storage.get(key(k)),
+        put: (k, v) => this.ctx.storage.put(key(k), v),
+        delete: async (k) => void (await this.ctx.storage.delete(key(k))),
+        list: async <T,>() => {
+          const prefix = `plugin:${p.id}:`;
+          const out = new Map<string, T>();
+          for (const [k, v] of await this.ctx.storage.list<T>({ prefix })) out.set(k.slice(prefix.length), v);
+          return out;
+        },
+      },
+      deviceRpc: (deviceId, method, params, timeoutMs) => this.deviceRpc(deviceId, method, params, timeoutMs),
+      devicesWith: (feature) => this.devicesWith(feature),
+      broadcast: (msg) => this.broadcast(msg),
+      viewing: (deviceId, threadId) =>
+        this.ctx.getWebSockets().some((ws) => {
+          const a = ws.deserializeAttachment() as Attachment | null;
+          return a?.kind === "client" && a.viewing === `${deviceId}/${threadId}`;
+        }),
+      inUse: () =>
+        this.ctx.getWebSockets().some((ws) => {
+          const a = ws.deserializeAttachment() as Attachment | null;
+          return a?.kind === "client" && !!a.active && this.live(ws);
+        }),
+      waitUntil: (pr) => this.ctx.waitUntil(pr),
+    };
   }
 
   override async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
@@ -242,55 +275,12 @@ export class AccountHub extends DurableObject<Env> {
     return (await result) as DeviceRpcResult<RemoteMethods[M][1]>;
   }
 
-  /**
-   * What Settings shows of the account's Claude token: whether there is
-   * one, its last few characters and when it was set. The token itself
-   * only ever goes to daemons.
-   */
-  async claudeTokenInfo(): Promise<ClaudeTokenInfo> {
-    const t = await this.ctx.storage.get<StoredClaudeToken>(CLAUDE_TOKEN_KEY);
-    return t ? { set: true, hint: t.hint, setAt: t.setAt } : { set: false };
-  }
-
-  /**
-   * Keeps the account's Claude token (sealed), or with "" forgets it, and
-   * sends that to every connected daemon that takes it; the rest get it
-   * when they next connect. Reports what each device said.
-   */
-  async setClaudeToken(token: string): Promise<Record<string, string>> {
-    if (token) {
-      await this.ctx.storage.put<StoredClaudeToken>(CLAUDE_TOKEN_KEY, {
-        sealed: await seal(this.env, token),
-        hint: token.slice(-4),
-        setAt: Date.now(),
-      });
-    } else {
-      await this.ctx.storage.delete(CLAUDE_TOKEN_KEY);
-    }
-    const out: Record<string, string> = {};
-    await Promise.all(
-      this.tokenDevices().map(async (id) => {
-        const r = await this.deviceRpc(id, "agent.setToken", { token }, 15_000);
-        out[id] = r.ok ? "ok" : r.message;
-      }),
-    );
-    return out;
-  }
-
-  /** Sends a daemon the account's Claude token, or that there is none. */
-  private async sendClaudeToken(deviceId: string): Promise<void> {
-    const t = await this.ctx.storage.get<StoredClaudeToken>(CLAUDE_TOKEN_KEY);
-    const token = t ? await open(this.env, t.sealed) : "";
-    const r = await this.deviceRpc(deviceId, "agent.setToken", { token }, 15_000);
-    if (!r.ok) console.warn(`sending ${deviceId} the Claude token: ${r.message}`);
-  }
-
-  /** Connected daemons that take the account's Claude token. */
-  private tokenDevices(): string[] {
+  /** Connected daemons that announced a hub feature. */
+  private devicesWith(feature: HubFeature): string[] {
     const ids = new Set<string>();
     for (const ws of this.ctx.getWebSockets()) {
       const a = ws.deserializeAttachment() as Attachment | null;
-      if (a?.kind === "device" && this.live(ws) && a.features?.includes("claudeToken")) ids.add(a.id);
+      if (a?.kind === "device" && this.live(ws) && a.features?.includes(feature)) ids.add(a.id);
     }
     return [...ids];
   }
@@ -324,72 +314,6 @@ export class AccountHub extends DurableObject<Env> {
       if (a?.kind !== "device") continue;
       for (const connId of conns) send(ws, { t: "client.revoked", connId } satisfies HubToDaemon);
     }
-  }
-
-  /**
-   * Pushes a notification about a claude thread to every browser that turned
-   * them on, unless someone is looking at that thread right now or is using
-   * the app (which shows it as an in-app alert instead).
-   */
-  private async notify(deviceId: string, n: HubNotify): Promise<void> {
-    const thread = n.parentId || n.threadId;
-    const viewing = `${deviceId}/${thread}`;
-    for (const ws of this.ctx.getWebSockets()) {
-      const a = ws.deserializeAttachment() as Attachment | null;
-      if (a?.kind === "client" && a.viewing === viewing) return;
-    }
-    const key = `${deviceId}/${n.threadId}/${n.kind}`;
-    const now = Date.now();
-    if (now - (this.lastNotified.get(key) ?? 0) < NOTIFY_THROTTLE_MS) return;
-    this.lastNotified.set(key, now);
-    for (const [k, at] of this.lastNotified) if (now - at > NOTIFY_THROTTLE_MS) this.lastNotified.delete(k);
-
-    // Open tabs show it in the app too, with a way to switch to the thread.
-    this.broadcast({
-      t: "alert",
-      deviceId,
-      threadId: n.threadId,
-      ...(n.parentId ? { parentId: n.parentId } : {}),
-      name: n.name,
-      kind: n.kind,
-      ...(n.tool ? { tool: n.tool } : {}),
-    });
-
-    // Someone is using the app, which just showed it; a push would repeat it.
-    for (const ws of this.ctx.getWebSockets()) {
-      const a = ws.deserializeAttachment() as Attachment | null;
-      if (a?.kind === "client" && a.active && this.live(ws)) return;
-    }
-
-    const { results } = await this.env.DB.prepare(
-      `SELECT p.endpoint, p.p256dh, p.auth, d.name AS device
-       FROM devices d
-       JOIN push_subscriptions p ON p.user_id = d.account_id
-       JOIN sessions s ON s.id_hash = p.session_id
-       WHERE d.id = ? AND d.revoked_at IS NULL AND s.expires_at > ?`,
-    )
-      .bind(deviceId, now)
-      .all<{ endpoint: string; p256dh: string; auth: string; device: string }>();
-    if (results.length === 0) return;
-
-    const needsYou = notifyNeedsYou(n.kind);
-    const url = `/d/${encodeURIComponent(deviceId)}/t/${encodeURIComponent(thread)}${
-      n.parentId ? `?tab=${encodeURIComponent(n.threadId)}` : ""
-    }`;
-    const payload = {
-      title: n.name.trim() || "Claude",
-      body: `${notifyText(n)} · ${results[0]!.device}`,
-      // One notification per thread on the device: a newer one replaces it.
-      tag: `${deviceId}/${n.threadId}`,
-      url,
-      renotify: needsYou,
-    };
-    const opts: PushOptions = {
-      ttl: needsYou ? 24 * 60 * 60 : 60 * 60,
-      urgency: needsYou ? "high" : "normal",
-      topic: (await sha256(payload.tag)).slice(0, 32),
-    };
-    await deliver(this.env, results, payload, opts);
   }
 
   private async onGone(ws: WebSocket): Promise<void> {
@@ -479,23 +403,6 @@ function isSignal(m: unknown): m is { t: "signal"; to: string; sid: string; data
     x.sid.length <= 128 &&
     typeof x.data === "object" &&
     x.data !== null
-  );
-}
-
-const NOTIFY_KINDS = new Set<string>(["permission", "question", "plan", "done", "error", "signedOut"]);
-
-function isNotify(m: unknown): m is HubNotify {
-  const x = m as Record<string, unknown> | null;
-  const str = (v: unknown, max: number) => typeof v === "string" && v.length <= max;
-  return (
-    !!x &&
-    str(x.threadId, 128) &&
-    (x.threadId as string).length > 0 &&
-    (x.parentId === undefined || str(x.parentId, 128)) &&
-    str(x.name, 200) &&
-    (x.tool === undefined || str(x.tool, 100)) &&
-    typeof x.kind === "string" &&
-    NOTIFY_KINDS.has(x.kind)
   );
 }
 

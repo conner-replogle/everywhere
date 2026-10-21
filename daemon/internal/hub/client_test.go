@@ -105,7 +105,8 @@ func TestSessionAnswersRPC(t *testing.T) {
 	defer cancel()
 	go c.session(ctx)
 
-	if h := <-hello; len(h.Features) != 2 || h.Features[0] != protocol.HubFeatureRPC || h.Features[1] != protocol.HubFeatureClaudeToken {
+	if h := <-hello; len(h.Features) != 3 || h.Features[0] != protocol.HubFeatureRPC || h.Features[1] != protocol.HubFeatureClaudeToken ||
+		h.Features[2] != protocol.HubFeaturePluginSettings {
 		t.Errorf("hello features = %v", h.Features)
 	}
 	results := map[string]protocol.HubRPCResult{}

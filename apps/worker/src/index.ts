@@ -1,18 +1,11 @@
 import { type Context, Hono } from "hono";
 import { bearerDevice } from "./auth";
 import { randomId, randomToken, sha256 } from "./crypto";
-import { serveDashboardFrame } from "./dashboard";
 import { HUB_ID_HEADER, HUB_KIND_HEADER, HUB_SESSION_HEADER } from "./hub";
 import { failingScript, type InstallPlatform, installScript } from "./install";
-import { mcp } from "./mcp";
-import { oauth } from "./oauth";
+import { WORKER_PLUGINS } from "./plugins";
 import { auth, requireUser } from "./routes/auth";
-import { claude } from "./routes/claude";
-import { github } from "./routes/github";
 import { prefs } from "./routes/prefs";
-import { prompt } from "./routes/prompt";
-import { push } from "./routes/push";
-import { speech } from "./routes/speech";
 import { iceServers, TURN_TTL_SECONDS } from "./turn";
 import { apiGuard, clientIp, originAllowed, rateLimited, tooMany } from "./security";
 import type { App } from "./types";
@@ -25,15 +18,10 @@ const app = new Hono<App>();
 
 app.use("/api/*", apiGuard);
 app.route("/api/auth", auth);
-app.route("/api/push", push);
-app.route("/api/github", github);
 app.route("/api/prefs", prefs);
-app.route("/api/claude", claude);
-app.route("/api/speech", speech);
-app.route("/api/prompt", prompt);
-// The MCP endpoint for agents, and the OAuth server that authorizes them.
-app.route("/", oauth);
-app.route("/", mcp);
+for (const p of WORKER_PLUGINS) {
+  for (const r of p.routes ?? []) app.route(r.path, r.app);
+}
 
 function hub(env: Env, accountId: string) {
   return env.HUB.get(env.HUB.idFromName(accountId));
@@ -158,7 +146,6 @@ async function serveInstall(c: Context<App>, platform: InstallPlatform) {
   });
 }
 
-app.get("/dashboard", serveDashboardFrame);
 
 app.get("/i/:token", (c) => serveInstall(c, "unix"));
 app.get("/i/:token/windows", (c) => serveInstall(c, "windows"));

@@ -51,7 +51,7 @@ export function FleetProvider({ children }: { children: React.ReactNode }) {
 /** Holds one device's connection open and reports its state and data. */
 function DeviceSource({ device, onReport }: { device: Device; onReport: (e: DeviceContextValue) => void }) {
   const { peer, ...conn } = usePeer(device.id);
-  const info = useRpc(peer, "device.info", {});
+  const info = useRpc(peer, "device.info", {}, ["plugins.changed"]);
   const projects = useRpc(peer, "projects.list", {}, ["projects.changed"]);
   const threads = useRpc(peer, "threads.list", {}, ["threads.changed"]);
   const clones = useRpc(peer, "clones.list", {}, ["clones.changed"], !!info.data?.features?.includes("clone"));

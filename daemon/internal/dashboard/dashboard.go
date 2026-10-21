@@ -67,6 +67,12 @@ func NewBuilder() *Builder { return &Builder{cache: map[string]Result{}} }
 // Build builds the dashboard in dir, or returns the last build if nothing
 // changed. It also refreshes .everywhere/types next to it.
 func (b *Builder) Build(dir string) Result {
+	return b.BuildWithTypes(dir, filepath.Dir(filepath.Dir(dir)))
+}
+
+// BuildWithTypes builds index.tsx in dir like a dashboard (a plugin's web
+// part), writing the API's types under typesRoot/types.
+func (b *Builder) BuildWithTypes(dir, typesRoot string) Result {
 	version, err := version(dir)
 	if err != nil {
 		return Result{Version: "missing", Errors: []string{err.Error()}}
@@ -77,7 +83,7 @@ func (b *Builder) Build(dir string) Result {
 		return r
 	}
 	b.mu.Unlock()
-	writeTypes(filepath.Dir(filepath.Dir(dir)))
+	writeTypes(typesRoot)
 	r := build(dir)
 	r.Version = version
 	b.mu.Lock()

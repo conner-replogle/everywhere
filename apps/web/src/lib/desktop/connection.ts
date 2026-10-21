@@ -1,11 +1,11 @@
-// A remote desktop session: its own RTCPeerConnection to the daemon, signaled
-// over the device connection's control channel (desktop.start, then trickled
-// candidates both ways) instead of the hub. It carries one video track plus
-// two data channels.
+// A remote desktop session: its own RTCPeerConnection to the daemon, a
+// "desktop" plugin session (rtc.open; desktop.start on daemons from before
+// plugins). It carries one video track plus two data channels.
 
-import type { DesktopSource, IceCandidate } from "@everywhere/protocol";
+import type { DesktopSource } from "@everywhere/protocol";
 import { describeUserAgent } from "../user-agent";
 import { type DevicePeer, forceRelay, iceServers } from "../peer";
+import { negotiate, rtcSignaling, type SessionSignaling } from "../rtc-session";
 import { CHANNEL_CONTROL, CHANNEL_INPUT, type DesktopMode } from "./protocol";
 
 export interface DesktopConnection {
@@ -20,6 +20,8 @@ export interface DesktopConnection {
 
 /** desktop.start waits for a capture to start. */
 const START_TIMEOUT_MS = 30_000;
+/** How long an ended session waits for the host's SessionEnded before closing. */
+const ENDED_GRACE_MS = 500;
 
 export interface ConnectOptions {
   mode: DesktopMode;
@@ -27,12 +29,26 @@ export interface ConnectOptions {
   source?: DesktopSource;
   /** The desktop tab showing the session, so closing the tab ends it. */
   tabId?: string;
+  /** The device serves plugin sessions (feature "plugins"). */
+  rtc?: boolean;
   onState?: (state: RTCPeerConnectionState) => void;
+  /** The daemon ended the session; the connection is closed. */
+  onEnded?: (reason?: string) => void;
+}
+
+/** Signaling on daemons from before plugin sessions. */
+function legacySignaling(peer: DevicePeer, params: { mode: string; viewer: string; source?: DesktopSource; tabId?: string }): SessionSignaling {
+  return {
+    start: (sdp) => peer.call("desktop.start", { sdp, ...params }, START_TIMEOUT_MS),
+    candidate: (id, candidate) => void peer.call("desktop.candidate", { id, candidate }).catch(() => {}),
+    stop: (id) => void peer.call("desktop.stop", { id }).catch(() => {}),
+    theirCandidate: (e) => (e.event === "desktop.candidate" ? { id: e.id, candidate: e.candidate } : null),
+  };
 }
 
 export async function connectDesktop(
   peer: DevicePeer,
-  { mode, source, tabId, onState }: ConnectOptions,
+  { mode, source, tabId, rtc, onState, onEnded }: ConnectOptions,
 ): Promise<DesktopConnection> {
   const ice = await iceServers();
   const pc = new RTCPeerConnection({
@@ -53,57 +69,33 @@ export async function connectDesktop(
     minimizeReceiveDelay(ev.receiver);
   };
 
-  // Trickle ICE. The daemon's candidates can arrive before desktop.start
-  // answers (and name a session we don't know yet), so hold them until then;
-  // ours wait for the session id.
-  let id: string | null = null;
-  let answered = false;
-  const theirs: { id: string; candidate: RTCIceCandidateInit }[] = [];
-  const ours: IceCandidate[] = [];
-  const sendOurs = (candidate: IceCandidate) => {
-    if (id) void peer.call("desktop.candidate", { id, candidate }).catch(() => {});
-    else ours.push(candidate);
-  };
-  pc.onicecandidate = (ev) => {
-    const c = ev.candidate?.toJSON();
-    if (c?.candidate) sendOurs({ ...c, candidate: c.candidate });
-  };
-  const unsubscribe = peer.onEvent((e) => {
-    if (e.event !== "desktop.candidate" || (id && e.id !== id)) return;
-    if (answered) void pc.addIceCandidate(e.candidate).catch(() => {});
-    else theirs.push({ id: e.id, candidate: e.candidate });
-  });
-
+  const params = { mode, viewer: describeUserAgent(navigator.userAgent), source, tabId };
+  const sig = rtc ? rtcSignaling(peer, "desktop", params, START_TIMEOUT_MS) : legacySignaling(peer, params);
+  let session;
   try {
-    await pc.setLocalDescription(await pc.createOffer());
-    const started = await peer.call(
-      "desktop.start",
-      { sdp: pc.localDescription?.sdp ?? "", mode, viewer: describeUserAgent(navigator.userAgent), source, tabId },
-      START_TIMEOUT_MS,
-    );
-    id = started.id;
-    await pc.setRemoteDescription({ type: "answer", sdp: started.sdp });
-    answered = true;
-    for (const c of theirs) if (c.id === id) await pc.addIceCandidate(c.candidate).catch(() => {});
-    for (const c of ours.splice(0)) sendOurs(c);
+    // A moment's grace first: the host's own SessionEnded, on the control
+    // channel, says more than the signaling's reason.
+    session = await negotiate(peer, pc, sig, (reason) => {
+      setTimeout(() => {
+        if (pc.connectionState === "closed") return;
+        pc.onconnectionstatechange = null;
+        pc.close();
+        onEnded?.(reason);
+      }, ENDED_GRACE_MS);
+    });
   } catch (e) {
-    unsubscribe();
     pc.close();
-    if (id) void peer.call("desktop.stop", { id }).catch(() => {});
     throw e;
   }
-
-  const sessionId = id;
   return {
     pc,
     stream,
     input,
     control,
     close() {
-      unsubscribe();
       pc.onconnectionstatechange = null;
       pc.close();
-      void peer.call("desktop.stop", { id: sessionId }).catch(() => {});
+      session.close();
     },
   };
 }

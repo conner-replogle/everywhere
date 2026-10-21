@@ -1,4 +1,5 @@
 import type * as Everywhere from "everywhere";
+import { useKV, usePlugin } from "./plugin-api";
 import { AlertTriangleIcon, CheckIcon, OctagonAlertIcon } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { formatDuration, formatNumber } from "@/components/processes/progress";
@@ -450,4 +451,6 @@ export const api = {
   formatNumber,
   formatDuration,
   cn: cnJoin,
+  usePlugin,
+  useKV,
 } satisfies typeof Everywhere;

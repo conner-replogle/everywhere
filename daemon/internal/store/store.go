@@ -123,6 +123,19 @@ ALTER TABLE threads ADD COLUMN scratch_dir TEXT;
 	`
 ALTER TABLE threads ADD COLUMN done_at INTEGER;
 `,
+	// Plugins' key/value state: plugin-wide (scope ""), or a thread's or a
+	// project's ("thread:<id>", "project:<id>"), deleted with them.
+	`
+CREATE TABLE plugin_kv (
+  plugin     TEXT NOT NULL,
+  scope      TEXT NOT NULL DEFAULT '',
+  key        TEXT NOT NULL,
+  value      TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (plugin, scope, key)
+);
+CREATE INDEX plugin_kv_scope ON plugin_kv (scope);
+`,
 }
 
 type Store struct {
@@ -370,6 +383,20 @@ func (s *Store) GetThread(id string) (protocol.Thread, error) {
 	return t, err
 }
 
+// validKind reports whether kind can be stored. Which kinds exist is up to
+// the plugins that provide them; the caller checks that.
+func validKind(kind string) bool {
+	if kind == "" || len(kind) > 64 {
+		return false
+	}
+	for _, r := range kind {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.' || r == ':') {
+			return false
+		}
+	}
+	return true
+}
+
 // CreateThread adds a thread of the given kind ("" means terminal). The name
 // defaults to "<kind> N". A thread in Scratch gets a new folder of its own
 // there, which it works in; a claude one starts in auto mode.
@@ -377,8 +404,8 @@ func (s *Store) CreateThread(projectID, name, kind string) (protocol.Thread, err
 	if kind == "" {
 		kind = protocol.ThreadTerminal
 	}
-	if kind != protocol.ThreadTerminal && kind != protocol.ThreadClaude {
-		return protocol.Thread{}, fmt.Errorf("unknown thread kind %q", kind)
+	if !validKind(kind) {
+		return protocol.Thread{}, fmt.Errorf("bad thread kind %q", kind)
 	}
 	project, err := s.GetProject(projectID)
 	if err != nil {
@@ -461,10 +488,8 @@ func (s *Store) PromoteThread(threadID, name string) (protocol.Project, error) {
 // The name defaults to the kind, capitalized. A claude tab in a thread that runs in a
 // worktree shares that worktree.
 func (s *Store) CreateTab(threadID, kind, name string) (protocol.Thread, error) {
-	switch kind {
-	case protocol.ThreadTerminal, protocol.ThreadClaude, protocol.ThreadBrowser, protocol.ThreadFiles, protocol.ThreadDesktop, protocol.ThreadProcesses:
-	default:
-		return protocol.Thread{}, fmt.Errorf("unknown tab kind %q", kind)
+	if !validKind(kind) {
+		return protocol.Thread{}, fmt.Errorf("bad tab kind %q", kind)
 	}
 	parent, err := s.GetThread(threadID)
 	if err != nil {

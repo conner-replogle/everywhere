@@ -107,9 +107,11 @@ class Boundary extends Component<{ children: ReactNode }, { error: Error | null 
 function Failed({ message }: { message: string }) {
   return (
     <div className="grid gap-2 p-4 text-xs">
-      <p className="font-medium text-destructive">The dashboard hit an error</p>
+      <p className="font-medium text-destructive">{store.plugin ? "The plugin hit an error" : "The dashboard hit an error"}</p>
       <pre className="overflow-auto rounded-md border bg-card p-3 font-mono whitespace-pre-wrap">{message}</pre>
-      <p className="text-muted-foreground">Claude sees this too (dashboard_build, process_status), so it can fix it.</p>
+      {!store.plugin && (
+        <p className="text-muted-foreground">Claude sees this too (dashboard_build, process_status), so it can fix it.</p>
+      )}
     </div>
   );
 }
@@ -117,7 +119,7 @@ function Failed({ message }: { message: string }) {
 const root = ReactDOMClient.createRoot(document.getElementById("root")!);
 let started = false;
 
-function start(js: string, css?: string) {
+function start(js: string, css?: string, what = "dashboard") {
   if (started) return;
   started = true;
   if (css) {
@@ -133,14 +135,17 @@ function start(js: string, css?: string) {
     const mod = (globalThis as { __dashboard?: { default?: React.ComponentType } }).__dashboard;
     const Dashboard = mod?.default;
     if (typeof Dashboard !== "function") {
-      const message = "index.tsx has no default export: export default function Dashboard() { … }";
+      const message =
+        what === "plugin"
+          ? "web/index.tsx has no default export: export default function View() { … }"
+          : "index.tsx has no default export: export default function Dashboard() { … }";
       reportError(message);
       root.render(<Failed message={message} />);
       return;
     }
     root.render(
       <Boundary>
-        <div className="min-h-screen p-3">
+        <div className={what === "plugin" ? "h-screen" : "min-h-screen p-3"}>
           <Dashboard />
         </div>
       </Boundary>,
@@ -158,6 +163,14 @@ window.addEventListener("message", (e: MessageEvent<ToFrame>) => {
       store.setTheme(msg.theme);
       store.setProcess(msg.process);
       start(msg.js, msg.css);
+      break;
+    case "plugin-init":
+      store.setTheme(msg.theme);
+      store.plugin = msg.plugin;
+      start(msg.js, msg.css, "plugin");
+      break;
+    case "plugin-event":
+      store.pluginEvent(msg.event);
       break;
     case "process":
       store.setProcess(msg.process);

@@ -1,12 +1,13 @@
-// Package peer answers WebRTC connections from browsers and serves the control
-// RPC, terminal and agent data channels over them.
+// Package peer answers WebRTC connections from browsers and is the daemon's
+// core: the control channel and the core's own methods (device, projects,
+// threads, tabs), with everything else served by plugins through the
+// plugin registry (internal/plugin).
 package peer
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,16 +15,9 @@ import (
 
 	"github.com/pion/webrtc/v4"
 
-	"github.com/conner-replogle/everywhere/daemon/internal/agent"
-	"github.com/conner-replogle/everywhere/daemon/internal/browser"
-	"github.com/conner-replogle/everywhere/daemon/internal/dashboard"
-	"github.com/conner-replogle/everywhere/daemon/internal/desktop"
-	"github.com/conner-replogle/everywhere/daemon/internal/mcp"
-	"github.com/conner-replogle/everywhere/daemon/internal/process"
+	"github.com/conner-replogle/everywhere/daemon/internal/plugin"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/store"
-	"github.com/conner-replogle/everywhere/daemon/internal/telemetry"
-	"github.com/conner-replogle/everywhere/daemon/internal/term"
 	"github.com/conner-replogle/everywhere/daemon/internal/version"
 )
 
@@ -38,29 +32,20 @@ type Server struct {
 	Restart func()
 	// DesktopEnabled reports whether the device owner turned remote desktop on.
 	DesktopEnabled func() bool
+	// PluginEnabled reports whether the device owner enabled an external plugin.
+	PluginEnabled func(id string) bool
 
-	store *store.Store
-	terms *term.Manager
-	procs *process.Manager
-	// telemetry is what processes report, kept in their projects.
-	telemetry *telemetry.Hub
-	// dashboards builds processes' dashboards.
-	dashboards *dashboard.Builder
-	agents     *agent.Manager
-	browsers   *browser.Manager
-	desktop    *desktop.Manager // nil if its media stack failed to build
-	mcp        *mcp.Server      // the daemon's own tools for claude threads
-	mcpDir     string           // their per-process MCP configs
-	info       protocol.DeviceInfo
-	api        *webrtc.API
+	store   *store.Store
+	plugins *plugin.Registry
+	info    protocol.DeviceInfo
+	dataDir string
+	se      webrtc.SettingEngine
+	api     *webrtc.API
 
 	mu     sync.Mutex
 	peers  map[string]*peer // by sid
 	signal Signaler
-
-	clones  cloneSet
-	fetches gitFetches
-	codeEnv codeEnv
+	notify func(protocol.HubNotify)
 
 	updating atomic.Bool
 	updateMu sync.Mutex
@@ -69,43 +54,50 @@ type Server struct {
 }
 
 type peer struct {
+	s       *Server
 	sid     string
 	from    string
 	pc      *webrtc.PeerConnection
 	started time.Time
+	// ctx ends when the connection closes, and with it every channel's.
+	ctx    context.Context
+	cancel context.CancelFunc
 
 	mu       sync.Mutex
 	control  *webrtc.DataChannel
 	answered bool
 	pending  []protocol.SignalData // local candidates gathered before the answer was sent
-	terms    map[*termClient]bool
-	agents   map[*agentClient]bool
-	browsers map[*browserClient]bool
+	open     map[string]int        // open channels by label prefix, for debug.peer
 }
 
-// closeChannels detaches every terminal, agent thread and browser tab this
-// peer had open.
-// Data channel close callbacks aren't guaranteed when the whole connection
-// drops.
-func (p *peer) closeChannels() {
+func (p *peer) ID() string     { return p.sid }
+func (p *peer) Client() string { return p.from }
+
+// Send sends an event on the peer's control channel.
+func (p *peer) Send(event any) {
+	msg, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
 	p.mu.Lock()
-	terms, agents, browsers := p.terms, p.agents, p.browsers
-	p.terms, p.agents, p.browsers = nil, nil, nil
+	dc := p.control
 	p.mu.Unlock()
-	for c := range terms {
-		c.detach()
-	}
-	for c := range agents {
-		c.detach()
-	}
-	for c := range browsers {
-		c.detach()
+	if dc != nil && dc.ReadyState() == webrtc.DataChannelStateOpen {
+		sendControl(dc, msg)
 	}
 }
 
-// NewServer serves the store's projects and threads; claude threads keep
-// their worktrees and attachments under dataDir, and the browser its profile.
-func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string) *Server {
+// closeChannels ends every channel and session this peer had open. Data
+// channel close callbacks aren't guaranteed when the whole connection
+// drops, so channels wait on the peer's context too.
+func (p *peer) closeChannels() {
+	p.cancel()
+	p.s.plugins.PeerClosed(p)
+}
+
+// NewServer serves the store's projects and threads, and hosts plugins;
+// they keep their files under dataDir.
+func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string, plugins ...plugin.Plugin) *Server {
 	se := webrtc.SettingEngine{}
 	// Skip container/VM bridges; they only slow ICE down. Tailscale's
 	// interface is what actually connects.
@@ -119,75 +111,28 @@ func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string) *Serve
 	})
 	se.SetICETimeouts(5*time.Second, 15*time.Second, 2*time.Second)
 	s := &Server{
-		store: st,
-		info:  info,
-		api:   webrtc.NewAPI(webrtc.WithSettingEngine(se)),
-		peers: map[string]*peer{},
+		store:   st,
+		info:    info,
+		dataDir: dataDir,
+		se:      se,
+		api:     webrtc.NewAPI(webrtc.WithSettingEngine(se)),
+		peers:   map[string]*peer{},
 	}
-	threadsChanged := func() { s.broadcast(protocol.EventThreadsChanged) }
-	s.terms = term.NewManager(shells{s}, threadsChanged)
-	s.agents = agent.NewManager(st, dataDir, threadsChanged)
-	s.agents.AuthChanged = func() { s.broadcast(protocol.EventClaudeAuth) }
-	s.procs = process.NewManager(st, filepath.Join(dataDir, "processes"))
-	s.procs.Workdir = func(id string) (string, error) {
-		w, err := s.workdir(id)
-		return w.Path, err
-	}
-	s.procs.OnRunning = threadsChanged
-	s.procs.OnChange = func(threadID string) {
-		s.broadcastMsg(protocol.ProcessesChanged{Event: protocol.EventProcessesChanged, ThreadID: threadID})
-	}
-	s.procs.Notify = s.processNotice
-	s.telemetry = telemetry.New()
-	s.telemetry.OnProgress = s.procs.ReportFromProcess
-	s.telemetry.OnChange = func(home string, changed map[string][]string) {
-		s.broadcastMsg(protocol.TelemetryChanged{Event: protocol.EventTelemetryChanged, Home: home, Experiments: changed})
-	}
-	if err := s.telemetry.Start(); err != nil {
-		slog.Error("telemetry endpoint unavailable", "err", err)
-	} else {
-		s.procs.Telemetry = s.telemetry
-	}
-	s.dashboards = dashboard.NewBuilder()
-	s.browsers = browser.NewManager(filepath.Join(dataDir, "browser"))
-	s.browsers.ICEServers = func() []webrtc.ICEServer {
-		if s.ICEServers != nil {
-			return s.ICEServers()
-		}
-		return nil
-	}
-	if d, err := desktop.NewManager(se); err != nil {
-		slog.Error("remote desktop unavailable", "err", err)
-	} else {
-		d.ICEServers = func() []webrtc.ICEServer {
-			if s.ICEServers != nil {
-				return s.ICEServers()
-			}
-			return nil
-		}
-		d.Enabled = func() bool { return s.DesktopEnabled != nil && s.DesktopEnabled() }
-		d.ArtifactsDir = filepath.Join(dataDir, "desktop", "artifacts")
-		s.desktop = d
-	}
-	tools := append(browser.Tools(s.browsers), process.Tools(s.procs)...)
-	tools = append(tools, s.doneTools()...)
-	tools = append(tools, s.attachTools()...)
-	tools = append(tools, s.dashboardTools()...)
-	if s.desktop != nil && (runtime.GOOS == "linux" || runtime.GOOS == "windows") {
-		tools = append(tools, desktop.Tools(s.desktop)...)
-	}
-	s.mcp = mcp.NewServer("everywhere", version.Version, tools)
-	s.mcpDir = filepath.Join(dataDir, "mcp")
-	clearMCPConfigs(s.mcpDir)
-	s.agents.ThreadArgs = s.claudeArgs
+	s.plugins = plugin.NewRegistry(plugin.ToolServerName, version.Version, plugins...)
+	s.registerCore(s.plugins.Core(s))
+	s.plugins.Start(s)
 	return s
 }
 
-// ContinueAgents resumes claude turns that a daemon update interrupted.
-func (s *Server) ContinueAgents() { s.agents.ContinueMarked() }
+// Plugins is the plugin registry.
+func (s *Server) Plugins() *plugin.Registry { return s.plugins }
 
-// SetNotifier sets where claude threads' notifications go (the hub).
-func (s *Server) SetNotifier(fn func(protocol.HubNotify)) { s.agents.Notify = fn }
+// SetNotifier sets where notifications go (the hub).
+func (s *Server) SetNotifier(fn func(protocol.HubNotify)) {
+	s.mu.Lock()
+	s.notify = fn
+	s.mu.Unlock()
+}
 
 // SetSignaler sets how answers and candidates reach browsers.
 func (s *Server) SetSignaler(fn Signaler) {
@@ -196,7 +141,7 @@ func (s *Server) SetSignaler(fn Signaler) {
 	s.mu.Unlock()
 }
 
-// Shutdown closes all peers, kills all shells and stops all claude processes.
+// Shutdown closes all peers and stops every plugin.
 func (s *Server) Shutdown() {
 	s.mu.Lock()
 	peers := make([]*peer, 0, len(s.peers))
@@ -220,15 +165,7 @@ func (s *Server) Shutdown() {
 	case <-time.After(time.Second):
 		slog.Info("not waiting for peer connections to finish closing")
 	}
-	if s.desktop != nil {
-		s.desktop.Shutdown()
-	}
-	s.terms.Shutdown()
-	s.procs.Shutdown()
-	s.telemetry.Close()
-	s.agents.Shutdown()
-	s.mcp.Close()
-	s.browsers.Shutdown()
+	s.plugins.Stop()
 }
 
 // HandleSignal processes one signaling message from a browser. Messages for a
@@ -262,15 +199,12 @@ func (s *Server) answer(from, sid, sdp string) error {
 	if old := s.peer(sid); old != nil {
 		_ = old.pc.Close()
 	}
-	servers := []webrtc.ICEServer{{URLs: []string{"stun:stun.cloudflare.com:3478"}}}
-	if s.ICEServers != nil {
-		servers = s.ICEServers()
-	}
-	pc, err := s.api.NewPeerConnection(webrtc.Configuration{ICEServers: servers})
+	pc, err := s.api.NewPeerConnection(webrtc.Configuration{ICEServers: s.iceServers()})
 	if err != nil {
 		return err
 	}
-	p := &peer{sid: sid, from: from, pc: pc, started: time.Now(), terms: map[*termClient]bool{}, agents: map[*agentClient]bool{}, browsers: map[*browserClient]bool{}}
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &peer{s: s, sid: sid, from: from, pc: pc, started: time.Now(), ctx: ctx, cancel: cancel, open: map[string]int{}}
 	s.mu.Lock()
 	s.peers[sid] = p
 	s.mu.Unlock()
@@ -306,24 +240,31 @@ func (s *Server) answer(from, sid, sdp string) error {
 		}
 	})
 	pc.OnDataChannel(func(dc *webrtc.DataChannel) {
-		switch label := dc.Label(); {
-		case label == protocol.ControlChannel:
+		label := dc.Label()
+		if label == protocol.ControlChannel {
 			s.serveControl(p, dc)
-		case strings.HasPrefix(label, protocol.TermChannelPrefix):
-			s.serveTerm(p, dc, strings.TrimPrefix(label, protocol.TermChannelPrefix), s.terms)
-		case strings.HasPrefix(label, protocol.ProcChannelPrefix):
-			s.serveTerm(p, dc, strings.TrimPrefix(label, protocol.ProcChannelPrefix), s.procs)
-		case strings.HasPrefix(label, protocol.AgentChannelPrefix):
-			s.serveAgent(p, dc, strings.TrimPrefix(label, protocol.AgentChannelPrefix))
-		case strings.HasPrefix(label, protocol.BrowserChannelPrefix):
-			s.serveBrowser(p, dc, strings.TrimPrefix(label, protocol.BrowserChannelPrefix))
-		case strings.HasPrefix(label, protocol.UploadChannelPrefix):
-			s.serveUpload(dc, strings.TrimPrefix(label, protocol.UploadChannelPrefix))
-		case strings.HasPrefix(label, protocol.FileChannelPrefix):
-			s.serveFile(dc)
-		default:
-			_ = dc.Close()
+			return
 		}
+		fn, rest, ok := s.plugins.Channel(label)
+		if !ok || p.ctx.Err() != nil {
+			_ = dc.Close()
+			return
+		}
+		prefix := strings.TrimSuffix(label, rest)
+		ctx, cancel := context.WithCancel(p.ctx)
+		p.mu.Lock()
+		p.open[prefix]++
+		p.mu.Unlock()
+		var once sync.Once
+		dc.OnClose(func() {
+			once.Do(func() {
+				p.mu.Lock()
+				p.open[prefix]--
+				p.mu.Unlock()
+			})
+			cancel()
+		})
+		fn(ctx, plugin.ChannelContext{Peer: p, Label: label, Rest: rest}, dc)
 	})
 
 	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: sdp}); err != nil {
@@ -348,6 +289,13 @@ func (s *Server) answer(from, sid, sdp string) error {
 	return nil
 }
 
+func (s *Server) iceServers() []webrtc.ICEServer {
+	if s.ICEServers != nil {
+		return s.ICEServers()
+	}
+	return []webrtc.ICEServer{{URLs: []string{"stun:stun.cloudflare.com:3478"}}}
+}
+
 // CloseClient closes every peer opened by a browser connection whose session
 // was signed out.
 func (s *Server) CloseClient(connID string) {
@@ -363,9 +311,7 @@ func (s *Server) CloseClient(connID string) {
 		slog.Info("closing peer of signed-out session", "sid", p.sid)
 		_ = p.pc.Close()
 	}
-	if s.desktop != nil {
-		s.desktop.CloseClient(connID)
-	}
+	plugin.Publish(s.plugins.Bus(), plugin.ClientRevoked, connID)
 }
 
 func (s *Server) peer(sid string) *peer {
@@ -384,11 +330,11 @@ func (s *Server) send(to, sid string, data protocol.SignalData) {
 }
 
 // broadcast sends an RPC event to every connected control channel.
-func (s *Server) broadcast(event string) { s.broadcastMsg(protocol.RPCEvent{Event: event}) }
+func (s *Server) broadcast(event string) { s.Broadcast(protocol.RPCEvent{Event: event}) }
 
-// broadcastMsg sends an event with a payload to every connected control
+// Broadcast sends an event with a payload to every connected control
 // channel.
-func (s *Server) broadcastMsg(event any) {
+func (s *Server) Broadcast(event any) {
 	msg, _ := json.Marshal(event)
 	s.mu.Lock()
 	peers := make([]*peer, 0, len(s.peers))
@@ -404,4 +350,56 @@ func (s *Server) broadcastMsg(event any) {
 			sendControl(dc, msg)
 		}
 	}
+}
+
+// The plugin.Core the registry hosts plugins with.
+
+func (s *Server) Store() *store.Store { return s.store }
+func (s *Server) DataDir() string     { return s.dataDir }
+func (s *Server) WebRTC() plugin.WebRTC {
+	return webRTC{s}
+}
+func (s *Server) Config() plugin.Config { return config{s} }
+
+// Info is the device's info, with its plugins.
+func (s *Server) Info() protocol.DeviceInfo {
+	info := s.info
+	info.Features = append(append([]string{}, s.info.Features...), protocol.FeaturePlugins)
+	for _, f := range s.plugins.Features() {
+		info.Features = append(info.Features, f)
+	}
+	for _, m := range s.plugins.Manifests() {
+		info.Plugins = append(info.Plugins, m.Info())
+	}
+	return info
+}
+
+func (s *Server) Threads() plugin.Threads {
+	return plugin.StoreThreads{
+		Store:    s.store,
+		OnChange: func() { s.broadcast(protocol.EventThreadsChanged) },
+		Decorate: s.plugins.Decorate,
+	}
+}
+
+// Notify sends a notification through the hub.
+func (s *Server) Notify(n protocol.HubNotify) {
+	s.mu.Lock()
+	fn := s.notify
+	s.mu.Unlock()
+	if fn != nil {
+		fn(n)
+	}
+}
+
+type webRTC struct{ s *Server }
+
+func (w webRTC) SettingEngine() webrtc.SettingEngine { return w.s.se }
+func (w webRTC) ICEServers() []webrtc.ICEServer      { return w.s.iceServers() }
+
+type config struct{ s *Server }
+
+func (c config) DesktopEnabled() bool { return c.s.DesktopEnabled != nil && c.s.DesktopEnabled() }
+func (c config) PluginEnabled(id string) bool {
+	return c.s.PluginEnabled != nil && c.s.PluginEnabled(id)
 }

@@ -1,0 +1,103 @@
+{
+  "id": "notes",
+  "title": "Notes",
+  "version": "0.2.0",
+  "api": 1,
+  "description": "A Notes tab in any thread, which its claude can read and add to.",
+  "command": [
+    "./notes"
+  ],
+  "permissions": [
+    "agent.tools"
+  ],
+  "contributes": {
+    "rpc": [
+      {
+        "method": "notes.get"
+      },
+      {
+        "method": "notes.set"
+      },
+      {
+        "method": "notes.clear"
+      },
+      {
+        "method": "notes.sidebar"
+      },
+      {
+        "method": "notes.badges"
+      },
+      {
+        "method": "notes.header"
+      }
+    ],
+    "tools": [
+      {
+        "name": "read",
+        "title": "Read the thread's notes",
+        "description": "Read the notes the user keeps for this thread (its Notes tab): decisions, todos, context they want you to keep in mind.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        },
+        "readOnly": true
+      },
+      {
+        "name": "append",
+        "title": "Add to the thread's notes",
+        "description": "Add a line or paragraph to this thread's notes, for things the user should keep (a decision, a follow-up).",
+        "inputSchema": {
+          "type": "object",
+          "required": [
+            "text"
+          ],
+          "properties": {
+            "text": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    ],
+    "kinds": [
+      {
+        "kind": "notes",
+        "title": "Notes",
+        "single": true
+      }
+    ],
+    "ui": {
+      "sidebar": {
+        "method": "notes.sidebar"
+      },
+      "threadBadges": {
+        "method": "notes.badges"
+      },
+      "threadHeader": {
+        "method": "notes.header"
+      },
+      "deviceMenu": [
+        {
+          "label": "About the Notes plugin",
+          "icon": "info",
+          "href": "https://github.com/conner-replogle/everywhere/tree/main/daemon/sdk/plugin/example/notes"
+        }
+      ]
+    }
+  },
+  "web": "web",
+  "settings": [
+    {
+      "key": "title",
+      "type": "string",
+      "title": "Sidebar title",
+      "default": "Notes"
+    },
+    {
+      "key": "sidebar",
+      "type": "boolean",
+      "title": "List threads with notes in the sidebar",
+      "default": true
+    }
+  ]
+}

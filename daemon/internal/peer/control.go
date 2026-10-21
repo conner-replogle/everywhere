@@ -6,17 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/pion/webrtc/v4"
 
-	"github.com/conner-replogle/everywhere/daemon/internal/agent"
 	"github.com/conner-replogle/everywhere/daemon/internal/favicon"
-	"github.com/conner-replogle/everywhere/daemon/internal/gitx"
+	"github.com/conner-replogle/everywhere/daemon/internal/plugin"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/store"
 )
@@ -32,16 +31,7 @@ func (s *Server) serveControl(p *peer, dc *webrtc.DataChannel) {
 		}
 		handle := func() {
 			resp := protocol.RPCResponse{ID: req.ID}
-			var result any
-			var err error
-			switch req.Method {
-			case "debug.peer":
-				result = p.debug()
-			case "desktop.start", "desktop.candidate", "desktop.stop":
-				result, err = s.callDesktop(p, req.Method, req.Params)
-			default:
-				result, err = s.call(req.Method, req.Params)
-			}
+			result, err := s.plugins.Call(p.ctx, req.Method, plugin.RPCContext{Peer: p}, req.Params)
 			if err != nil {
 				resp.Error = &protocol.RPCError{Message: err.Error()}
 			} else {
@@ -53,464 +43,293 @@ func (s *Server) serveControl(p *peer, dc *webrtc.DataChannel) {
 		// Requests are answered in order, except slow ones (GitHub, starting
 		// claude or signing it in, a desktop capture), which would hold up
 		// everything behind them.
-		switch req.Method {
-		case "device.checkUpdate", "device.update", "agent.info", "agent.claudeVersion", "agent.updateClaude",
-			"agent.auth", "agent.login", "agent.loginCode", "agent.loginCancel", "desktop.start":
+		if s.plugins.Slow(req.Method) {
 			go handle()
-		default:
+		} else {
 			handle()
 		}
 	})
 }
 
-type empty struct{}
+// Remote answers requests the hub relays from agents using the account's
+// MCP endpoint, which have no WebRTC connection: the methods registered as
+// Remote.
+func (s *Server) Remote(method string, raw json.RawMessage) (any, error) {
+	return s.plugins.Call(context.Background(), method, plugin.RPCContext{Remote: true}, raw)
+}
 
-func (s *Server) call(method string, raw json.RawMessage) (any, error) {
-	// Their params (a query object) don't fit the shared ones below.
-	switch method {
-	case "telemetry.catalog", "telemetry.query", "telemetry.events", "telemetry.deleteRun":
-		return s.callTelemetry(method, raw)
-	}
-	var params struct {
-		ID           string `json:"id"`
-		Name         string `json:"name"`
-		Path         string `json:"path"`
-		ProjectID    string `json:"projectId"`
-		Kind         string `json:"kind"`
-		ThreadID     string `json:"threadId"`
-		State        string `json:"state"`
-		KeepWorktree bool   `json:"keepWorktree"`
-		// threads.delete: also delete a Scratch thread's folder.
-		RemoveScratch bool `json:"removeScratch"`
-		// tabs.create: typed into a new terminal tab's shell, not run.
-		Input string `json:"input"`
-		// threads.create: a new claude thread's first prompt, sent right away.
-		Prompt string `json:"prompt"`
-		// threads.search
-		Query    string `json:"query"`
-		Limit    int    `json:"limit"`
-		Archived bool   `json:"archived"`
-		// threads.done: mark it done, or reopen it.
-		Done  bool `json:"done"`
-		Force bool `json:"force"`
-		// agent.login: an Anthropic Console account rather than a subscription.
-		Console bool `json:"console"`
-		// agent.setToken: the account's Claude token, or "" for none.
-		Token string `json:"token"`
-		// agent.loginCode
-		Code string `json:"code"`
-		URL  string `json:"url"`
-		// A new claude thread or tab's starting permission mode.
-		PermissionMode string `json:"permissionMode"`
-	}
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &params); err != nil {
-			return nil, fmt.Errorf("bad params: %w", err)
-		}
-	}
+type coreParams struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Path         string `json:"path"`
+	ProjectID    string `json:"projectId"`
+	Kind         string `json:"kind"`
+	ThreadID     string `json:"threadId"`
+	State        string `json:"state"`
+	KeepWorktree bool   `json:"keepWorktree"`
+	// threads.delete: also delete a Scratch thread's folder.
+	RemoveScratch bool `json:"removeScratch"`
+	// tabs.create: typed into a new terminal tab's shell, not run.
+	Input string `json:"input"`
+	// threads.create: a new claude thread's first prompt, sent right away.
+	Prompt   string `json:"prompt"`
+	Archived bool   `json:"archived"`
+	Force    bool   `json:"force"`
+	// A new claude thread or tab's starting permission mode.
+	PermissionMode string `json:"permissionMode"`
+}
 
-	switch method {
-	case "device.info":
-		return s.info, nil
-	case "desktop.info":
-		if s.desktop == nil {
-			return protocol.DesktopInfo{Reason: "remote desktop isn't available in this daemon"}, nil
-		}
-		return s.desktop.Info(), nil
-	case "agent.info":
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-		return s.agents.Info(ctx), nil
-	case "agent.claudeVersion":
-		return s.agents.ClaudeVersion(context.Background(), params.Force)
-	case "agent.updateClaude":
-		return s.agents.UpdateClaude(context.Background())
-	case "agent.auth":
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-		return s.agents.ClaudeAuth(ctx)
-	case "agent.login":
-		return s.agents.StartLogin(context.Background(), params.Console)
-	case "agent.setToken":
-		if err := s.agents.SetToken(params.Token); err != nil {
-			return nil, err
-		}
-		s.broadcast(protocol.EventClaudeAuth)
-		return empty{}, nil
-	case "agent.loginCode":
-		return s.agents.FinishLogin(context.Background(), params.Code)
-	case "agent.loginCancel":
-		s.agents.CancelLogin()
-		return empty{}, nil
-	case "device.checkUpdate":
-		return s.checkUpdate(params.Force)
-	case "device.update":
-		return s.applyUpdate()
+// registerCore registers the core's own methods.
+func (s *Server) registerCore(h plugin.Host) {
+	rpc := func(method string, fn func(c plugin.RPCContext, p coreParams) (any, error), opts ...plugin.RPCOption) {
+		h.HandleRPC(method, plugin.Params(fn), opts...)
+	}
+	remote := plugin.Remote()
 
-	case "projects.list":
-		return s.store.ListProjects()
-	case "projects.create":
-		p, err := s.store.CreateProject(params.Path, params.Name)
+	rpc("device.info", func(plugin.RPCContext, coreParams) (any, error) { return s.Info(), nil }, remote)
+	rpc("device.checkUpdate", func(_ plugin.RPCContext, p coreParams) (any, error) { return s.checkUpdate(p.Force) }, remote, plugin.Slow())
+	// Not remote: an agent shouldn't restart the daemon.
+	rpc("device.update", func(plugin.RPCContext, coreParams) (any, error) { return s.applyUpdate() }, plugin.Slow())
+	h.HandleRPC("debug.peer", func(_ context.Context, c plugin.RPCContext, _ json.RawMessage) (any, error) {
+		p, ok := c.Peer.(*peer)
+		if !ok {
+			return nil, errors.New("debug.peer needs a browser connection")
+		}
+		return p.debug(), nil
+	})
+
+	rpc("projects.list", func(plugin.RPCContext, coreParams) (any, error) { return s.store.ListProjects() }, remote)
+	rpc("projects.create", func(_ plugin.RPCContext, p coreParams) (any, error) {
+		proj, err := s.store.CreateProject(p.Path, p.Name)
 		if err == nil {
 			s.broadcast(protocol.EventProjectsChanged)
 		}
-		return p, err
-	case "projects.rename":
-		p, err := s.store.RenameProject(params.ID, params.Name)
+		return proj, err
+	}, remote)
+	rpc("projects.rename", func(_ plugin.RPCContext, p coreParams) (any, error) {
+		proj, err := s.store.RenameProject(p.ID, p.Name)
 		if err == nil {
 			s.broadcast(protocol.EventProjectsChanged)
 		}
-		return p, err
-	case "projects.clone":
-		// Over WebRTC with the device's own git credentials; the hub's
-		// relay adds a GitHub token (see Remote).
-		return s.cloneProject(params.URL, params.Path, params.Name, "")
-	case "clones.list":
-		return s.clones.list(), nil
-	case "projects.icon":
-		p, err := s.store.GetProject(params.ID)
+		return proj, err
+	}, remote)
+	rpc("projects.icon", func(_ plugin.RPCContext, p coreParams) (any, error) {
+		proj, err := s.store.GetProject(p.ID)
 		if err != nil {
 			return nil, err
 		}
-		icon, err := favicon.Find(p.Path)
+		icon, err := favicon.Find(proj.Path)
 		if err != nil {
 			icon = nil // an unreadable project just has no icon
 		}
 		return struct {
 			Icon *favicon.Icon `json:"icon"`
 		}{icon}, nil
-	case "projects.delete":
-		threads, err := s.withTabs(s.store.ListThreads(params.ID))
-		if err != nil {
-			return nil, err
-		}
-		agentThreads := s.agentThreads(threads)
-		if err := s.store.DeleteProject(params.ID); err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				return nil, errors.New("project not found (the home and Scratch projects can't be deleted)")
-			}
-			return nil, err
-		}
-		for _, t := range threads {
-			s.killThread(t, agentThreads[t.ID], false)
-		}
-		s.clones.drop(params.ID)
-		s.broadcast(protocol.EventProjectsChanged)
-		s.broadcast(protocol.EventClonesChanged)
-		s.broadcast(protocol.EventThreadsChanged)
-		return empty{}, nil
+	}, remote)
+	rpc("projects.delete", func(_ plugin.RPCContext, p coreParams) (any, error) { return s.deleteProject(p.ID) }, remote)
 
-	case "threads.list":
-		threads, err := s.store.ListThreads(params.ProjectID)
+	rpc("threads.list", func(_ plugin.RPCContext, p coreParams) (any, error) {
+		threads, err := s.store.ListThreads(p.ProjectID)
 		for i := range threads {
-			s.fillStatus(&threads[i])
+			s.plugins.Decorate(&threads[i])
 		}
 		return threads, err
-	case "threads.create":
-		t, err := s.store.CreateThread(params.ProjectID, params.Name, params.Kind)
-		if err == nil {
-			err = s.initialMode(t, params.PermissionMode)
+	}, remote)
+	rpc("threads.get", func(_ plugin.RPCContext, p coreParams) (any, error) {
+		return s.Threads().Live(p.ThreadID)
+	}, remote)
+	rpc("threads.create", func(_ plugin.RPCContext, p coreParams) (any, error) {
+		kind := p.Kind
+		if kind == "" {
+			kind = protocol.ThreadTerminal
 		}
-		if err == nil {
-			s.broadcast(protocol.EventThreadsChanged)
+		k, ok := s.plugins.Kind(kind)
+		if !ok || !k.Thread {
+			return nil, fmt.Errorf("unknown thread kind %q", kind)
 		}
-		if err == nil && strings.TrimSpace(params.Prompt) != "" && t.Kind == protocol.ThreadClaude {
-			err = s.agents.Request(t.ID, protocol.AgentClientMsg{T: "send", Text: params.Prompt})
-		}
-		return t, err
-	case "threads.rename":
-		t, err := s.store.RenameThread(params.ID, params.Name)
-		if err == nil {
-			s.fillStatus(&t)
-			s.broadcast(protocol.EventThreadsChanged)
-		}
-		return t, err
-	case "threads.done":
-		if err := s.store.SetThreadDone(params.ID, params.Done); err != nil {
-			return nil, err
-		}
-		t, err := s.store.GetThread(params.ID)
-		if err == nil {
-			s.fillStatus(&t)
-			s.broadcast(protocol.EventThreadsChanged)
-		}
-		return t, err
-	case "threads.archive":
-		t, err := s.store.SetThreadArchived(params.ID, params.Archived)
+		t, err := s.store.CreateThread(p.ProjectID, p.Name, kind)
 		if err != nil {
 			return nil, err
 		}
-		if params.Archived {
+		s.broadcast(protocol.EventThreadsChanged)
+		if k.Created != nil {
+			err = k.Created(t, plugin.CreateParams{PermissionMode: p.PermissionMode, Prompt: p.Prompt})
+		}
+		return t, err
+	}, remote)
+	rpc("threads.rename", func(_ plugin.RPCContext, p coreParams) (any, error) {
+		t, err := s.store.RenameThread(p.ID, p.Name)
+		if err == nil {
+			s.plugins.Decorate(&t)
+			s.broadcast(protocol.EventThreadsChanged)
+		}
+		return t, err
+	}, remote)
+	rpc("threads.archive", func(_ plugin.RPCContext, p coreParams) (any, error) {
+		t, err := s.store.SetThreadArchived(p.ID, p.Archived)
+		if err != nil {
+			return nil, err
+		}
+		if p.Archived {
 			// History, worktree and claude's session stay; restoring resumes it.
 			tabs, _ := s.store.ListTabs(t.ID)
-			for _, t := range append(tabs, t) {
-				s.stopThread(t)
+			for _, tt := range append(tabs, t) {
+				if k, ok := s.plugins.Kind(tt.Kind); ok && k.Stop != nil {
+					k.Stop(tt)
+				}
 			}
-			s.procs.StopThread(t.ID)
-			s.browsers.Close(t.ID, "The thread was archived", false)
+			plugin.Publish(s.plugins.Bus(), plugin.ThreadArchived, plugin.ThreadEvent{Thread: t, Tabs: tabs})
 		}
-		s.fillStatus(&t)
+		s.plugins.Decorate(&t)
 		s.broadcast(protocol.EventThreadsChanged)
 		return t, nil
-	case "threads.delete":
-		t, err := s.store.GetThread(params.ID)
+	}, remote)
+	rpc("threads.delete", func(_ plugin.RPCContext, p coreParams) (any, error) {
+		t, err := s.store.GetThread(p.ID)
 		if err != nil {
 			return nil, err
 		}
-		threads, err := s.withTabs([]protocol.Thread{t}, nil)
-		if err != nil {
-			return nil, err
-		}
-		agentThreads := s.agentThreads(threads)
-		s.procs.RemoveThread(params.ID)
-		if err := s.store.DeleteThread(params.ID); err != nil {
-			return nil, err
-		}
-		for _, t := range threads {
-			s.killThread(t, agentThreads[t.ID], params.KeepWorktree)
-		}
-		s.broadcast(protocol.EventThreadsChanged)
-		// A Scratch thread's folder stays unless the user asked for it to go.
-		if params.RemoveScratch {
-			if err := s.removeScratch(t.ScratchDir); err != nil {
-				return nil, fmt.Errorf("the thread was deleted, but not its folder: %w", err)
-			}
-		}
-		return empty{}, nil
-	case "threads.workdir":
-		return s.workdir(params.ID)
-	case "threads.search":
-		return s.store.SearchAgentEvents(params.Query, min(max(params.Limit, 1), 50))
-	case "threads.promote":
-		return s.promote(params.ID, params.Name)
-	case "threads.continueIn":
-		return s.continueIn(params.ID, params.ProjectID, params.PermissionMode)
-	case "scratch.usage":
-		return s.scratchUsage()
+		return plugin.Empty{}, s.deleteThread(t, plugin.DeleteParams{KeepWorktree: p.KeepWorktree, RemoveScratch: p.RemoveScratch})
+	}, remote)
+	rpc("threads.workdir", func(_ plugin.RPCContext, p coreParams) (any, error) { return s.Threads().Workdir(p.ID) }, remote)
 
-	case "processes.list", "processes.start", "processes.stop", "processes.restart", "processes.remove":
-		return s.callProcesses(method, raw)
-	case "processes.dashboard", "processes.output", "processes.file", "processes.dashboardError", "processes.setState":
-		return s.callDashboards(method, raw)
-
-	case "tabs.list":
-		tabs, err := s.store.ListTabs(params.ThreadID)
+	rpc("tabs.list", func(_ plugin.RPCContext, p coreParams) (any, error) {
+		tabs, err := s.store.ListTabs(p.ThreadID)
 		for i := range tabs {
-			s.fillStatus(&tabs[i])
+			s.plugins.Decorate(&tabs[i])
 		}
 		return tabs, err
-	case "tabs.create":
-		t, err := s.store.CreateTab(params.ThreadID, params.Kind, params.Name)
-		if err == nil {
-			err = s.initialMode(t, params.PermissionMode)
+	}, remote)
+	rpc("tabs.create", func(_ plugin.RPCContext, p coreParams) (any, error) {
+		k, ok := s.plugins.Kind(p.Kind)
+		if !ok {
+			return nil, fmt.Errorf("unknown tab kind %q", p.Kind)
 		}
-		if err == nil && params.Input != "" && t.Kind == protocol.ThreadTerminal {
-			// The browser's attach resizes the shell to fit.
-			err = s.terms.Type(t.ID, []byte(params.Input), remoteCols, remoteRows)
+		t, err := s.store.CreateTab(p.ThreadID, p.Kind, p.Name)
+		if err != nil {
+			return nil, err
 		}
-		if err == nil {
-			s.broadcast(protocol.EventThreadsChanged)
+		if k.Created != nil {
+			err = k.Created(t, plugin.CreateParams{PermissionMode: p.PermissionMode, Input: p.Input})
 		}
+		s.broadcast(protocol.EventThreadsChanged)
 		return t, err
-	case "tabs.close":
-		t, err := s.store.GetThread(params.ID)
+	}, remote)
+	rpc("tabs.close", func(_ plugin.RPCContext, p coreParams) (any, error) {
+		t, err := s.store.GetThread(p.ID)
 		if err != nil {
 			return nil, err
 		}
 		if t.ParentID == "" {
 			return nil, errors.New("not a tab")
 		}
-		agentThreads := s.agentThreads([]protocol.Thread{t})
-		if err := s.store.DeleteThread(params.ID); err != nil {
-			return nil, err
-		}
-		s.killThread(t, agentThreads[t.ID], false)
-		s.broadcast(protocol.EventThreadsChanged)
-		return empty{}, nil
-	case "tabs.setState":
+		return plugin.Empty{}, s.deleteThread(t, plugin.DeleteParams{})
+	}, remote)
+	rpc("tabs.setState", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		// Not broadcast: only the tab's own view reads it, when it opens.
-		if err := s.store.SetTabState(params.ID, params.State); err != nil {
+		if err := s.store.SetTabState(p.ID, p.State); err != nil {
 			return nil, err
 		}
-		return empty{}, nil
+		return plugin.Empty{}, nil
+	}, remote)
 
-	case "fs.listDirs":
-		return listDirs(params.Path)
-	case "fs.list":
-		return listDir(params.Path)
-	case "fs.mkdir":
-		return makeDir(params.Path, params.Name)
-
-	case "git.status":
-		dir, err := s.gitDir(params.ThreadID, params.ProjectID)
-		if err != nil {
-			return nil, err
-		}
-		return s.gitStatus(dir)
-	case "git.fetch", "git.pull", "git.updateDefault":
-		return s.gitAction(method, params.ThreadID, params.ProjectID)
-	case "git.info":
-		p, err := s.store.GetProject(params.ProjectID)
-		if err != nil {
-			return nil, err
-		}
-		return gitInfo(p.Path), nil
-	}
-	return nil, fmt.Errorf("unknown method %q", method)
+	rpc("fs.listDirs", func(_ plugin.RPCContext, p coreParams) (any, error) { return listDirs(p.Path) }, remote)
+	rpc("fs.mkdir", func(_ plugin.RPCContext, p coreParams) (any, error) { return makeDir(p.Path, p.Name) }, remote)
 }
 
-// initialMode sets a new claude thread's permission mode, if one was asked for.
-func (s *Server) initialMode(t protocol.Thread, mode string) error {
-	if mode == "" || t.Kind != protocol.ThreadClaude {
-		return nil
-	}
-	if !agent.ValidPermissionMode(mode) {
-		return fmt.Errorf("unknown permission mode %q", mode)
-	}
-	return s.store.SetAgentPermissionMode(t.ID, mode)
-}
-
-// fillStatus sets a thread's live fields from its manager.
-func (s *Server) fillStatus(t *protocol.Thread) {
-	switch t.Kind {
-	case protocol.ThreadClaude:
-		t.Running, t.AgentStatus = s.agents.Status(t.ID)
-	case protocol.ThreadTerminal:
-		t.Running = s.terms.Running(t.ID)
-	}
+// deleteThread deletes a thread with its tabs, or one tab: each kind
+// cleans up after its own (reading what it needs before the rows go), then
+// plugins hear of it.
+func (s *Server) deleteThread(t protocol.Thread, d plugin.DeleteParams) error {
+	var tabs []protocol.Thread
 	if t.ParentID == "" {
-		t.Processes = s.procs.Running(t.ID)
+		var err error
+		if tabs, err = s.store.ListTabs(t.ID); err != nil {
+			return err
+		}
+	}
+	plugin.Publish(s.plugins.Bus(), plugin.ThreadDeleting, plugin.ThreadEvent{Thread: t, Tabs: tabs, Delete: d})
+	after := s.beforeDelete(append([]protocol.Thread{t}, tabs...), d)
+	if err := s.store.DeleteThread(t.ID); err != nil {
+		return err
+	}
+	s.dropState(append([]protocol.Thread{t}, tabs...), "")
+	for _, fn := range after {
+		fn()
+	}
+	var errs []error
+	plugin.Publish(s.plugins.Bus(), plugin.ThreadDeleted, plugin.ThreadEvent{
+		Thread: t, Tabs: tabs, Delete: d, Fail: func(err error) { errs = append(errs, err) },
+	})
+	s.broadcast(protocol.EventThreadsChanged)
+	return errors.Join(errs...)
+}
+
+// dropState deletes plugins' state kept for deleted threads (and a deleted
+// project).
+func (s *Server) dropState(threads []protocol.Thread, projectID string) {
+	for _, t := range threads {
+		if err := s.store.KVDeleteScope("thread:" + t.ID); err != nil {
+			slog.Warn("deleting plugin state", "thread", t.ID, "err", err)
+		}
+	}
+	if projectID != "" {
+		if err := s.store.KVDeleteScope("project:" + projectID); err != nil {
+			slog.Warn("deleting plugin state", "project", projectID, "err", err)
+		}
 	}
 }
 
-// withTabs adds the tabs of threads to them.
-func (s *Server) withTabs(threads []protocol.Thread, err error) ([]protocol.Thread, error) {
+// beforeDelete runs each thread's kind's Delete hook, returning what to do
+// once the rows are gone.
+func (s *Server) beforeDelete(threads []protocol.Thread, d plugin.DeleteParams) []func() {
+	var after []func()
+	for _, t := range threads {
+		if k, ok := s.plugins.Kind(t.Kind); ok && k.Delete != nil {
+			if fn := k.Delete(t, d); fn != nil {
+				after = append(after, fn)
+			}
+		}
+	}
+	return after
+}
+
+func (s *Server) deleteProject(id string) (any, error) {
+	threads, err := s.store.ListThreads(id)
 	if err != nil {
 		return nil, err
 	}
-	out := threads
+	tabsOf := map[string][]protocol.Thread{}
+	all := threads
 	for _, t := range threads {
 		tabs, err := s.store.ListTabs(t.ID)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, tabs...)
+		tabsOf[t.ID] = tabs
+		all = append(all, tabs...)
 	}
-	return out, nil
-}
-
-// stopThread stops a thread's shell or claude, if it has one.
-func (s *Server) stopThread(t protocol.Thread) {
-	switch t.Kind {
-	case protocol.ThreadClaude:
-		s.agents.Kill(t.ID)
-	case protocol.ThreadTerminal:
-		s.terms.Kill(t.ID)
-	}
-}
-
-// workdir resolves where a thread works; see store.ThreadWorkdir. In a
-// worktree it's the same subdirectory the project is of its repository.
-func (s *Server) workdir(threadID string) (protocol.Workdir, error) {
-	dir, worktree, err := s.store.ThreadWorkdir(threadID)
-	if err != nil || worktree == "" {
-		return protocol.Workdir{Path: dir}, err
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	prefix, err := gitx.Prefix(ctx, dir)
-	if err != nil {
-		return protocol.Workdir{}, err
-	}
-	return protocol.Workdir{Path: filepath.Join(worktree, prefix), Worktree: true}, nil
-}
-
-// shells resolves where a terminal starts for the terminal manager: a tab
-// of a claude thread in a worktree starts in that worktree.
-type shells struct{ s *Server }
-
-func (r shells) ThreadShell(threadID string) (string, bool, error) {
-	dir, had, err := r.s.store.ThreadShell(threadID)
-	if err != nil {
-		return "", false, err
-	}
-	// A missing worktree is left for claude to recreate; the shell falls
-	// back to the project.
-	if wd, err := r.s.workdir(threadID); err == nil && wd.Worktree {
-		if _, err := os.Stat(wd.Path); err == nil {
-			dir = wd.Path
-		}
-	}
-	return dir, had, nil
-}
-
-func (r shells) MarkSpawned(threadID string) error { return r.s.store.MarkSpawned(threadID) }
-func (r shells) TouchThread(threadID string) error { return r.s.store.TouchThread(threadID) }
-
-// agentThreads looks up the claude threads among threads, for cleaning up
-// after they're deleted.
-func (s *Server) agentThreads(threads []protocol.Thread) map[string]store.AgentThread {
-	out := map[string]store.AgentThread{}
 	for _, t := range threads {
-		if t.Kind != protocol.ThreadClaude {
-			continue
+		plugin.Publish(s.plugins.Bus(), plugin.ThreadDeleting, plugin.ThreadEvent{Thread: t, Tabs: tabsOf[t.ID]})
+	}
+	after := s.beforeDelete(all, plugin.DeleteParams{})
+	if err := s.store.DeleteProject(id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, errors.New("project not found (the home and Scratch projects can't be deleted)")
 		}
-		if a, err := s.store.AgentThread(t.ID); err == nil {
-			out[t.ID] = a
-		}
+		return nil, err
 	}
-	return out
-}
-
-// killThread stops a deleted thread's shell or claude and cleans up after
-// it; a is its agent record (claude threads only). A thread's browser page
-// goes with the thread or its browser tab.
-func (s *Server) killThread(t protocol.Thread, a store.AgentThread, keepWorktree bool) {
-	switch {
-	case t.Kind == protocol.ThreadClaude:
-		s.agents.Remove(t.ID, a, keepWorktree)
-	case t.Kind == protocol.ThreadBrowser:
-		s.browsers.Close(t.ParentID, "The browser tab was closed", true)
-	case t.Kind == protocol.ThreadDesktop:
-		if s.desktop != nil {
-			s.desktop.CloseTab(t.ID)
-		}
-	default:
-		s.stopThread(t)
+	s.dropState(all, id)
+	for _, fn := range after {
+		fn()
 	}
-	if t.ParentID == "" {
-		s.browsers.Close(t.ID, "The thread was deleted", true)
-		if s.desktop != nil {
-			s.desktop.CloseAgent(t.ID)
-		}
+	for _, t := range threads {
+		plugin.Publish(s.plugins.Bus(), plugin.ThreadDeleted, plugin.ThreadEvent{Thread: t, Tabs: tabsOf[t.ID], Fail: func(error) {}})
 	}
-}
-
-// browserKey is whose browser page a thread or tab uses: its thread's.
-func (s *Server) browserKey(id string) (string, error) {
-	t, err := s.store.GetThread(id)
-	if err != nil {
-		return "", err
-	}
-	if t.ParentID != "" {
-		return t.ParentID, nil
-	}
-	return t.ID, nil
-}
-
-func gitInfo(dir string) protocol.GitInfo {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	info := protocol.GitInfo{Branches: []string{}}
-	if !gitx.IsRepo(ctx, dir) {
-		return info
-	}
-	info.IsRepo = true
-	info.Current = gitx.CurrentBranch(ctx, dir)
-	if b, err := gitx.Branches(ctx, dir); err == nil {
-		info.Branches = b
-	}
-	return info
+	plugin.Publish(s.plugins.Bus(), plugin.ProjectDeleted, id)
+	s.broadcast(protocol.EventProjectsChanged)
+	s.broadcast(protocol.EventThreadsChanged)
+	return plugin.Empty{}, nil
 }
 
 // listDirs lists subdirectory names only; file contents are never read.
@@ -570,42 +389,4 @@ func makeDir(path, name string) (protocol.DirListing, error) {
 		return protocol.DirListing{}, err
 	}
 	return listDirs(created)
-}
-
-// listDir lists a directory's entries, directories first.
-func listDir(path string) (protocol.FsListing, error) {
-	dir, err := store.ResolveDir(path)
-	if err != nil {
-		return protocol.FsListing{}, err
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return protocol.FsListing{}, err
-	}
-	out := protocol.FsListing{Path: dir, Entries: []protocol.FsEntry{}}
-	if parent := filepath.Dir(dir); parent != dir {
-		out.Parent = &parent
-	}
-	for _, e := range entries {
-		info, err := os.Stat(filepath.Join(dir, e.Name())) // follows symlinks
-		if err != nil {
-			if info, err = e.Info(); err != nil {
-				continue
-			}
-		}
-		out.Entries = append(out.Entries, protocol.FsEntry{
-			Name:    e.Name(),
-			Dir:     info.IsDir(),
-			Size:    info.Size(),
-			ModTime: info.ModTime().UnixMilli(),
-		})
-	}
-	sort.Slice(out.Entries, func(i, j int) bool {
-		a, b := out.Entries[i], out.Entries[j]
-		if a.Dir != b.Dir {
-			return a.Dir
-		}
-		return strings.ToLower(a.Name) < strings.ToLower(b.Name)
-	})
-	return out, nil
 }

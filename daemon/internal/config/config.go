@@ -17,6 +17,9 @@ type Config struct {
 	// Desktop allows remote desktop sessions. Only `everywhere desktop enable`,
 	// run on the device, turns it on.
 	Desktop bool `json:"desktop,omitempty"`
+	// Plugins are the external plugins enabled on this device. Only
+	// `everywhere plugin enable`, run on the device, adds one.
+	Plugins []string `json:"plugins,omitempty"`
 }
 
 // ErrNotEnrolled is returned by Load when the device has never been enrolled.
@@ -100,6 +103,42 @@ func SetDesktop(on bool) error {
 		return err
 	}
 	cfg.Desktop = on
+	return Save(cfg, cred)
+}
+
+// PluginsDir is where external plugins are installed, one directory each.
+func PluginsDir() string { return filepath.Join(DataDir(), "plugins") }
+
+// PluginEnabled reads the config on each call.
+func PluginEnabled(id string) bool {
+	cfg, _, err := Load()
+	if err != nil {
+		return false
+	}
+	for _, p := range cfg.Plugins {
+		if p == id {
+			return true
+		}
+	}
+	return false
+}
+
+// SetPluginEnabled enables or disables an external plugin.
+func SetPluginEnabled(id string, on bool) error {
+	cfg, cred, err := Load()
+	if err != nil {
+		return err
+	}
+	var out []string
+	for _, p := range cfg.Plugins {
+		if p != id {
+			out = append(out, p)
+		}
+	}
+	if on {
+		out = append(out, id)
+	}
+	cfg.Plugins = out
 	return Save(cfg, cred)
 }
 

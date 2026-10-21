@@ -97,12 +97,13 @@ func (r *Result) Image(data []byte, mimeType string) *Result {
 	return r
 }
 
-// Server serves a fixed set of tools to token holders.
+// Server serves a set of tools to token holders.
 type Server struct {
 	Name, Version string
 
-	tools []Tool
-	byKey map[string]*Tool
+	toolsMu sync.RWMutex
+	tools   []Tool
+	byKey   map[string]*Tool
 
 	mu     sync.Mutex
 	tokens map[string]Caller
@@ -112,11 +113,27 @@ type Server struct {
 }
 
 func NewServer(name, version string, tools []Tool) *Server {
-	s := &Server{Name: name, Version: version, tools: tools, byKey: map[string]*Tool{}, tokens: map[string]Caller{}}
-	for i := range s.tools {
-		s.byKey[s.tools[i].Name] = &s.tools[i]
-	}
+	s := &Server{Name: name, Version: version, tokens: map[string]Caller{}}
+	s.SetTools(tools)
 	return s
+}
+
+// SetTools replaces the tools served (plugins starting and stopping).
+func (s *Server) SetTools(tools []Tool) {
+	byKey := make(map[string]*Tool, len(tools))
+	tools = append([]Tool(nil), tools...)
+	for i := range tools {
+		byKey[tools[i].Name] = &tools[i]
+	}
+	s.toolsMu.Lock()
+	s.tools, s.byKey = tools, byKey
+	s.toolsMu.Unlock()
+}
+
+func (s *Server) toolList() ([]Tool, map[string]*Tool) {
+	s.toolsMu.RLock()
+	defer s.toolsMu.RUnlock()
+	return s.tools, s.byKey
 }
 
 // Grant issues a token for c and returns the server's URL, starting it on a
@@ -340,8 +357,9 @@ func (s *Server) dispatch(ctx context.Context, c Caller, req request) (any, *rpc
 	case "ping":
 		return struct{}{}, nil
 	case "tools/list":
-		tools := make([]map[string]any, 0, len(s.tools))
-		for _, t := range s.tools {
+		all, _ := s.toolList()
+		tools := make([]map[string]any, 0, len(all))
+		for _, t := range all {
 			if t.Listed != nil && !t.Listed() {
 				continue
 			}
@@ -362,7 +380,8 @@ func (s *Server) dispatch(ctx context.Context, c Caller, req request) (any, *rpc
 		if err := json.Unmarshal(req.Params, &p); err != nil {
 			return nil, &rpcError{codeInvalidParams, "invalid params"}
 		}
-		t := s.byKey[p.Name]
+		_, byKey := s.toolList()
+		t := byKey[p.Name]
 		if t == nil {
 			return nil, &rpcError{codeInvalidParams, "unknown tool " + p.Name}
 		}

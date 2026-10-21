@@ -1,4 +1,4 @@
-import type { AgentCommand, AgentLimit, AgentModel, AgentState, DesktopSource, PermissionMode } from "@everywhere/protocol";
+import type { AgentCommand, AgentLimit, AgentModel, AgentState, PermissionMode } from "@everywhere/protocol";
 import {
   ArchiveRestoreIcon,
   ArrowUpIcon,
@@ -51,37 +51,17 @@ import { ResumeBanner } from "./resume-banner";
 import { useAutoRecap } from "./auto-recap";
 import { PERMISSION_MODES } from "@/lib/permission-modes";
 import { usePrefs } from "@/lib/prefs";
-import { buildItems, changeItems, RECAP_PROMPT, Timeline, type UserEvent } from "./timeline";
-import { ProcessesOverview } from "@/components/processes/overview";
+import type { TimelineFilter } from "@/plugins/types";
+import { buildItems, type Item, RECAP_PROMPT, Timeline, type UserEvent } from "./timeline";
 
 
-const BROWSER_TOOL = /^mcp__everywhere__browser_/;
-const DESKTOP_TOOL = /^mcp__everywhere__desktop_/;
-const PROCESS_START_TOOL = "mcp__everywhere__process_start";
-
-/** Which desktop claude works on: its own (the default) or the user's. */
-type Desk = "claude" | "yours";
-
-/** The desktop a desktop tool call moved claude to, if it did. */
-function deskOf(name: string, input: unknown): Desk | undefined {
-  if (name === "mcp__everywhere__desktop_launch") return "claude";
-  if (name !== "mcp__everywhere__desktop_open") return undefined;
-  const d = (input as { desktop?: unknown } | undefined)?.desktop;
-  return d === "claude" || d === "yours" ? d : undefined;
-}
-
-/**
- * What a desktop_open or desktop_launch call pointed claude at, on desk (the
- * desktop claude is on after it); undefined for other desktop tools.
- */
-function openedSource(name: string, input: unknown, desk: Desk): DesktopSource | undefined {
-  if (name === "mcp__everywhere__desktop_launch") return { desktop: "claude" };
-  if (name !== "mcp__everywhere__desktop_open") return undefined;
-  const i = (input ?? {}) as { window?: unknown; output?: unknown };
-  const on: DesktopSource = desk === "yours" ? {} : { desktop: "claude" };
-  if (typeof i.window === "string" && i.window) return { ...on, window: i.window };
-  if (typeof i.output === "string" && i.output) return { ...on, output: i.output };
-  return on;
+/** A tool call claude made, for plugins that react to it (see ThreadEvents["agent.toolUses"]). */
+export interface ToolUse {
+  name: string;
+  input: unknown;
+  at: number;
+  /** Made in the last 30 s, not history being replayed. */
+  recent: boolean;
 }
 
 /** Timeline items drawn at first; earlier ones load on request. */
@@ -93,11 +73,10 @@ export function AgentView({
   projectId,
   generation,
   cwd,
-  onBrowserUse,
-  onDesktopUse,
-  onProcessUse,
+  onToolUses,
   onInteract,
-  processes,
+  aboveComposer,
+  filters = [],
   archived,
   scratch,
 }: {
@@ -107,19 +86,17 @@ export function AgentView({
   generation: number;
   /** The project directory, for showing paths relative to it. */
   cwd?: string;
-  /** Called when claude starts driving the project's browser. */
-  onBrowserUse?: () => void;
-  /** Called when claude uses the desktop, with what it opened there, if it opened something. */
-  onDesktopUse?: (source: DesktopSource | undefined, fallback: DesktopSource) => void;
-  /** Called when claude starts a background process. */
-  onProcessUse?: () => void;
+  /** Called with the tool calls in new events (each batch oldest first), so plugins can react (open the browser…). */
+  onToolUses?: (uses: ToolUse[]) => void;
   /** Called when the user acts in the thread: sends a prompt, answers claude, interrupts, changes a setting. */
   onInteract?: () => void;
-  /** Shows the thread's processes above the composer; absent when the device has none. */
-  processes?: { threadId: string; onOpen: (processId?: string) => void; onOpenUrl?: (url: string) => void };
+  /** What plugins show above the composer (the thread's processes…). */
+  aboveComposer?: React.ReactNode;
+  /** Ways plugins offer to filter the timeline ("Changes to this computer"). */
+  filters?: TimelineFilter[];
   /** Set while the thread is archived: its history shows, with a way back instead of the composer. */
   archived?: { onRestore: () => void; error: string | null };
-  /** A Scratch thread: it works in a folder of its own, and its changes to the computer can be listed. */
+  /** A Scratch thread: it works in a folder of its own. */
   scratch?: boolean;
 }) {
   const agent = useAgentThread(peer, threadId, generation);
@@ -133,41 +110,21 @@ export function AgentView({
     },
   };
 
-  // Show the browser when claude uses it, but not for history being replayed.
+  // Tell plugins about claude's tool calls, marking history being replayed.
   const seenSeq = useRef(0);
-  const onBrowserUseRef = useRef(onBrowserUse);
-  onBrowserUseRef.current = onBrowserUse;
-  const onDesktopUseRef = useRef(onDesktopUse);
-  onDesktopUseRef.current = onDesktopUse;
-  const onProcessUseRef = useRef(onProcessUse);
-  onProcessUseRef.current = onProcessUse;
-  // The desktop claude is on, as its desktop_open and desktop_launch calls left it.
-  const desk = useRef<Desk>("claude");
+  const onToolUsesRef = useRef(onToolUses);
+  onToolUsesRef.current = onToolUses;
   useEffect(() => {
     const fresh = agent.events.filter((e) => e.seq > seenSeq.current);
     if (!fresh.length) return;
     seenSeq.current = fresh[fresh.length - 1]!.seq;
-    let opened: DesktopSource | undefined;
-    let usedDesktop = false;
-    let usedBrowser = false;
-    let startedProcess = false;
+    const uses: ToolUse[] = [];
     for (const e of fresh) {
-      if (e.event.type !== "tool" || !DESKTOP_TOOL.test(e.event.name)) {
-        if (e.event.type === "tool" && Date.now() - e.at < 30_000) {
-          if (BROWSER_TOOL.test(e.event.name)) usedBrowser = true;
-          if (e.event.name === PROCESS_START_TOOL) startedProcess = true;
-        }
-        continue;
+      if (e.event.type === "tool") {
+        uses.push({ name: e.event.name, input: e.event.input, at: e.at, recent: Date.now() - e.at < 30_000 });
       }
-      desk.current = deskOf(e.event.name, e.event.input) ?? desk.current;
-      if (Date.now() - e.at >= 30_000) continue;
-      usedDesktop = true;
-      opened = openedSource(e.event.name, e.event.input, desk.current) ?? opened;
     }
-    if (usedBrowser) onBrowserUseRef.current?.();
-    if (startedProcess) onProcessUseRef.current?.();
-    // A new tab shows the desktop claude is on.
-    if (usedDesktop) onDesktopUseRef.current?.(opened, desk.current === "claude" ? { desktop: "claude" } : {});
+    if (uses.length) onToolUsesRef.current?.(uses);
   }, [agent.events]);
   const { info } = useDevice();
   const features = info.data?.features ?? [];
@@ -182,15 +139,24 @@ export function AgentView({
   // Paths are shown relative to wherever claude works: the worktree, if any.
   const workdir = state?.workspace.path || cwd;
   const allItems = useMemo(() => buildItems(agent.events), [agent.events]);
-  // The change trail: what claude did to the computer outside its folder.
-  const changes = useMemo(() => (scratch ? changeItems(allItems, workdir) : []), [scratch, allItems, workdir]);
-  const [changesOnly, setChangesOnly] = useState(false);
-  const [shown, setShown] = useState(PAGE);
-  const items = useMemo(
-    () => (changesOnly ? changes : allItems.slice(-shown)),
-    [changesOnly, changes, allItems, shown],
+  // Plugins' filters (Scratch's change trail), each with what it keeps.
+  // The filters come as a new array each render; they change when their ids do.
+  const filtersRef = useRef(filters);
+  filtersRef.current = filters;
+  const filterIds = filters.map((f) => f.id).join("\n");
+  const filtered = useMemo(
+    () =>
+      filtersRef.current
+        .map((f) => ({ filter: f, items: f.apply(allItems, workdir) as Item[] }))
+        .filter((x) => x.items.length > 0),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [filterIds, allItems, workdir],
   );
-  const hidden = changesOnly ? 0 : allItems.length - items.length;
+  const [filterId, setFilterId] = useState<string | null>(null);
+  const activeFilter = filtered.find((x) => x.filter.id === filterId);
+  const [shown, setShown] = useState(PAGE);
+  const items = useMemo(() => activeFilter?.items ?? allItems.slice(-shown), [activeFilter, allItems, shown]);
+  const hidden = activeFilter ? 0 : allItems.length - items.length;
   const canPage = features.includes("history");
   const busy = state?.status === "working" || state?.status === "waiting" || state?.status === "starting";
   // /compact is a prompt like any other; offered only when one could be sent.
@@ -297,32 +263,38 @@ export function AgentView({
           ) : (
             agent.truncated && <p className="text-center text-xs text-muted-foreground">Older messages aren't shown.</p>
           )}
-          {changes.length > 0 && (
+          {filtered.length > 0 && (
             <div className="flex items-center gap-2 self-center rounded-full border px-1 py-0.5 text-xs text-muted-foreground">
               <button
                 type="button"
-                onClick={() => setChangesOnly(false)}
-                className={cn("rounded-full px-2 py-0.5", !changesOnly ? "bg-secondary text-foreground" : "hover:text-foreground")}
-                aria-pressed={!changesOnly}
+                onClick={() => setFilterId(null)}
+                className={cn("rounded-full px-2 py-0.5", !activeFilter ? "bg-secondary text-foreground" : "hover:text-foreground")}
+                aria-pressed={!activeFilter}
               >
                 Everything
               </button>
-              <button
-                type="button"
-                onClick={() => setChangesOnly(true)}
-                className={cn("rounded-full px-2 py-0.5", changesOnly ? "bg-secondary text-foreground" : "hover:text-foreground")}
-                aria-pressed={changesOnly}
-                title="Files Claude changed outside this thread's folder, commands that change the system, and using the screen"
-              >
-                Changes to this computer ({changes.length})
-              </button>
+              {filtered.map(({ filter: f, items: kept }) => (
+                <button
+                  key={f.id}
+                  type="button"
+                  onClick={() => setFilterId(f.id)}
+                  className={cn(
+                    "rounded-full px-2 py-0.5",
+                    activeFilter?.filter.id === f.id ? "bg-secondary text-foreground" : "hover:text-foreground",
+                  )}
+                  aria-pressed={activeFilter?.filter.id === f.id}
+                  title={f.title}
+                >
+                  {f.label} ({kept.length})
+                </button>
+              ))}
             </div>
           )}
           {agent.synced && agent.events.length === 0 && <EmptyState scratch={scratch} />}
           <Timeline
             items={items}
             peer={peer}
-            streaming={changesOnly ? [] : (state?.streaming ?? [])}
+            streaming={activeFilter ? [] : (state?.streaming ?? [])}
             cwd={workdir}
             working={state?.status === "working"}
             compacting={state?.compacting}
@@ -364,14 +336,7 @@ export function AgentView({
             ))}
             {claudeAuth.data && onSignIn && <SignedOutBanner auth={claudeAuth.data} onSignIn={onSignIn} />}
             <ResumeBanner threadId={threadId} context={state?.context} canCompact={canCompact} onCompact={compact} />
-            {processes && (
-              <ProcessesOverview
-                peer={peer}
-                threadId={processes.threadId}
-                onOpen={processes.onOpen}
-                onOpenUrl={processes.onOpenUrl}
-              />
-            )}
+            {aboveComposer}
             <StatusBar agent={agent} />
             <Composer
               agent={user}

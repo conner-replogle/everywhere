@@ -51,4 +51,5 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun run --filter '@everywhere/worker' test
+      - run: bun run --filter '@everywhere/plugin-sdk' test
       - run: bun run build

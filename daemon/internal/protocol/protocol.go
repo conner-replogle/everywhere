@@ -104,6 +104,8 @@ type DeviceInfo struct {
 	OS       string `json:"os"`
 	Arch     string `json:"arch"`
 	Version  string `json:"version"`
+	// Plugins lists the plugins running on the device.
+	Plugins []PluginInfo `json:"plugins,omitempty"`
 	// Features lists what this daemon supports beyond V1, so the web app can
 	// adapt to older daemons.
 	Features []string `json:"features"`
@@ -769,3 +771,127 @@ type ControlChunk struct {
 	Count int    `json:"count"`
 	Data  string `json:"data"`
 }
+
+// PluginInfo describes a plugin running on the device, in device.info: what
+// it is, what it uses, and what it serves, so the web app can show its
+// views and gate its UI on it.
+type PluginInfo struct {
+	ID          string            `json:"id"`
+	Title       string            `json:"title"`
+	Version     string            `json:"version,omitempty"`
+	API         int               `json:"api"`
+	Builtin     bool              `json:"builtin,omitempty"`
+	Requires    []string          `json:"requires,omitempty"`
+	Optional    []string          `json:"optional,omitempty"`
+	Permissions []string          `json:"permissions,omitempty"`
+	Contributes PluginContributes `json:"contributes"`
+	// Web is an external plugin's web part, built on the device (see
+	// plugins.web); empty for built-ins, whose web parts ship with the app.
+	Web bool `json:"web,omitempty"`
+	// Settings are what the app draws a settings form from.
+	Settings []PluginSetting `json:"settings,omitempty"`
+	// SettingsPage: its web part has a settings page too.
+	SettingsPage bool `json:"settingsPage,omitempty"`
+	// UI is what the app draws for it in its own places (sidebar, thread
+	// header, device menu), from data the plugin gives.
+	UI *PluginUI `json:"ui,omitempty"`
+}
+
+// PluginSetting is one setting in a plugin's settings form.
+type PluginSetting struct {
+	Key         string          `json:"key"`
+	Type        string          `json:"type"` // string | text | number | boolean | select | secret
+	Title       string          `json:"title"`
+	Description string          `json:"description,omitempty"`
+	Default     json.RawMessage `json:"default,omitempty"`
+	// Options are a select's choices.
+	Options []string `json:"options,omitempty"`
+	// Scope: "device" (kept on the device, the default) or "account"
+	// (kept by the account and sent to every device that has the plugin).
+	Scope string `json:"scope,omitempty"`
+}
+
+// PluginUI is what a plugin shows in the app's own places. Sources name
+// one of the plugin's methods, which the app calls for the data and calls
+// again on "<id>.ui.changed", "<id>.kv.changed" and threads.changed.
+type PluginUI struct {
+	// Sidebar: a section above Projects. The method answers PluginSidebar.
+	Sidebar *PluginUISource `json:"sidebar,omitempty"`
+	// ThreadBadges: badges on thread rows. The method answers
+	// {threadId: PluginBadge}.
+	ThreadBadges *PluginUISource `json:"threadBadges,omitempty"`
+	// ThreadHeader: buttons in a thread's header. The method gets
+	// {threadId} and answers [PluginAction].
+	ThreadHeader *PluginUISource `json:"threadHeader,omitempty"`
+	// DeviceMenu: items in the device's menu in the sidebar.
+	DeviceMenu []PluginAction `json:"deviceMenu,omitempty"`
+}
+
+// PluginUISource names the method that gives a UI contribution its data.
+type PluginUISource struct {
+	Method string `json:"method"`
+}
+
+// PluginSidebar is a plugin's sidebar section.
+type PluginSidebar struct {
+	Title string             `json:"title"`
+	Rows  []PluginSidebarRow `json:"rows"`
+}
+
+// PluginSidebarRow is one row: a thread to open, or an action.
+type PluginSidebarRow struct {
+	Label  string        `json:"label"`
+	Detail string        `json:"detail,omitempty"`
+	Badge  *PluginBadge  `json:"badge,omitempty"`
+	Icon   string        `json:"icon,omitempty"`
+	Thread string        `json:"threadId,omitempty"`
+	Action *PluginAction `json:"action,omitempty"`
+}
+
+// PluginBadge is a short label on a row.
+type PluginBadge struct {
+	Text string `json:"text"`
+	Tone string `json:"tone,omitempty"` // muted (default) | live | warn
+}
+
+// PluginAction is a button or menu item: it calls one of the plugin's
+// methods (with params; a thread header's also get threadId), opens a tab
+// of one of its kinds, or opens a link.
+type PluginAction struct {
+	Label   string          `json:"label"`
+	Icon    string          `json:"icon,omitempty"`
+	Call    string          `json:"call,omitempty"`
+	Params  json.RawMessage `json:"params,omitempty"`
+	OpenTab string          `json:"openTab,omitempty"`
+	Href    string          `json:"href,omitempty"`
+}
+
+// PluginContributes is what a plugin serves.
+type PluginContributes struct {
+	RPC      []string     `json:"rpc,omitempty"`
+	Channels []string     `json:"channels,omitempty"`
+	Sessions []string     `json:"sessions,omitempty"`
+	Kinds    []PluginKind `json:"kinds,omitempty"`
+	Tools    []string     `json:"tools,omitempty"`
+}
+
+// PluginKind is a thread or tab kind a plugin provides.
+type PluginKind struct {
+	Kind string `json:"kind"`
+	// Title names it in menus (external plugins'; built-ins' web parts name theirs).
+	Title string `json:"title,omitempty"`
+	// Thread: threads can be of this kind; otherwise it's a tab kind only.
+	Thread bool `json:"thread,omitempty"`
+	// Single: a thread has at most one tab of this kind.
+	Single bool `json:"single,omitempty"`
+}
+
+// FeaturePlugins: device.info lists plugins, and rtc.* sessions.
+const FeaturePlugins = "plugins"
+
+// HubFeaturePluginSettings: the daemon takes plugins' account settings
+// (plugins.setAccountSettings).
+const HubFeaturePluginSettings = "pluginSettings"
+
+// EventPluginsChanged: plugins started or stopped; device.info has changed.
+const EventPluginsChanged = "plugins.changed"

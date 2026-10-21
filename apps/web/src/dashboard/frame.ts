@@ -1,5 +1,5 @@
 import type { Process } from "@everywhere/protocol";
-import type { FileReply, FrameRequest, FrameTheme, FromFrame } from "./bridge";
+import type { FileReply, FrameRequest, FrameTheme, FromFrame, PluginFrameInfo } from "./bridge";
 
 /*
  * The frame's side of the bridge: what the app has sent (the process, its
@@ -13,6 +13,21 @@ export const UNSET = Symbol("unset");
 
 class Store {
   process: Process | null = null;
+  /** Set when the frame shows a plugin's web part. */
+  plugin: PluginFrameInfo | null = null;
+  private pluginListeners = new Set<(e: unknown) => void>();
+
+  onPluginEvent(fn: (e: unknown) => void) {
+    this.pluginListeners.add(fn);
+    return () => {
+      this.pluginListeners.delete(fn);
+    };
+  }
+
+  pluginEvent(e: unknown) {
+    for (const fn of this.pluginListeners) fn(e);
+  }
+
   theme: FrameTheme = { vars: {}, dark: true };
   /** Bumped when the theme changes, for useSyncExternalStore. */
   themeVersion = 0;
@@ -112,6 +127,7 @@ export function request(r: { method: "file"; params: { path: string } }): Promis
 export function request(r: { method: "log"; params: { tail?: number; grep?: string } }): Promise<string[]>;
 export function request(r: { method: "setState"; params: { key: string; value: unknown } }): Promise<unknown>;
 export function request(r: Extract<FrameRequest, { method: "query" | "catalog" | "events" }>): Promise<unknown>;
+export function request(r: Extract<FrameRequest, { method: `plugin.${string}` }>): Promise<unknown>;
 export function request(r: FrameRequest): Promise<unknown> {
   const id = nextId++;
   return new Promise((resolve, reject) => {

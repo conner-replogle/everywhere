@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/conner-replogle/everywhere/daemon/internal/plugin"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/update"
 	"github.com/conner-replogle/everywhere/daemon/internal/version"
@@ -84,7 +85,7 @@ func (s *Server) applyUpdate() (protocol.UpdateResult, error) {
 		return protocol.UpdateResult{}, fmt.Errorf("installing %s: %w", info.Latest, err)
 	}
 	restarting = true
-	s.agents.MarkForContinuation()
+	plugin.Publish(s.plugins.Bus(), plugin.DaemonUpdating, struct{}{})
 	go func() {
 		time.Sleep(500 * time.Millisecond)
 		slog.Info("restarting into new version", "version", info.Latest)

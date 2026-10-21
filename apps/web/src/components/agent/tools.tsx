@@ -2,9 +2,7 @@
 // and, for file edits, a diff.
 
 import {
-  ActivityIcon,
   BotIcon,
-  CircleCheckIcon,
   ClipboardListIcon,
   FilePenIcon,
   FileTextIcon,
@@ -12,13 +10,13 @@ import {
   ListTodoIcon,
   type LucideIcon,
   MessageCircleQuestionIcon,
-  PaperclipIcon,
   PlugIcon,
   SearchIcon,
   TerminalIcon,
   WrenchIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { toolRenderer } from "@/plugins/registry";
 
 export type ToolInput = Record<string, unknown>;
 
@@ -30,12 +28,9 @@ function str(v: unknown): string {
   return typeof v === "string" ? v : "";
 }
 
-const PROCESS_TOOL = /^mcp__everywhere__process_(.+)$/;
-
 export function toolIcon(name: string): LucideIcon {
-  if (PROCESS_TOOL.test(name)) return ActivityIcon;
-  if (name === "mcp__everywhere__attach_file") return PaperclipIcon;
-  if (name === "mcp__everywhere__thread_done") return CircleCheckIcon;
+  const plugin = toolRenderer(name)?.icon;
+  if (plugin) return plugin;
   if (name.startsWith("mcp__")) return PlugIcon;
   switch (name) {
     case "Bash":
@@ -68,10 +63,8 @@ export function toolIcon(name: string): LucideIcon {
 
 /** "server · tool" for MCP tools, the plain name otherwise. */
 export function toolLabel(name: string): string {
-  const p = PROCESS_TOOL.exec(name);
-  if (p) return `Process · ${p[1]}`;
-  if (name === "mcp__everywhere__attach_file") return "Attach files";
-  if (name === "mcp__everywhere__thread_done") return "Mark thread done";
+  const label = toolRenderer(name)?.label;
+  if (label) return label(name);
   const m = /^mcp__(.+?)__(.+)$/.exec(name);
   return m ? `${m[1]} · ${m[2]}` : name;
 }
@@ -83,6 +76,8 @@ export function relPath(path: string, cwd: string | undefined): string {
 }
 
 export function toolSummary(name: string, input: ToolInput, cwd?: string): string {
+  const plugin = toolRenderer(name)?.summary?.(input, name);
+  if (plugin !== undefined) return plugin;
   switch (name) {
     case "Bash":
       return str(input.command).split("\n")[0] ?? "";
@@ -113,10 +108,6 @@ export function toolSummary(name: string, input: ToolInput, cwd?: string): strin
     }
     case "ExitPlanMode":
       return "Proposed plan";
-    case "mcp__everywhere__process_start": {
-      const what = str(input.command).split("\n")[0] || "tracker";
-      return `${str(input.name)}  ${what}`;
-    }
   }
   const first = Object.values(input).find((v) => typeof v === "string");
   return typeof first === "string" ? first : "";
@@ -198,41 +189,4 @@ export function EditPreview({ name, input, className }: { name: string; input: T
 
 export function isEdit(name: string): boolean {
   return name === "Edit" || name === "MultiEdit" || name === "Write";
-}
-
-const FILE_EDITS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
-const SCREEN_ACTIONS = /^mcp__everywhere__desktop_(click|drag|type|press|scroll|launch|open|clipboard|move|focus)$/;
-// Commands that change the computer rather than look at it: services,
-// packages, settings, deleting and moving files, processes, power.
-const MUTATING = [
-  /\b(systemctl|service)\s+(--user\s+)?(start|stop|restart|reload|enable|disable|mask|unmask|kill|daemon-reload|set-property|edit)\b/,
-  /\b(apt|apt-get|dnf|yum|zypper|apk|snap|flatpak|brew|port)\s+(-\S+\s+)*(install|remove|purge|uninstall|upgrade|update|autoremove|reinstall)\b/,
-  /\b(pacman|yay|paru)\s+-[A-Za-z]*[SRUD]/,
-  /\b(winget|choco|scoop)\s+(install|uninstall|upgrade|remove)\b/,
-  /\b(pip3?|pipx|npm|pnpm|bun|cargo|go)\s+(install|uninstall|remove|add)\b.*(-g\b|--global\b|--user\b)?/,
-  /(^|[\s;&|(])(sudo\s+)?(rm|rmdir|mv|chmod|chown|chgrp|ln|truncate|shred|dd|mkfs\S*|mount|umount|kill|killall|pkill|reboot|shutdown|poweroff|crontab|useradd|userdel|usermod|passwd)\s/,
-  /\bsed\s+(-\S+\s+)*-i/,
-  /\b(gsettings\s+set|dconf\s+(write|reset)|defaults\s+write|hyprctl\s+(keyword|dispatch|reload)|nmcli\s+\S+\s+(up|down|modify|delete|add|connect)|rfkill\s+(block|unblock)|timedatectl\s+set|hostnamectl\s+set|localectl\s+set)\b/,
-  /\b(Remove-Item|Move-Item|Set-ItemProperty|New-ItemProperty|Stop-Service|Start-Service|Restart-Service|Set-Service|Stop-Process|Restart-Computer|Stop-Computer|Set-ExecutionPolicy)\b/i,
-  /\breg(\.exe)?\s+(add|delete|import)\b/i,
-  /\bgit\s+(push|reset\s+--hard|clean\s+-\S*f|checkout\s+--)/,
-];
-
-/**
- * Why a tool call changed the computer outside the thread's folder (cwd),
- * or null if it only looked, or kept to the folder: edits to files
- * elsewhere, commands that change the system, using the screen.
- */
-export function machineChange(name: string, input: ToolInput, cwd?: string): string | null {
-  if (FILE_EDITS.has(name)) {
-    const path = str(input.file_path) || str(input.notebook_path);
-    if (!path || (cwd && (path === cwd || path.startsWith(`${cwd}/`)))) return null;
-    return `Changed ${path}`;
-  }
-  if (name === "Bash") {
-    const command = str(input.command);
-    return MUTATING.some((re) => re.test(command)) ? "Ran a command that changes the system" : null;
-  }
-  if (SCREEN_ACTIONS.test(name)) return "Used the screen";
-  return null;
 }

@@ -595,6 +595,11 @@ export class DevicePeer {
     });
   }
 
+  /** Calls a method a plugin serves (not in RpcMethods): what plugin frames ask. */
+  callPlugin(method: string, params: unknown, timeoutMs = RPC_TIMEOUT_MS): Promise<unknown> {
+    return this.call(method as RpcMethod, params as never, timeoutMs);
+  }
+
   onEvent(fn: (e: RpcEvent) => void): () => void {
     this.eventListeners.add(fn);
     return () => this.eventListeners.delete(fn);
@@ -631,6 +636,17 @@ export class DevicePeer {
     clearTimeout(p.timer);
     if ("error" in msg) p.reject(new Error(msg.error.message));
     else p.resolve(msg.result);
+  }
+
+  /**
+   * Opens a data channel with a label a plugin serves (its prefix and a
+   * name). Throws if not connected.
+   */
+  openChannel(label: string, init: RTCDataChannelInit = { ordered: true }): RTCDataChannel {
+    if (!this.pc || this.snap.state !== "connected") throw new Error("Not connected to device");
+    const ch = this.pc.createDataChannel(label, init);
+    ch.binaryType = "arraybuffer";
+    return ch;
   }
 
   // --- terminals ------------------------------------------------------------

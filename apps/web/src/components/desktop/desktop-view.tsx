@@ -40,6 +40,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { ComposerDraft } from "@/lib/composer-inbox";
+import { useDevice } from "@/components/device-context";
 import { type DesktopConnection, connectDesktop } from "@/lib/desktop/connection";
 import { CursorRenderer } from "@/lib/desktop/cursor";
 import { InputForwarder, type MouseMode } from "@/lib/desktop/input";
@@ -292,8 +293,10 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
   const visible = active && pageVisible;
 
   // Read at connect time; later changes go over the open session.
-  const connectRef = useRef({ mode: prefs.mode, follow, clipboard: prefs.clipboard, tab });
-  connectRef.current = { mode: prefs.mode, follow, clipboard: prefs.clipboard, tab };
+  // Devices with plugins signal it as a plugin session.
+  const rtc = !!useDevice().info.data?.features?.includes("plugins");
+  const connectRef = useRef({ mode: prefs.mode, follow, clipboard: prefs.clipboard, tab, rtc });
+  connectRef.current = { mode: prefs.mode, follow, clipboard: prefs.clipboard, tab, rtc };
   // What the tab shows, saved as the host reports it.
   const tabSource = useRef<DesktopSource | undefined>(parseTabState(tab?.state)?.source);
   // Clipboard text both sides have, and host text waiting for this page to have focus.
@@ -327,6 +330,7 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
           mode: opts.mode,
           source: opts.tab ? tabSource.current : undefined,
           tabId: opts.tab?.id,
+          rtc: opts.rtc,
           onState: (st) => {
             if (cancelled || endedByHost) return;
             if (st === "connected") setStatus({ kind: "live" });
@@ -335,6 +339,15 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
               setStatus({ kind: "error", message: "Connection lost. Reconnecting…" });
               retry = setTimeout(reconnect, 2000);
             }
+          },
+          onEnded: (reason) => {
+            if (cancelled || endedByHost) return;
+            endedByHost = true;
+            trackpad?.dispose();
+            trackpad = trackpadRef.current = null;
+            forwarder?.dispose();
+            forwarder = null;
+            setStatus({ kind: "ended", message: reason ? `${reason}.` : "The device ended the session." });
           },
         });
       } catch (e) {

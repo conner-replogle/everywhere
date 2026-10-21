@@ -1,7 +1,6 @@
 import type { Process } from "@everywhere/protocol";
 import { ActivityIcon, ChartLineIcon, GlobeIcon, LayoutDashboardIcon, Maximize2Icon, Minimize2Icon, PlayIcon, RotateCcwIcon, SquareIcon, Trash2Icon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { TerminalView } from "@/components/terminal-view";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -9,8 +8,7 @@ import { Label } from "@/components/ui/label";
 import type { DevicePeer } from "@/lib/peer";
 import { cn, errorMessage } from "@/lib/utils";
 import { useProcesses } from "./use-processes";
-import { DashboardView } from "./dashboard-view";
-import { TelemetryView } from "./telemetry-view";
+import type { ProcessViewProps, ViewDef } from "@/plugins/types";
 import {
   CheckpointTrack,
   formatDuration,
@@ -23,7 +21,8 @@ import {
 } from "./progress";
 
 /** What the selected process shows; the first it has if it hasn't this one. */
-type PaneView = "dashboard" | "charts" | "log";
+/** A view's id, as a plugin's ViewDef names it ("dashboard", "charts", "log"). */
+type PaneView = string;
 
 /** The tab's state, kept on the device with the tab (tabs.setState). */
 interface ProcessesState {
@@ -51,11 +50,14 @@ export function ProcessesView({
   onStateChange,
   onOpenUrl,
   show,
+  views,
 }: {
   peer: DevicePeer;
   /** The thread whose processes these are. */
   threadId: string;
   generation: number;
+  /** The views of a process plugins add (the process.view slot). */
+  views: ViewDef<ProcessViewProps>[];
   initialState?: string;
   onStateChange?: (state: string) => void;
   /** Opens a URL a process printed as a web tab. */
@@ -154,6 +156,7 @@ export function ProcessesView({
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             {shown && (
               <ProcessPane
+                views={views}
                 peer={peer}
                 threadId={threadId}
                 generation={generation}
@@ -184,8 +187,9 @@ export function ProcessesView({
   );
 }
 
-/** The selected process: its widgets, its log, or a switch between them. */
+/** The selected process: the views plugins add for it (its dashboard, charts, log), and a switch between them. */
 function ProcessPane({
+  views: all,
   peer,
   threadId,
   generation,
@@ -197,6 +201,7 @@ function ProcessPane({
   maximized,
   onMaximize,
 }: {
+  views: ViewDef<ProcessViewProps>[];
   peer: DevicePeer;
   threadId: string;
   generation: number;
@@ -208,16 +213,11 @@ function ProcessPane({
   maximized: boolean;
   onMaximize: (maximized: boolean) => void;
 }) {
-  const views: { id: PaneView; label: string }[] = [
-    ...(p.dashboard ? [{ id: "dashboard" as const, label: "Dashboard" }] : []),
-    ...(p.experiment || (p.widgets?.length ?? 0) > 0 ? [{ id: "charts" as const, label: "Charts" }] : []),
-    ...(p.command ? [{ id: "log" as const, label: "Log" }] : []),
-  ];
-  // Unless picked: its dashboard, its widgets, or its log, before charts
-  // that may well be empty (any process can report; most don't).
-  const fallback: PaneView[] = ["dashboard", ...((p.widgets?.length ?? 0) > 0 ? ["charts" as const] : []), "log", "charts"];
+  const props: ProcessViewProps = { peer, threadId, generation, process: p, compare, onCompare };
+  const views = all.filter((v) => v.when(props));
+  // Unless picked: the one its plugin ranks first for this process.
   const view =
-    views.find((v) => v.id === picked)?.id ?? fallback.find((id) => views.some((v) => v.id === id));
+    views.find((v) => v.id === picked)?.id ?? [...views].sort((a, b) => a.rank(props) - b.rank(props))[0]?.id;
   if (!view) {
     return (
       <div className="flex h-full items-center justify-center p-6 text-xs text-muted-foreground">
@@ -265,32 +265,17 @@ function ProcessPane({
           {maximized ? <Minimize2Icon /> : <Maximize2Icon />}
         </Button>
       </div>
-      {/* The log and the dashboard stay mounted and sized while hidden (fitting
-          a hidden terminal would shrink the process's; a dashboard would start
-          over), so switching back is instant. */}
+      {/* Views that ask to stay mounted and sized while hidden (fitting a
+          hidden terminal would shrink the process's; a dashboard would start
+          over) do, so switching back is instant. */}
       <div className="relative min-h-0 flex-1">
-        {p.command && (
-          <div className={cn("absolute inset-0", view !== "log" && "invisible")}>
-            <TerminalView
-              // A new run is a new log.
-              key={`${p.id}:${p.startedAt}`}
-              peer={peer}
-              threadId={threadId}
-              processId={p.id}
-              generation={generation}
-            />
-          </div>
-        )}
-        {p.dashboard && (
-          <div className={cn("absolute inset-0", view !== "dashboard" && "invisible")}>
-            <DashboardView key={p.id} peer={peer} process={p} />
-          </div>
-        )}
-        {view === "charts" && (
-          <div className="absolute inset-0 flex flex-col bg-background">
-            <TelemetryView peer={peer} process={p} compare={compare} onCompare={onCompare} />
-          </div>
-        )}
+        {views
+          .filter((v) => v.keepMounted || v.id === view)
+          .map((v) => (
+            <div key={v.id} className={cn("absolute inset-0", v.id !== view && "invisible")}>
+              {v.render(props)}
+            </div>
+          ))}
       </div>
     </>
   );
