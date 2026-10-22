@@ -1421,11 +1421,10 @@ func TestMarkDone(t *testing.T) {
 		h.waitStatus(c, "idle")
 		eventually(t, "thread done", func() bool { return done(h) })
 
-		// Writing in it again reopens it.
+		// Writing in it again reopens it (once the prompt is sent, just
+		// after the status says working).
 		turn(h, c, "one more thing")
-		if done(h) {
-			t.Fatal("a new prompt left the thread done")
-		}
+		eventually(t, "thread reopened", func() bool { return !done(h) })
 	})
 
 	t.Run("not when the turn is stopped", func(t *testing.T) {
