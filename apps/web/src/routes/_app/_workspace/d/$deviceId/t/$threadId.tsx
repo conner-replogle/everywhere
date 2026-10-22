@@ -21,6 +21,7 @@ import { hub } from "@/lib/hub";
 import { useRpc } from "@/lib/peer";
 import { touchThread } from "@/lib/idle-threads";
 import { isInputKey, retainThread, visitThread } from "@/lib/recent-threads";
+import { loadLayout, saveLayout } from "@/lib/thread-layout";
 import { openWebTab } from "@/lib/web-tabs";
 import { cn, errorMessage } from "@/lib/utils";
 import { createThreadBus } from "@/plugins/bus";
@@ -161,6 +162,28 @@ function ThreadPage() {
     setOpened(new Set());
     setFocusSide("primary");
   }, [threadId]);
+  // Opened without a tab named (from the sidebar, say), a thread is laid out
+  // as it was last left in this browser. Until the URL names a tab again,
+  // the layout isn't saved over.
+  const restoring = useRef<string | null>(null);
+  useEffect(() => {
+    if (tabParam || splitParam) return;
+    const saved = loadLayout(deviceId, threadId);
+    const tab = saved?.tab && saved.tab !== threadId ? saved.tab : undefined;
+    const split = saved?.split && saved.split !== (tab ?? threadId) ? saved.split : undefined;
+    if (!tab && !split) return;
+    restoring.current = threadId;
+    show(tab ?? threadId, split);
+    if (split && saved?.focus) setFocusSide(saved.focus);
+    // Only when the thread changes: later, an empty URL is the user's choice.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deviceId, threadId]);
+  useEffect(() => {
+    if (restoring.current === threadId && !tabParam && !splitParam) return;
+    restoring.current = null;
+    saveLayout(deviceId, threadId, { tab: tabParam, split: splitParam, focus: splitParam ? focusSide : undefined });
+  }, [deviceId, threadId, tabParam, splitParam, focusSide]);
+  const savedRatio = useMemo(() => loadLayout(deviceId, threadId)?.ratio, [deviceId, threadId]);
   // Opening a thread gives it a tab along the top (the preview tab, unless it
   // has one already), and counts as touching it, for the sidebar's idle threads.
   const threadName = thread?.name;
@@ -515,6 +538,10 @@ function ThreadPage() {
       <RunInTerminalContext.Provider value={runInTerminal}>
       {/* Panes wait for the thread list, so a claude thread never flashes a terminal. */}
       <SplitArea
+        // Each thread has its own divider.
+        key={threadId}
+        initialRatio={savedRatio}
+        onRatio={(ratio) => saveLayout(deviceId, threadId, { ratio })}
         split={!!splitPane}
         focused={side}
         onFocus={setFocusSide}

@@ -1,6 +1,7 @@
 package scratch
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -9,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/conner-replogle/everywhere/daemon/internal/mcp"
+	"github.com/conner-replogle/everywhere/daemon/internal/plugin"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugin/plugintest"
 	agentplugin "github.com/conner-replogle/everywhere/daemon/internal/plugins/agent"
 	browserplugin "github.com/conner-replogle/everywhere/daemon/internal/plugins/browser"
@@ -126,5 +129,91 @@ func TestScratchThreads(t *testing.T) {
 	}
 	if _, err := os.Stat(th.ScratchDir); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("folder still there: %v", err)
+	}
+}
+
+// fakeAgent is a plugin with an agent thread kind that records its threads'
+// first prompts.
+type fakeAgent struct{ prompts map[string]string }
+
+func (f *fakeAgent) Manifest() plugin.Manifest {
+	return plugin.Manifest{ID: "fake", Title: "Fake", API: plugin.API, Builtin: true}
+}
+
+func (f *fakeAgent) Start(h plugin.Host) error {
+	h.AddKind(plugin.KindHandler{
+		Kind: plugin.Kind{Kind: "fake.agent", Thread: true, View: "agent"},
+		Created: func(t protocol.Thread, c plugin.CreateParams) error {
+			f.prompts[t.ID] = c.Prompt
+			return nil
+		},
+	})
+	return nil
+}
+
+func (f *fakeAgent) Stop() {}
+
+func TestProjectTools(t *testing.T) {
+	sp, fake := New(), &fakeAgent{prompts: map[string]string{}}
+	plugintest.Start(t, sp, agentplugin.New(), fake)
+	call := func(name string, args any) (*mcp.Result, error) {
+		t.Helper()
+		b, _ := json.Marshal(args)
+		for _, tool := range sp.tools() {
+			if tool.Name == name {
+				return tool.Call(context.Background(), mcp.Caller{}, b)
+			}
+		}
+		t.Fatalf("no tool %s", name)
+		return nil, nil
+	}
+
+	// A missing folder is made, and becomes a project once.
+	dir := filepath.Join(t.TempDir(), "solid-craft")
+	res, err := call("project_create", map[string]string{"path": dir, "name": "Solid Craft"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var proj protocol.Project
+	if err := json.Unmarshal([]byte(res.Content[0].Text), &proj); err != nil || proj.Name != "Solid Craft" {
+		t.Fatalf("project = %+v, %v", proj, err)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := call("project_create", map[string]string{"path": dir}); err == nil {
+		t.Error("made a folder a project twice")
+	}
+	if res, err = call("projects_list", struct{}{}); err != nil || !strings.Contains(res.Content[0].Text, proj.ID) {
+		t.Errorf("projects_list = %v, %v", res, err)
+	}
+	// Without the clone plugin, there's no cloning.
+	if _, err := call("project_create", map[string]string{"path": t.TempDir(), "url": "https://example.com/x.git"}); err == nil {
+		t.Error("cloned without the clone plugin")
+	}
+
+	// A thread starts with its prompt.
+	res, err = call("thread_start", map[string]string{"projectId": proj.ID, "kind": "fake.agent", "prompt": "add image resizing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var th protocol.Thread
+	if err := json.Unmarshal([]byte(res.Content[0].Text), &th); err != nil || th.ProjectID != proj.ID {
+		t.Fatalf("thread = %+v, %v", th, err)
+	}
+	if fake.prompts[th.ID] != "add image resizing" {
+		t.Errorf("prompts = %v", fake.prompts)
+	}
+
+	for _, bad := range []map[string]string{
+		{"projectId": proj.ID, "prompt": ""},
+		{"projectId": proj.ID, "prompt": "x", "kind": protocol.ThreadTerminal},
+		{"projectId": proj.ID, "prompt": "x", "permissionMode": "bypassPermissions"},
+		{"projectId": proj.ID, "prompt": "x", "kind": "fake.agent", "permissionMode": "plan"},
+		{"projectId": "nope", "prompt": "x", "kind": "fake.agent"},
+	} {
+		if _, err := call("thread_start", bad); err == nil {
+			t.Errorf("thread_start %v worked", bad)
+		}
 	}
 }

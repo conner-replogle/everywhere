@@ -57,7 +57,8 @@ func (p *Plugin) Start(h plugin.Host) error {
 		if !c.Remote {
 			r.Token = ""
 		}
-		return p.cloneProject(r.URL, r.Path, r.Name, r.Token)
+		proj, _, err := p.cloneProject(r.URL, r.Path, r.Name, r.Token)
+		return proj, err
 	}), plugin.Remote())
 	h.HandleRPC("clones.list", plugin.Params(func(plugin.RPCContext, struct{}) (any, error) {
 		return p.clones.list(), nil
@@ -66,10 +67,17 @@ func (p *Plugin) Start(h plugin.Host) error {
 		p.clones.drop(id)
 		p.changed()
 	})
+	h.Export(plugin.ServiceClone, service{p})
 	return nil
 }
 
 func (p *Plugin) Stop() {}
+
+type service struct{ p *Plugin }
+
+func (s service) Clone(remote, path, name string) (protocol.Project, <-chan error, error) {
+	return s.p.cloneProject(remote, path, name, "")
+}
 
 func (p *Plugin) changed() { p.h.Emit(protocol.RPCEvent{Event: protocol.EventClonesChanged}) }
 
@@ -107,23 +115,23 @@ func (c *cloneSet) drop(id string) {
 }
 
 // cloneProject creates a project at path and clones remote into it in the
-// background; clones.list and the clones.changed event follow it. path must
-// be missing or an empty directory.
-func (s *Plugin) cloneProject(remote, path, name, token string) (protocol.Project, error) {
+// background; clones.list and the clones.changed event follow it, and done
+// gets its result. path must be missing or an empty directory.
+func (s *Plugin) cloneProject(remote, path, name, token string) (proj protocol.Project, done <-chan error, err error) {
 	remote = strings.TrimSpace(remote)
 	if !validRemote(remote) {
-		return protocol.Project{}, errors.New("give an https:// or git@ URL to clone")
+		return protocol.Project{}, nil, errors.New("give an https:// or git@ URL to clone")
 	}
 	dest, created, err := cloneDest(path)
 	if err != nil {
-		return protocol.Project{}, err
+		return protocol.Project{}, nil, err
 	}
 	p, err := s.h.Store().CreateProject(dest, name)
 	if err != nil {
 		if created {
 			_ = os.Remove(dest)
 		}
-		return protocol.Project{}, err
+		return protocol.Project{}, nil, err
 	}
 	job := &protocol.CloneStatus{
 		ProjectID: p.ID, URL: gitx.RedactURL(remote), Path: dest,
@@ -138,6 +146,7 @@ func (s *Plugin) cloneProject(remote, path, name, token string) (protocol.Projec
 	s.projectsChanged()
 	s.changed()
 
+	result := make(chan error, 1)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), cloneTimeout)
 		defer cancel()
@@ -171,8 +180,9 @@ func (s *Plugin) cloneProject(remote, path, name, token string) (protocol.Projec
 				s.changed()
 			})
 		}
+		result <- err
 	}()
-	return p, nil
+	return p, result, nil
 }
 
 func validRemote(u string) bool {

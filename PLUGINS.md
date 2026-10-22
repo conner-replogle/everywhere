@@ -610,7 +610,10 @@ limits) hide for the others. Built-in agents are listed in
 ### scratch (built-in)
 - **Contributes**: the Scratch project and a folder per thread (a
   `thread.created` hook), `threads.promote`, `threads.continueIn`,
-  `scratch.usage`; an agent system prompt and starting mode (`auto`); the
+  `scratch.usage`; the `projects_list`, `project_create` (cloning through
+  the clone plugin's service when given a URL) and `thread_start` tools, so
+  an agent can set up a project and hand work to a thread there; an agent
+  system prompt and starting mode (`auto`); the
   sidebar section, device page composer, thread header actions, the
   "Changes to this computer" filter, "Run in terminal" on `sudo` blocks.
 - **Needs**: a way to set a thread's workdir (today `scratch_dir`, resolved

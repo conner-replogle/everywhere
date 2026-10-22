@@ -1,7 +1,8 @@
 // Package scratch is the Scratch plugin: Everywhere's own project for work
 // outside any project, where each thread gets a folder of its own under the
 // data directory, kept until the user deletes it. It tells claude where it
-// is, and moves work between Scratch and projects.
+// is, moves work between Scratch and projects, and gives agents tools to
+// make projects and start threads in them.
 package scratch
 
 import (
@@ -39,8 +40,8 @@ func New() *Plugin { return &Plugin{} }
 func (p *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		ID: "scratch", Title: "Scratch", API: plugin.API, Builtin: true,
-		Optional:    []string{"agent"},
-		Permissions: []string{plugin.PermFSWrite, plugin.PermAgentLaunch, plugin.PermAgentRead, plugin.PermRemote},
+		Optional:    []string{"agent", "clone"},
+		Permissions: []string{plugin.PermFSWrite, plugin.PermAgentLaunch, plugin.PermAgentRead, plugin.PermAgentTools, plugin.PermRemote},
 		Features:    []string{protocol.FeatureScratch},
 	}
 }
@@ -72,6 +73,11 @@ func (p *Plugin) Start(h plugin.Host) error {
 			e.Fail(fmt.Errorf("the thread was deleted, but not its folder: %w", err))
 		}
 	})
+	if _, ok := h.Service(plugin.ServiceAgent); ok {
+		for _, t := range p.tools() {
+			h.AddTools(plugin.Tool{Tool: t})
+		}
+	}
 	h.ContributeAgent(func(l plugin.AgentLaunch) plugin.AgentContribution {
 		if !l.Scratch {
 			return plugin.AgentContribution{}
@@ -250,6 +256,9 @@ func (p *Plugin) prompt(dir string) string {
 	b.WriteString("the user can open it in a terminal tab with one click, check it and run it with their password.\n\n")
 	b.WriteString("Diagnose with read-only commands first (logs, status, listings) and explain what you find in plain terms. ")
 	b.WriteString("Before you change the system (services, packages, settings, config files outside your folder, deleting anything), ")
-	b.WriteString("say what you'll change and why, and how to undo it.")
+	b.WriteString("say what you'll change and why, and how to undo it.\n\n")
+	b.WriteString("When the user wants work done in a project (an existing one, a repository to clone, or a folder to make one of), ")
+	b.WriteString("set it up with projects_list and project_create, then hand the work to a thread of its own there with thread_start, ")
+	b.WriteString("rather than doing it from Scratch.")
 	return b.String()
 }

@@ -18,10 +18,13 @@ const MAX = 0.8;
 /** Below this width, the panes stack. */
 const STACK_BELOW = 720;
 
+const valid = (r: number | undefined): r is number => r !== undefined && r >= MIN && r <= MAX;
+
+/** The divider last set anywhere, for threads without their own. */
 function savedRatio(): number {
   try {
     const r = Number(localStorage.getItem(RATIO_KEY));
-    return r >= MIN && r <= MAX ? r : 0.5;
+    return valid(r) ? r : 0.5;
   } catch {
     return 0.5;
   }
@@ -39,17 +42,24 @@ export function SplitArea({
   split,
   focused,
   onFocus,
+  initialRatio,
+  onRatio,
 }: {
   items: SplitItem[];
   /** Two panes are shown. */
   split: boolean;
   focused: "primary" | "split";
   onFocus: (side: "primary" | "split") => void;
+  /** The divider's start, as the primary pane's share (the last one set anywhere if absent). */
+  initialRatio?: number;
+  onRatio?: (ratio: number) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
-  const [ratio, setRatio] = useState(savedRatio);
+  const [ratio, setRatio] = useState(() => (valid(initialRatio) ? initialRatio : savedRatio()));
   const [dragging, setDragging] = useState(false);
+  // The drag as it goes, ahead of a render.
+  const live = useRef({ dragging: false, ratio });
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -69,7 +79,7 @@ export function SplitArea({
   };
 
   const save = (r: number) => {
-    setRatio(r);
+    onRatio?.(r);
     try {
       localStorage.setItem(RATIO_KEY, String(r));
     } catch {
@@ -80,7 +90,15 @@ export function SplitArea({
     const box = ref.current?.getBoundingClientRect();
     if (!box) return;
     const r = stacked ? (e.clientY - box.top) / box.height : (e.clientX - box.left) / box.width;
-    save(Math.min(MAX, Math.max(MIN, r)));
+    live.current.ratio = Math.min(MAX, Math.max(MIN, r));
+    setRatio(live.current.ratio);
+  };
+  // Kept once a drag ends.
+  const endDrag = () => {
+    if (!live.current.dragging) return;
+    live.current.dragging = false;
+    setDragging(false);
+    save(live.current.ratio);
   };
 
   return (
@@ -130,12 +148,13 @@ export function SplitArea({
             } catch {
               // No such pointer (a synthetic event): the overlay still follows it.
             }
+            live.current = { dragging: true, ratio };
             setDragging(true);
           }}
-          onPointerMove={(e) => dragging && drag(e)}
-          onPointerUp={() => setDragging(false)}
-          onPointerCancel={() => setDragging(false)}
-          onDoubleClick={() => save(0.5)}
+          onPointerMove={(e) => live.current.dragging && drag(e)}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+          onDoubleClick={() => (setRatio(0.5), save(0.5))}
         >
           <div
             className={cn(

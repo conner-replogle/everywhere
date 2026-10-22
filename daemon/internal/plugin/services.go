@@ -14,6 +14,7 @@ const (
 	ServiceAgent    = "agent"
 	ServiceTerminal = "terminal"
 	ServiceDesktop  = "desktop"
+	ServiceClone    = "clone"
 )
 
 // AgentService is the agent (Claude Code) plugin's, for plugins that talk to
@@ -64,6 +65,14 @@ type TerminalService interface {
 type DesktopService interface {
 	// Usable: remote desktop is enabled at the device and works here.
 	Usable() bool
+}
+
+// CloneService is the clone plugin's.
+type CloneService interface {
+	// Clone creates a project at path (missing or empty) and clones remote
+	// into it with the device's own git credentials, as projects.clone
+	// does; done gets the clone's result.
+	Clone(remote, path, name string) (p protocol.Project, done <-chan error, err error)
 }
 
 // Lookup finds a service of type T exported under name.
