@@ -4,12 +4,15 @@ import type { FsEntry } from "@everywhere/protocol";
 import {
   ArrowLeftIcon,
   ChevronUpIcon,
+  DownloadIcon,
   EyeIcon,
   FileIcon,
   FileTextIcon,
   FolderIcon,
   ImageIcon,
   RefreshCwIcon,
+  ZoomInIcon,
+  ZoomOutIcon,
 } from "lucide-react";
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -17,6 +20,7 @@ import { type DevicePeer, useRpc } from "@/lib/peer";
 import { cn, errorMessage } from "@/lib/utils";
 
 const Markdown = lazy(() => import("@/components/agent/markdown").then((m) => ({ default: m.Markdown })));
+const PdfView = lazy(() => import("./pdf-view").then((m) => ({ default: m.PdfView })));
 
 /** What a files tab keeps in its tab state. */
 interface FilesState {
@@ -157,7 +161,7 @@ export function FilesView({
 }
 
 function EntryRow({ entry: e, selected, onOpen }: { entry: FsEntry; selected: boolean; onOpen: () => void }) {
-  const Icon = e.dir ? FolderIcon : IMAGE_TYPES[ext(e.name)] ? ImageIcon : FileIcon;
+  const Icon = e.dir ? FolderIcon : IMAGE_TYPES[ext(e.name)] ? ImageIcon : ext(e.name) === "pdf" ? FileTextIcon : FileIcon;
   return (
     <li>
       <button
@@ -177,23 +181,39 @@ function EntryRow({ entry: e, selected, onOpen }: { entry: FsEntry; selected: bo
   );
 }
 
-type Loaded =
-  | { kind: "text"; text: string; size: number }
-  | { kind: "image"; url: string; size: number }
-  | { kind: "binary"; size: number };
+type Loaded = { bytes: Uint8Array<ArrayBuffer>; size: number } & (
+  | { kind: "text"; text: string }
+  | { kind: "image"; url: string }
+  | { kind: "pdf" }
+  | { kind: "binary" }
+);
 
 /** Text is anything that decodes as UTF-8 with no NUL bytes near the start. */
 function classify(path: string, bytes: Uint8Array<ArrayBuffer>): Loaded {
   const size = bytes.length;
   const image = IMAGE_TYPES[ext(path)];
-  if (image) return { kind: "image", url: URL.createObjectURL(new Blob([bytes], { type: image })), size };
-  if (bytes.subarray(0, 8000).includes(0)) return { kind: "binary", size };
+  if (image) return { kind: "image", url: URL.createObjectURL(new Blob([bytes], { type: image })), bytes, size };
+  if (ext(path) === "pdf") return { kind: "pdf", bytes, size };
+  if (bytes.subarray(0, 8000).includes(0)) return { kind: "binary", bytes, size };
   try {
-    return { kind: "text", text: new TextDecoder("utf-8", { fatal: true }).decode(bytes), size };
+    return { kind: "text", text: new TextDecoder("utf-8", { fatal: true }).decode(bytes), bytes, size };
   } catch {
-    return { kind: "binary", size };
+    return { kind: "binary", bytes, size };
   }
 }
+
+/** Saves bytes as a file named name, through the browser's download. */
+function download(bytes: Uint8Array<ArrayBuffer>, name: string) {
+  const url = URL.createObjectURL(new Blob([bytes]));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  link.click();
+  // The download has started from the URL by the time this runs.
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+const ZOOMS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
 
 function FileViewer({
   peer,
@@ -210,6 +230,8 @@ function FileViewer({
   const [error, setError] = useState<string | null>(null);
   const markdown = ext(path) === "md" || ext(path) === "markdown";
   const [preview, setPreview] = useState(markdown);
+  // PDFs only, where 1 fits the page to the width.
+  const [zoom, setZoom] = useState(1);
 
   useEffect(() => {
     const abort = new AbortController();
@@ -257,6 +279,48 @@ function FileViewer({
             <EyeIcon />
           </Button>
         )}
+        {loaded?.kind === "pdf" && (
+          <>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Zoom out"
+              title="Zoom out"
+              disabled={zoom === ZOOMS[0]}
+              onClick={() => setZoom(ZOOMS.findLast((z) => z < zoom) ?? zoom)}
+            >
+              <ZoomOutIcon />
+            </Button>
+            <button
+              type="button"
+              className="w-9 shrink-0 text-center text-xs text-muted-foreground tabular-nums hover:text-foreground"
+              title="Fit to width"
+              onClick={() => setZoom(1)}
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Zoom in"
+              title="Zoom in"
+              disabled={zoom === ZOOMS.at(-1)}
+              onClick={() => setZoom(ZOOMS.find((z) => z > zoom) ?? zoom)}
+            >
+              <ZoomInIcon />
+            </Button>
+          </>
+        )}
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label={`Download ${baseName(path)}`}
+          title="Download"
+          disabled={!loaded}
+          onClick={() => loaded && download(loaded.bytes, baseName(path))}
+        >
+          <DownloadIcon />
+        </Button>
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
         {error ? (
@@ -267,8 +331,18 @@ function FileViewer({
           <div className="flex min-h-full items-center justify-center bg-terminal p-4">
             <img src={loaded.url} alt={baseName(path)} className="max-h-full max-w-full object-contain" />
           </div>
+        ) : loaded.kind === "pdf" ? (
+          <Suspense fallback={<p className="p-4 text-muted-foreground">Loading…</p>}>
+            <PdfView bytes={loaded.bytes} zoom={zoom} />
+          </Suspense>
         ) : loaded.kind === "binary" ? (
-          <p className="p-4 text-muted-foreground">Binary file, not shown.</p>
+          <div className="flex flex-col items-start gap-2 p-4 text-muted-foreground">
+            <p>Binary file, not shown.</p>
+            <Button variant="secondary" size="sm" onClick={() => download(loaded.bytes, baseName(path))}>
+              <DownloadIcon />
+              Download
+            </Button>
+          </div>
         ) : preview ? (
           <div className="mx-auto max-w-3xl px-6 py-4 leading-relaxed">
             <Suspense>
