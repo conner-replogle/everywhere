@@ -94,7 +94,7 @@ Widgets are extra charts on a process for what isn't a metric over time: declare
   gauge  one value against min (default 0) and max, with warn and critical thresholds (critical below warn: low is bad). stat:key shows a stat.
   table  rows under columns; a row whose first cell matches an existing row replaces it.
 Feed: {"plot": ID, "series": S, "y": 1.2, "x": 3}, {"bar": ID, "label": L, "value": 3} (or inc), {"gauge": ID, "value": 812}, {"row": ID, "cells": ["lr=0.01", 0.91]}, or replace one whole: {"set": ID, "points": {"train": [[1, 0.9]]}} / "bars" / "rows" / "value".
-Metrics sent to /log are charted with the process already: use widgets for the rest.`
+Metrics sent to /log are charted with the process already: use widgets for the rest. A stat declared with a metric's name (key, or metric) takes that metric's values from /log and OpenTelemetry (gauges, and cumulative sums), so widgets can show it with stats/stat.`
 
 const widgetSchema = `{"type": "object", "required": ["id", "kind"], "properties": {
       "id": {"type": "string", "description": "Letters, digits, - and _. Declaring an id again changes that widget."},
@@ -116,7 +116,7 @@ var toolDefs = []toolDef{
 		description: "Start a long-running command in the background for this thread: a dev server, watcher, build, test run, migration or script. The user sees it, with live progress and its log, in the everywhere app's processes tab, and it keeps running across your turns. Use this instead of a backgrounded shell command (never append & or use nohup). " +
 			"It runs in the user's login shell in the thread's directory (or cwd) on a terminal. Returns its status, progress and recent output once wait_for happens, the process exits, or timeout_s passes (default 5s, enough to catch a crash on startup). " +
 			"It reports metrics, events, files and progress over HTTP (see below); the user sees them charted with it, and runs of the same experiment side by side. For anything richer, give it a dashboard: a React page you write in .everywhere/dashboards/<name> (see dashboard_docs). " +
-			"Declare checkpoints (milestones, optionally matched by a regex on output lines, e.g. {label:'Ready', pattern:'Local:.*http'}) and stats (counters with a total get a progress bar; notify_when like '> 0' tells you when it becomes true). " +
+			"Declare checkpoints (milestones, optionally matched by a regex on output lines, e.g. {label:'Ready', pattern:'Local:.*http'}) and stats (counters with a total get a progress bar; notify_when like '> 0' tells you when it becomes true; a metric the process logs, by the stat's key or its metric, sets it). " +
 			"When it exits you're told: right away if notify is set (even if that starts a turn), otherwise with your next message. Set url to the link for its web UI, if it has one. Leave out command to make a tracker: a progress bar you update with process_report while you work through a long task yourself." + reportHelp,
 		schema: `{"type": "object", "required": ["name"], "properties": {
     "name": {"type": "string", "description": "Short name, unique in this thread, e.g. dev, tests, migrate. Starting a name again starts a new run of it."},
@@ -132,7 +132,9 @@ var toolDefs = []toolDef{
       "label": {"type": "string"},
       "total": {"type": "number", "description": "Makes it a counter with a progress bar, rate and ETA."},
       "unit": {"type": "string"},
-      "notify_when": {"type": "string", "description": "Tell you when this becomes true, e.g. '> 0' or '>= 100'."}}}},
+      "notify_when": {"type": "string", "description": "Tell you when this becomes true, e.g. '> 0' or '>= 100'."},
+      "metric": {"type": "string", "description": "The metric the process sends to /log or over OpenTelemetry that sets this stat. Default: its key."},
+      "labels": {"type": "object", "additionalProperties": {"type": "string"}, "description": "Take the metric's points with exactly these labels (default: those with none)."}}}},
     "widgets": {"type": "array", "items": ` + widgetSchema + `},
     "dashboard": {"type": "string", "description": "Show the dashboard in .everywhere/dashboards/<this name> with the process (see dashboard_docs)."},
     "experiment": {"type": "string", "description": "What its telemetry is a run of, to compare with other runs. Default: its name."},

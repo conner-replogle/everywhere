@@ -40,6 +40,7 @@ func (p *Plugin) Start(h plugin.Host) error {
 	p.procs = plugin.MustLookup[*process.Manager](h, processes.Service)
 	p.hub = telemetry.New()
 	p.hub.OnProgress = p.procs.ReportFromProcess
+	p.hub.OnMetrics = p.procs.MetricsFromProcess
 	p.hub.OnChange = func(home string, changed map[string][]string) {
 		h.Emit(protocol.TelemetryChanged{Event: protocol.EventTelemetryChanged, Home: home, Experiments: changed})
 	}

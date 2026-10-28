@@ -54,6 +54,10 @@ type Hub struct {
 	// OnProgress applies a progress report (process_report's fields) a
 	// process sent to /progress.
 	OnProgress func(processID string, report json.RawMessage) error
+	// OnMetrics is given the points a process sent to /log or
+	// /v1/metrics (but not delta sums: their values are increments), for
+	// the stats they feed.
+	OnMetrics func(processID string, points []Point)
 
 	mu      sync.Mutex
 	dbs     map[string]*db

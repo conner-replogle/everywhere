@@ -80,6 +80,10 @@ type ProcessStat struct {
 	// History is one sample a second, oldest first.
 	History    []float64 `json:"history,omitempty"`
 	NotifyWhen string    `json:"notifyWhen,omitempty"`
+	// Metric is the telemetry metric that feeds it (its key unless set),
+	// from points with exactly these Labels (none unless set).
+	Metric string            `json:"metric,omitempty"`
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // ProcessProgress is OSC 9;4's state: normal, error, indeterminate or

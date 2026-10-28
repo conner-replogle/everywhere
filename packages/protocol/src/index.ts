@@ -635,6 +635,10 @@ export interface ProcessStat {
   /** One sample a second, oldest first. */
   history?: number[];
   notifyWhen?: string;
+  /** The telemetry metric that feeds it, if not its key. */
+  metric?: string;
+  /** The labels of the metric's points that feed it. */
+  labels?: Record<string, string>;
 }
 
 /**

@@ -33,6 +33,11 @@ type StatSpec struct {
 	Total      *float64 `json:"total,omitempty"`
 	Unit       string   `json:"unit,omitempty"`
 	NotifyWhen string   `json:"notify_when,omitempty"`
+	// Metric is the telemetry metric (from /log or OTLP) that feeds it, if
+	// not its key; Labels picks that metric's points with exactly these
+	// labels (by default, those with none).
+	Metric string            `json:"metric,omitempty"`
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // event is something progress tells the model about.
@@ -140,13 +145,37 @@ func newProgress(started time.Time, cps []CheckpointSpec, stats []StatSpec, prev
 		if err != nil {
 			return nil, err
 		}
+		if d.Metric != "" && !metricRe.MatchString(d.Metric) {
+			return nil, fmt.Errorf("stat %q: metric %q: use letters, digits, _ . : / and -", d.Key, d.Metric)
+		}
+		if len(d.Labels) > maxStatLabels {
+			return nil, fmt.Errorf("stat %q: at most %d labels", d.Key, maxStatLabels)
+		}
+		for k := range d.Labels {
+			if !labelRe.MatchString(k) || k == "experiment" || k == "run" {
+				return nil, fmt.Errorf("stat %q: label %q: use letters, digits, _ . and - (experiment and run are the run's)", d.Key, k)
+			}
+		}
 		s := p.stat(d.Key)
 		s.Label, s.Total, s.Unit, s.NotifyWhen, s.condition = d.Label, d.Total, d.Unit, d.NotifyWhen, cond
+		if d.Metric != d.Key {
+			s.Metric = d.Metric
+		}
+		if len(d.Labels) > 0 {
+			s.Labels = d.Labels
+		}
 	}
 	return p, nil
 }
 
-var keyRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+var (
+	keyRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	// A metric's and a label's names, as telemetry keeps them.
+	metricRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.:/-]{0,127}$`)
+	labelRe  = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$`)
+)
+
+const maxStatLabels = 8
 
 func validKey(k string) bool { return keyRe.MatchString(k) }
 
@@ -291,23 +320,9 @@ func (p *progress) apply(r report, off int64, now time.Time) []event {
 			}
 			switch {
 			case r.Value != nil:
-				s.Value = *r.Value
+				evs = append(evs, p.setStat(s, *r.Value, now)...)
 			case r.Inc != nil:
-				s.Value += *r.Inc
-			}
-			if r.Value != nil || r.Inc != nil {
-				s.record(now)
-				p.plotStat(s, now)
-				if s.condition != nil {
-					met := s.condition.holds(s.Value)
-					if met && !s.met {
-						evs = append(evs, event{
-							attrs: fmt.Sprintf("stat=%q", s.Key),
-							text:  fmt.Sprintf("%s is now %s (notify_when %s).", statName(s), formatNum(s.Value), s.NotifyWhen),
-						})
-					}
-					s.met = met
-				}
+				evs = append(evs, p.setStat(s, s.Value+*r.Inc, now)...)
 			}
 		}
 	}
@@ -345,6 +360,67 @@ func (p *progress) apply(r report, off int64, now time.Time) []event {
 		p.dashboard = r.Dashboard
 	}
 	return evs
+}
+
+// setStat gives a stat a new value: sampled, plotted, and its notify_when
+// checked.
+func (p *progress) setStat(s *stat, v float64, now time.Time) []event {
+	s.Value = v
+	s.record(now)
+	p.plotStat(s, now)
+	if s.condition == nil {
+		return nil
+	}
+	met := s.condition.holds(s.Value)
+	defer func() { s.met = met }()
+	if !met || s.met {
+		return nil
+	}
+	return []event{{
+		attrs: fmt.Sprintf("stat=%q", s.Key),
+		text:  fmt.Sprintf("%s is now %s (notify_when %s).", statName(s), formatNum(s.Value), s.NotifyWhen),
+	}}
+}
+
+// metric is the telemetry metric that feeds a stat.
+func (s *stat) metric() string {
+	if s.Metric != "" {
+		return s.Metric
+	}
+	return s.Key
+}
+
+// fedBy reports whether a metric's point, with these labels (the run's
+// experiment and run aside), feeds the stat.
+func (s *stat) fedBy(name string, labels map[string]string) bool {
+	if name != s.metric() {
+		return false
+	}
+	n := 0
+	for k, v := range labels {
+		if k == "experiment" || k == "run" {
+			continue
+		}
+		if want, ok := s.Labels[k]; !ok || want != v {
+			return false
+		}
+		n++
+	}
+	return n == len(s.Labels)
+}
+
+// metricPoint applies a telemetry point the process sent to the stats it
+// feeds, returning whether any were and what the model should hear about.
+func (p *progress) metricPoint(name string, labels map[string]string, v float64, now time.Time) (bool, []event) {
+	fed := false
+	var evs []event
+	for _, s := range p.stats {
+		if s.fedBy(name, labels) {
+			fed = true
+			evs = append(evs, p.setStat(s, v, now)...)
+		}
+	}
+	return fed, evs
 }
 
 // checkURL checks a web UI link the model chose.

@@ -56,6 +56,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	fx.hub = telemetry.New()
 	fx.hub.OnProgress = fx.m.ReportFromProcess
+	fx.hub.OnMetrics = fx.m.MetricsFromProcess
 	if err := fx.hub.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -267,6 +268,55 @@ func TestTracker(t *testing.T) {
 	}
 	if v, err = m2.Report(fx.thread, "refactor", report{}, true); err != nil || v.Status != protocol.ProcessDone {
 		t.Fatalf("done: %+v %v", v, err)
+	}
+}
+
+func TestStatsFromMetrics(t *testing.T) {
+	fx := newFixture(t)
+	v, err := fx.m.Start(fx.thread, "", "train", Spec{
+		Stats:   []StatSpec{{Key: "loss", NotifyWhen: "< 1"}, {Key: "gpu", Metric: "gpu.util", Labels: map[string]string{"gpu": "0"}}},
+		Widgets: []WidgetSpec{{ID: "g", Kind: "gauge", Stat: "gpu", Max: f(100)}},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := map[string]string{"experiment": "train", "run": "train#1"}
+	gpu0 := map[string]string{"experiment": "train", "run": "train#1", "gpu": "0"}
+	fx.m.MetricsFromProcess(v.ID, []telemetry.Point{
+		{Name: "loss", Labels: run, Value: 2},
+		{Name: "loss", Labels: gpu0, Value: 9}, // labelled: not this stat's
+		{Name: "gpu.util", Labels: gpu0, Value: 87},
+		{Name: "gpu.util", Labels: run, Value: 5}, // no gpu label
+		{Name: "loss", Labels: run, Value: 0.5},
+	})
+	v, _ = fx.m.Report(fx.thread, "train", report{}, false)
+	if v.Stats[0].Value != 0.5 || v.Stats[1].Value != 87 || v.Stats[1].Metric != "gpu.util" {
+		t.Fatalf("stats %+v", v.Stats)
+	}
+	if v.Widgets[0].Value == nil || *v.Widgets[0].Value != 87 {
+		t.Fatalf("gauge %+v", v.Widgets[0])
+	}
+	if n := fx.notesNow(); len(n) != 1 || !strings.Contains(n[0].text, "loss is now 0.5") {
+		t.Fatalf("notes %+v", n)
+	}
+	// They came from telemetry, so they aren't logged again.
+	cat, _ := fx.hub.Catalog(fx.home, "train")
+	if len(cat.Metrics) != 0 {
+		t.Fatalf("logged back: %+v", cat.Metrics)
+	}
+	// A report on a stat logs it as its metric, with its labels.
+	if _, err := fx.m.Report(fx.thread, "train", report{Stat: "gpu", Value: f(40)}, false); err != nil {
+		t.Fatal(err)
+	}
+	cat, _ = fx.hub.Catalog(fx.home, "train")
+	if len(cat.Metrics) != 1 || cat.Metrics[0].Name != "gpu.util" || cat.Metrics[0].Labels["gpu"][0] != "0" {
+		t.Fatalf("reported stat logged as %+v", cat.Metrics)
+	}
+	if _, err := fx.m.Start(fx.thread, "", "bad", Spec{Stats: []StatSpec{{Key: "x", Metric: "a b"}}}, false); err == nil {
+		t.Fatal("took a bad metric name")
+	}
+	if _, err := fx.m.Start(fx.thread, "", "bad", Spec{Stats: []StatSpec{{Key: "x", Labels: map[string]string{"run": "a"}}}}, false); err == nil {
+		t.Fatal("took the run as a label")
 	}
 }
 
