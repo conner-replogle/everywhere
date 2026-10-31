@@ -359,15 +359,20 @@ that speaks MCP. `internal/process`.
   - **Checkpoints** declared at start, `{label, pattern?, notify?}`. A
     pattern (regex) is matched against each output line; the first match
     reaches the checkpoint and records its time and log offset.
-  - **Stats** declared at start, `{key, label?, total?, unit?, notify_when?}`
-    (`notify_when` like `"> 0"`), or created by the first report. A stat with
-    a total is a counter with its own bar; the daemon derives rate and ETA
-    from its history (one sample a second, the last 60 kept for sparklines).
+  - **Stats** declared at start, `{key, label?, total?, unit?, notify_when?,
+    metric?, labels?}` (`notify_when` like `"> 0"`), or created by the first
+    report. A stat with a total is a counter with its own bar; the daemon
+    derives rate and ETA from its history (one sample a second, the last 60
+    kept for sparklines). A declared stat also takes the values of the
+    metric the process sends to its telemetry (`/log`, OTLP gauges and
+    cumulative sums, not delta ones) named `metric` (default its key), from
+    points with exactly its `labels` (default none); these aren't logged
+    again.
   - **Reports** from the process (`POST $EVERYWHERE_TELEMETRY/progress`,
     see Telemetry) or the model (`process_report`): the same fields,
     `{stat, value | inc, total, unit, label, checkpoint, status, notify, url,
-    dashboard, widget ops…}`. A stat with a value is logged as a metric too,
-    so its history is charted. Output is only ever the log: nothing in it is
+    dashboard, widget ops…}`. A stat with a value is logged as a metric too
+    (its `metric`, with its `labels`), so its history is charted. Output is only ever the log: nothing in it is
     read as a report. The first `::ew ` line a run prints (how processes
     reported before) tells the model, once and without starting a turn, where
     reports go now. `processes.changed` goes out at most 4 times a second.

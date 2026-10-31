@@ -13,6 +13,8 @@ const MODEL = "@cf/google/gemma-4-26b-a4b-it";
 const MAX_CONTEXT_CHARS = 16_000;
 const MAX_MESSAGE_CHARS = 4_000;
 const MAX_DRAFT_CHARS = 20_000;
+/** Thinking and answer together: room for the model to think at length and still return the longest draft. */
+const MAX_OUTPUT_TOKENS = 32_000;
 
 const SYSTEM = `You rewrite a draft prompt that a user is about to send to Claude, an AI coding agent working in their project.
 Make the draft clear, specific and well organized so Claude can act on it:
@@ -71,10 +73,13 @@ prompt.post("/rewrite", async (c) => {
           content: `${context ? `<conversation>\n${context}\n</conversation>\n\n` : ""}<draft>\n${draft}\n</draft>`,
         },
       ],
-      max_tokens: 2048,
+      max_tokens: MAX_OUTPUT_TOKENS,
       temperature: 0.2,
     });
-    const content = out.choices[0]?.message?.content;
+    const choice = out.choices[0];
+    // Cut off: say so rather than swap in half a prompt.
+    if (choice?.finish_reason === "length") return c.json({ error: "the rewrite ran too long" }, 502);
+    const content = choice?.message?.content;
     const text = typeof content === "string" ? content.trim() : "";
     if (!text) return c.json({ error: "the rewrite came back empty" }, 502);
     return c.json({ text });

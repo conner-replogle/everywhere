@@ -185,3 +185,43 @@ func hasMetric(c Catalog, name string) bool {
 	}
 	return false
 }
+
+func TestMetricsToStats(t *testing.T) {
+	h := New()
+	var got []string
+	h.OnMetrics = func(id string, ps []Point) {
+		for _, p := range ps {
+			got = append(got, fmt.Sprintf("%s:%s=%g", id, p.Name, p.Value))
+		}
+	}
+	if err := h.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer h.Close()
+	r, _ := h.StartRun(t.TempDir(), "job", "", "p1")
+	if code, msg := post(t, h, r.Token, "/log", "application/json", []byte(`[{"metrics":{"rows":1}},{"metrics":{"rows":2}}]`)); code != 204 {
+		t.Fatalf("log: %d %s", code, msg)
+	}
+	sum := func(name string, temp metricsv1.AggregationTemporality, v int64) *metricsv1.Metric {
+		return &metricsv1.Metric{Name: name, Data: &metricsv1.Metric_Sum{Sum: &metricsv1.Sum{
+			AggregationTemporality: temp, IsMonotonic: true,
+			DataPoints: []*metricsv1.NumberDataPoint{{Value: &metricsv1.NumberDataPoint_AsInt{AsInt: v}}},
+		}}}
+	}
+	md := &metricsv1.MetricsData{ResourceMetrics: []*metricsv1.ResourceMetrics{{ScopeMetrics: []*metricsv1.ScopeMetrics{{Metrics: []*metricsv1.Metric{
+		sum("done", metricsv1.AggregationTemporality_AGGREGATION_TEMPORALITY_CUMULATIVE, 7),
+		sum("new", metricsv1.AggregationTemporality_AGGREGATION_TEMPORALITY_DELTA, 3),
+	}}}}}}
+	pb, _ := proto.Marshal(md)
+	if code, msg := post(t, h, r.Token, "/v1/metrics", "application/x-protobuf", pb); code != 200 {
+		t.Fatalf("otlp: %d %s", code, msg)
+	}
+	want := "p1:rows=1 p1:rows=2 p1:done=7"
+	if strings.Join(got, " ") != want {
+		t.Fatalf("to stats %v, want %s", got, want)
+	}
+	// The delta sum is still kept, just not given to stats.
+	if cat, _ := h.Catalog(r.Home, "job"); !hasMetric(cat, "new") {
+		t.Fatalf("delta sum not stored: %+v", cat.Metrics)
+	}
+}

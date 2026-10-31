@@ -150,7 +150,15 @@ func (h *Hub) handleLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.add(info.Home, points, nil)
+	h.toStats(info, points)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// toStats gives points a process sent to its stats.
+func (h *Hub) toStats(info *RunInfo, points []Point) {
+	if h.OnMetrics != nil && info.Process != "" && len(points) > 0 {
+		h.OnMetrics(info.Process, points)
+	}
 }
 
 type eventEntry struct {
@@ -294,8 +302,8 @@ func (h *Hub) handleOTLPMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ts := now()
-	var points []Point
-	add := func(name string, attrs []*commonv1.KeyValue, t uint64, v float64) {
+	var points, values []Point // values: all but delta sums' increments
+	add := func(name string, attrs []*commonv1.KeyValue, t uint64, v float64, delta bool) {
 		name = cleanName(name, nameChars, 128)
 		if name == "" || math.IsNaN(v) || math.IsInf(v, 0) {
 			return
@@ -304,7 +312,14 @@ func (h *Hub) handleOTLPMetrics(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		points = append(points, Point{Name: name, Labels: labels, TS: nanosToMs(t, ts), Value: v})
+		pt := Point{Name: name, Labels: labels, TS: nanosToMs(t, ts), Value: v}
+		points = append(points, pt)
+		if !delta {
+			values = append(values, pt)
+		}
+	}
+	isDelta := func(t metricsv1.AggregationTemporality) bool {
+		return t == metricsv1.AggregationTemporality_AGGREGATION_TEMPORALITY_DELTA
 	}
 	number := func(dp *metricsv1.NumberDataPoint) float64 {
 		switch v := dp.GetValue().(type) {
@@ -320,22 +335,25 @@ func (h *Hub) handleOTLPMetrics(w http.ResponseWriter, r *http.Request) {
 			for _, m := range sm.GetMetrics() {
 				name := m.GetName()
 				for _, dp := range m.GetGauge().GetDataPoints() {
-					add(name, dp.GetAttributes(), dp.GetTimeUnixNano(), number(dp))
+					add(name, dp.GetAttributes(), dp.GetTimeUnixNano(), number(dp), false)
 				}
+				delta := isDelta(m.GetSum().GetAggregationTemporality())
 				for _, dp := range m.GetSum().GetDataPoints() {
-					add(name, dp.GetAttributes(), dp.GetTimeUnixNano(), number(dp))
+					add(name, dp.GetAttributes(), dp.GetTimeUnixNano(), number(dp), delta)
 				}
+				delta = isDelta(m.GetHistogram().GetAggregationTemporality())
 				for _, dp := range m.GetHistogram().GetDataPoints() {
-					add(name+".count", dp.GetAttributes(), dp.GetTimeUnixNano(), float64(dp.GetCount()))
-					add(name+".sum", dp.GetAttributes(), dp.GetTimeUnixNano(), dp.GetSum())
+					add(name+".count", dp.GetAttributes(), dp.GetTimeUnixNano(), float64(dp.GetCount()), delta)
+					add(name+".sum", dp.GetAttributes(), dp.GetTimeUnixNano(), dp.GetSum(), delta)
 				}
+				delta = isDelta(m.GetExponentialHistogram().GetAggregationTemporality())
 				for _, dp := range m.GetExponentialHistogram().GetDataPoints() {
-					add(name+".count", dp.GetAttributes(), dp.GetTimeUnixNano(), float64(dp.GetCount()))
-					add(name+".sum", dp.GetAttributes(), dp.GetTimeUnixNano(), dp.GetSum())
+					add(name+".count", dp.GetAttributes(), dp.GetTimeUnixNano(), float64(dp.GetCount()), delta)
+					add(name+".sum", dp.GetAttributes(), dp.GetTimeUnixNano(), dp.GetSum(), delta)
 				}
 				for _, dp := range m.GetSummary().GetDataPoints() {
-					add(name+".count", dp.GetAttributes(), dp.GetTimeUnixNano(), float64(dp.GetCount()))
-					add(name+".sum", dp.GetAttributes(), dp.GetTimeUnixNano(), dp.GetSum())
+					add(name+".count", dp.GetAttributes(), dp.GetTimeUnixNano(), float64(dp.GetCount()), false)
+					add(name+".sum", dp.GetAttributes(), dp.GetTimeUnixNano(), dp.GetSum(), false)
 				}
 			}
 		}
@@ -343,7 +361,11 @@ func (h *Hub) handleOTLPMetrics(w http.ResponseWriter, r *http.Request) {
 	if len(points) > maxPerPost {
 		points = points[:maxPerPost]
 	}
+	if len(values) > maxPerPost {
+		values = values[:maxPerPost]
+	}
 	h.add(info.Home, points, nil)
+	h.toStats(info, values)
 	otlpOK(w, r)
 }
 

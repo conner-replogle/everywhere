@@ -554,7 +554,7 @@ func (m *Manager) applyReport(p *proc, r report) ([]event, error) {
 	// A stat is a metric too, so its history is charted.
 	if logs && r.Stat != "" && (r.Value != nil || r.Inc != nil) {
 		if s := p.prog.findStat(r.Stat); s != nil {
-			_ = m.Telemetry.Log(p.run, nil, map[string]float64{r.Stat: s.Value}, nil)
+			_ = m.Telemetry.Log(p.run, nil, map[string]float64{s.metric(): s.Value}, s.Labels)
 		}
 	}
 	var told []event
@@ -1384,6 +1384,40 @@ func (m *Manager) ReportFromProcess(id string, raw json.RawMessage) error {
 		m.notify(p, e.attrs, e.text, true)
 	}
 	return nil
+}
+
+// MetricsFromProcess feeds the stats of a process from the metrics it sent
+// to its telemetry (/log, OTLP): what the model would hear about, it does.
+// They're in its telemetry already, so they aren't logged again.
+func (m *Manager) MetricsFromProcess(id string, points []telemetry.Point) {
+	p := m.get(id)
+	if p == nil || len(points) == 0 {
+		return
+	}
+	p.mu.Lock()
+	if len(p.prog.stats) == 0 {
+		p.mu.Unlock()
+		return
+	}
+	now := time.Now()
+	var evs []event
+	fed := false
+	for _, pt := range points {
+		ok, e := p.prog.metricPoint(pt.Name, pt.Labels, pt.Value, now)
+		fed = fed || ok
+		evs = append(evs, e...)
+	}
+	if fed {
+		p.bump()
+	}
+	p.mu.Unlock()
+	if !fed {
+		return
+	}
+	m.changedThread(p.threadID)
+	for _, e := range evs {
+		m.notify(p, e.attrs, e.text, true)
+	}
 }
 
 // experimentName is a process's experiment unless it names one: its name,
