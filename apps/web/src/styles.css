@@ -98,6 +98,17 @@
     padding: env(safe-area-inset-top) env(safe-area-inset-right)
       var(--safe-bottom, env(safe-area-inset-bottom)) env(safe-area-inset-left);
   }
+  /* iOS 26 blurs whatever sits under the status bar, and the blur reaches down
+     over the tab bar, unless an opaque fixed bar covers the top edge; then it
+     takes that bar's color instead. */
+  #status-bar {
+    position: fixed;
+    inset: 0 0 auto;
+    height: env(safe-area-inset-top);
+    z-index: 50;
+    pointer-events: none;
+    @apply bg-background;
+  }
   body {
     @apply bg-background text-foreground font-sans antialiased;
     font-size: 13px;
