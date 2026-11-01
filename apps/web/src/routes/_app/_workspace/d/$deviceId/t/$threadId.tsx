@@ -22,7 +22,7 @@ import { useRpc } from "@/lib/peer";
 import { touchThread } from "@/lib/idle-threads";
 import { isInputKey, retainThread, visitThread } from "@/lib/recent-threads";
 import { loadLayout, saveLayout } from "@/lib/thread-layout";
-import { openWebTab } from "@/lib/web-tabs";
+import { checkFrameable, frameVerdict, openOutside, openWebTab } from "@/lib/web-tabs";
 import { cn, errorMessage } from "@/lib/utils";
 import { createThreadBus } from "@/plugins/bus";
 import { useExternalPlugins } from "@/plugins/external";
@@ -296,8 +296,12 @@ function ThreadPage() {
   };
 
   // Links (a process's web UI, one in Claude's reply) open as a web tab here,
-  // not in the device's browser: you're the one looking.
-  const openUrl = (url: string) => {
+  // not in the device's browser: you're the one looking. Sites that refuse to
+  // be framed open in a new browser tab; if that's blocked, the web tab says
+  // so and has a button for it.
+  const openUrl = async (url: string) => {
+    const frameable = frameVerdict(url) ?? (await checkFrameable(url));
+    if (!frameable && openOutside(url)) return;
     const t = openWebTab(deviceId, threadId, url);
     keep();
     setActive(t.id);

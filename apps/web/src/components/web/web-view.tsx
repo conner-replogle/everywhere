@@ -1,17 +1,27 @@
-import { ExternalLinkIcon, GlobeIcon, RotateCwIcon, ShieldAlertIcon } from "lucide-react";
-import { useState } from "react";
+import { ExternalLinkIcon, GlobeIcon, LoaderIcon, RotateCwIcon, ShieldAlertIcon } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { framingBlocked } from "@/lib/web-tabs";
+import { checkFrameable, framingBlocked, frameVerdict, openOutside as openInNewTab } from "@/lib/web-tabs";
 
 /**
  * A web page in a tab, loaded by this browser in an iframe: a process's web
- * UI, a link from Claude. Sites that refuse to be framed show blank; the
- * toolbar opens them in a browser tab instead.
+ * UI, a link from Claude. Sites that refuse to be framed (checked first) get
+ * a button that opens them in a browser tab instead.
  */
 export function WebView({ url }: { url: string }) {
   const [reloads, setReloads] = useState(0);
-  const blocked = framingBlocked(url);
-  const openOutside = () => window.open(url, "_blank", "noopener,noreferrer");
+  // Unchecked sites wait for the check, so a refusal never shows as the browser's error page.
+  const [verdict, setVerdict] = useState(() => frameVerdict(url));
+  useEffect(() => {
+    setVerdict(frameVerdict(url));
+    let live = true;
+    void checkFrameable(url).then((ok) => live && setVerdict(ok));
+    return () => {
+      live = false;
+    };
+  }, [url]);
+  const blocked = verdict === undefined ? null : framingBlocked(url);
+  const openOutside = () => openInNewTab(url);
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex h-8 shrink-0 items-center gap-1.5 border-b px-2">
@@ -19,7 +29,7 @@ export function WebView({ url }: { url: string }) {
         <span className="min-w-0 flex-1 truncate font-mono text-xs select-all" title={url}>
           {url}
         </span>
-        {!blocked && (
+        {verdict !== undefined && !blocked && (
           <Button variant="ghost" size="icon-sm" aria-label="Reload" title="Reload" onClick={() => setReloads((n) => n + 1)}>
             <RotateCwIcon />
           </Button>
@@ -34,7 +44,11 @@ export function WebView({ url }: { url: string }) {
           <ExternalLinkIcon />
         </Button>
       </div>
-      {blocked ? (
+      {verdict === undefined ? (
+        <div className="flex flex-1 items-center justify-center">
+          <LoaderIcon className="size-4 animate-spin text-muted-foreground" />
+        </div>
+      ) : blocked ? (
         <div className="flex flex-1 items-center justify-center p-6">
           <div className="grid max-w-md justify-items-center gap-3 text-center text-sm">
             <ShieldAlertIcon className="size-6 text-muted-foreground" />

@@ -4,6 +4,7 @@
 // are, not from the device.
 
 import { useSyncExternalStore } from "react";
+import { api } from "./api";
 
 export interface WebTab {
   id: string;
@@ -100,10 +101,87 @@ export function renameWebTab(deviceId: string, threadId: string, id: string, nam
   );
 }
 
+// Many sites refuse to be shown inside another page (GitHub, Google): the
+// frame shows only the browser's error. Whether a site allows it is checked
+// once, from the Worker, and remembered per origin in this browser.
+
+const FRAME_PREFIX = "ew:frameable:";
+const CHECK_TIMEOUT_MS = 2_500;
+
+function originOf(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
+/** Hosts the Worker can't reach (this machine, a private network): left to the frame. */
+function checkable(url: string): boolean {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+  const h = u.hostname;
+  if (u.protocol !== "https:") return false;
+  if (h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".ts.net") || h.endsWith(".internal")) return false;
+  if (h.startsWith("[")) return false; // IPv6 literal
+  const ip = /^(\d+)\.(\d+)\.\d+\.\d+$/.exec(h);
+  if (ip) {
+    const [a, b] = [Number(ip[1]), Number(ip[2])];
+    if (a === 10 || a === 127 || (a === 100 && b >= 64 && b < 128) || (a === 172 && b >= 16 && b < 32) || (a === 192 && b === 168)) return false;
+  }
+  return true;
+}
+
+/** What's known about whether the site allows a frame: undefined if it hasn't been checked. */
+export function frameVerdict(url: string): boolean | undefined {
+  if (!checkable(url)) return true;
+  const origin = originOf(url);
+  try {
+    const v = origin ? localStorage.getItem(FRAME_PREFIX + origin) : null;
+    return v === null ? undefined : v === "1";
+  } catch {
+    return undefined;
+  }
+}
+
+/** Checks (once per origin) whether the site allows a frame. Unsure means yes: the frame can try. */
+export async function checkFrameable(url: string): Promise<boolean> {
+  const known = frameVerdict(url);
+  if (known !== undefined) return known;
+  try {
+    const { frameable } = await Promise.race([
+      api.frameable(url),
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), CHECK_TIMEOUT_MS)),
+    ]);
+    try {
+      localStorage.setItem(FRAME_PREFIX + originOf(url), frameable ? "1" : "0");
+    } catch {
+      // storage blocked: check again next time
+    }
+    return frameable;
+  } catch {
+    return true;
+  }
+}
+
+/** Opens url in a new browser tab; false if the browser blocked it (a popup blocker). */
+export function openOutside(url: string): boolean {
+  // Not "noopener": with it, window.open returns null even when the tab opened.
+  const w = window.open("", "_blank");
+  if (!w) return false;
+  w.opener = null;
+  w.location.href = url;
+  return true;
+}
+
 /**
  * Why the page can't show in a tab here, or null if it can: an http page
  * inside this https app is blocked by the browser (mixed content), except
- * on this machine's own loopback.
+ * on this machine's own loopback, and some sites refuse to be framed.
  */
 export function framingBlocked(url: string): string | null {
   let u: URL;
@@ -117,5 +195,6 @@ export function framingBlocked(url: string): string | null {
   if (u.protocol === "http:" && location.protocol === "https:" && !loopback) {
     return "Browsers don't show http pages inside an https app. Serve it over https (for a dev server on Tailscale, tailscale serve gives it an https address), or open it in a new tab.";
   }
+  if (frameVerdict(url) === false) return `${u.host} doesn't allow being shown inside another page, so it opens in a new tab.`;
   return null;
 }
