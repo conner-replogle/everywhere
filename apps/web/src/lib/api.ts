@@ -179,9 +179,6 @@ export const api = {
   /** A clearer version of a composer draft, given the thread's recent messages. */
   rewritePrompt: (draft: string, context: { role: "user" | "claude"; text: string }[]) =>
     request<{ text: string }>("POST", "/api/prompt/rewrite", { draft, context }),
-  /** Whether a site lets web tabs show it in a frame (checked from the Worker). */
-  frameable: (url: string) =>
-    request<{ frameable: boolean }>("GET", `/api/web/frameable?url=${encodeURIComponent(url)}`),
 
   githubStatus: () => request<{ configured: boolean; login: string | null }>("GET", "/api/github/status"),
   /** A page navigation, not a fetch: it goes to GitHub and comes back to Settings. */

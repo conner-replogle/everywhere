@@ -669,12 +669,6 @@ Small, which makes them the first to move.
 - **Needs**: the core's theme tokens. Shows a **theme provider** point:
   an external source of palettes, which the extension is.
 
-### web tabs (built-in, web only)
-- **Contributes**: the browser-local `web` pane kind, opening links from
-  processes and claude.
-- **Needs**: a client-only tab kind (not stored on the daemon), which the
-  tab contribution should support.
-
 Left in the core: device updates (`device.update`, claude updates are the
 agent's), project icons (could be a tiny plugin, but the sidebar draws them
 before anything loads), the debug panel, preview tabs, idle threads and

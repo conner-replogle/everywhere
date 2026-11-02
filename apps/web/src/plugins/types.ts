@@ -11,23 +11,8 @@ import type { DeviceContextValue } from "@/components/device-context";
 import type { ComposerDraft } from "@/lib/composer-inbox";
 import type { DevicePeer } from "@/lib/peer";
 
-/** A tab that only this browser knows of (a web page opened from a link). */
-export interface LocalTab {
-  id: string;
-  kind: string;
-  name: string;
-  parentId: string;
-  /** Plugin-specific data, e.g. a web tab's URL. */
-  data?: unknown;
-  tabState?: undefined;
-}
-
-/** The thread itself, one of its tabs, or a local tab: what a pane shows. */
-export type Pane = (Thread & { parentId?: undefined; tabState?: undefined }) | Tab | LocalTab;
-
-export function isLocal(p: Pane): p is LocalTab {
-  return "data" in p || !("projectId" in p);
-}
+/** The thread itself or one of its tabs: what a pane shows. */
+export type Pane = (Thread & { parentId?: undefined; tabState?: undefined }) | Tab;
 
 /** Events plugins send each other within a thread page. */
 export interface ThreadEvents {
@@ -95,7 +80,7 @@ export interface ThreadContext {
   openTab(kind: TabKind, opts?: OpenTabOptions): Promise<Tab | undefined>;
   /** Whether the user closed a tab of kind in the last ms (don't reopen it on them). */
   closedRecently(kind: TabKind, ms: number): boolean;
-  /** Opens a link as a web tab in this browser. */
+  /** Opens a link in a new browser tab. */
   openUrl(url: string): void;
   /** Hands a draft to the thread's claude composer (the thread's, or the last claude tab opened); false if none. */
   sendToClaude?: (draft: ComposerDraft) => boolean;
@@ -133,7 +118,7 @@ export interface TabKindDef {
   icon: LucideIcon;
   /** A thread has at most one, as with every kind unless it's multiple (the daemon's manifest can say so too). */
   single?: boolean;
-  /** A thread can have several (web pages: each its own link). Others open the one it has. */
+  /** A thread can have several. Others open the one it has. */
   multiple?: boolean;
   /** Which input in it keeps the thread's tab: keys only (a terminal), or pointer too. */
   capture?: "keys" | "all";
@@ -154,13 +139,6 @@ export interface TabKindDef {
   status?: (pane: Pane, reported: unknown) => ReactNode;
   /** A count on its tab (e.g. running processes). */
   badge?: (pane: Pane, thread: Thread) => number | undefined;
-}
-
-export interface LocalTabsDef {
-  /** A hook listing this browser's tabs of a thread. */
-  use(deviceId: string, threadId: string): LocalTab[];
-  close(deviceId: string, threadId: string, id: string): void;
-  rename(deviceId: string, threadId: string, id: string, name: string): void;
 }
 
 export interface ToolRenderer {
@@ -188,7 +166,6 @@ export interface WebPlugin {
    */
   requires?: { plugins?: string[]; features?: DeviceFeature[] };
   tabs?: TabKindDef[];
-  localTabs?: LocalTabsDef;
   /** Items in a thread's header (after its tabs' title). */
   threadHeader?: ComponentType<{ ctx: ThreadContext }>[];
   slots?: Partial<Record<SlotName, (ctx: PaneContext) => ReactNode>>;

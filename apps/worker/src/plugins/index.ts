@@ -8,7 +8,6 @@ import { oauth } from "../oauth";
 import { github as githubRoutes } from "../routes/github";
 import { prompt } from "../routes/prompt";
 import { speech } from "../routes/speech";
-import { web } from "../routes/web";
 import type { App } from "../types";
 import { claude } from "./claude";
 import { pluginSettings } from "./plugin-settings";
@@ -27,8 +26,6 @@ export const WORKER_PLUGINS: readonly WorkerPlugin[] = [
   // Dictation and prompt rewrites in the composer, on Workers AI.
   { id: "speech", routes: [{ path: "/api/speech", app: speech }] },
   { id: "rewrite", routes: [{ path: "/api/prompt", app: prompt }] },
-  // Whether a site lets web tabs show it, or has to open in a new browser tab.
-  { id: "web-tabs", routes: [{ path: "/api/web", app: web }] },
   // The sandboxed frame dashboards (and external plugins' web parts) run in.
   { id: "dashboards", routes: [{ path: "/dashboard", app: dashboardFrame }] },
   // The account's MCP endpoint for agents, and the OAuth server that authorizes them.

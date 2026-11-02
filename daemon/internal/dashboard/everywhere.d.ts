@@ -340,7 +340,7 @@ declare module "everywhere" {
     /** The tab's saved state, as setTabState left it. */
     tabState: string | undefined;
     setTabState(state: string): void;
-    /** Opens a link as a web tab next to this one. */
+    /** Opens a link in a new browser tab. */
     openUrl(url: string): void;
     /** Opens a channel "<id>/<name>" to the plugin's process. */
     channel(name: string, options?: { ordered?: boolean }): Promise<PluginChannel>;

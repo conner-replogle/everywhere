@@ -5,7 +5,7 @@ import type { Thread } from "@everywhere/protocol";
 import { ActivityIcon } from "lucide-react";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { ProcessesOverview } from "@/components/processes/overview";
-import { definePlugin, isLocal, type PaneContext, slotViews, type ThreadContext } from "../types";
+import { definePlugin, type PaneContext, slotViews, type ThreadContext } from "../types";
 
 const ProcessesView = lazy(() =>
   import("@/components/processes/processes-view").then((m) => ({ default: m.ProcessesView })),
@@ -61,7 +61,7 @@ export const processes = definePlugin({
       icon: ActivityIcon,
       single: true,
       render: (ctx) => <ProcessesPane ctx={ctx} />,
-      badge: (p, thread) => (!isLocal(p) && p.kind === "processes" ? thread.processes : undefined),
+      badge: (p, thread) => (p.kind === "processes" ? thread.processes : undefined),
     },
   ],
   views: {
