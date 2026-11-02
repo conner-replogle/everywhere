@@ -638,6 +638,31 @@ func TestCrashThenResume(t *testing.T) {
 	h.waitStatus(c, "working")
 }
 
+func TestRestart(t *testing.T) {
+	h := newHarness(t)
+	c := h.attach(0)
+	h.do(c, protocol.AgentClientMsg{T: "send", Text: "go"})
+	p := h.proc(0)
+	p.emit(`{"type":"system","subtype":"init","session_id":"sess-1"}`)
+	h.waitStatus(c, "working")
+
+	// Mid-turn: the turn ends and a new process resumes the conversation.
+	h.do(c, protocol.AgentClientMsg{T: "restart"})
+	if p2 := h.proc(1); p2.opts.Resume != "sess-1" {
+		t.Fatalf("restarted with %+v", p2.opts)
+	}
+	h.waitStatus(c, "idle")
+	p.mu.Lock()
+	closed := p.closed
+	p.mu.Unlock()
+	if !closed {
+		t.Fatal("the old process is still running")
+	}
+	if got := eventTypes(c.events()); got != "turn:started user turn:interrupted notice" {
+		t.Fatalf("events = %s", got)
+	}
+}
+
 func TestThreadArgsPerProcess(t *testing.T) {
 	h := newHarness(t)
 	var mu sync.Mutex

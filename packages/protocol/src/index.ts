@@ -1083,6 +1083,8 @@ export type AgentClientMsg =
   /** attachments: ids of finished uploads. */
   | { t: "send"; text: string; attachments?: string[] }
   | { t: "interrupt" }
+  /** Stops the agent's process (ending a turn in progress) and starts it again on the same conversation. */
+  | { t: "restart" }
   | {
       t: "respond";
       requestId: string;

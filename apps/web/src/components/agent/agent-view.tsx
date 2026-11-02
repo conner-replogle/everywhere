@@ -5,6 +5,7 @@ import {
   ChevronDownIcon,
   PaperclipIcon,
   RotateCcwIcon,
+  RotateCwIcon,
   SquareIcon,
   XIcon,
 } from "lucide-react";
@@ -470,6 +471,10 @@ function StatusBar({ agent, name }: { agent: AgentThread; name: string }) {
           {name} stopped: {state.error}
           <span className="text-muted-foreground"> Send a message to start it again.</span>
         </span>
+        <Button size="sm" variant="secondary" onClick={() => agent.send({ t: "restart" })}>
+          <RotateCwIcon />
+          Restart
+        </Button>
       </Notice>
     );
   }
@@ -793,6 +798,19 @@ function Composer({
             />
           )}
           <StatusText state={state} />
+          {(state?.status === "idle" || state?.status === "working" || state?.status === "waiting") && (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="size-6 text-muted-foreground"
+              disabled={!ready}
+              onClick={() => agent.send({ t: "restart" })}
+              aria-label={`Restart ${name}`}
+              title={`Restart ${name} (stops any turn in progress; the conversation continues)`}
+            >
+              <RotateCwIcon />
+            </Button>
+          )}
           <UsageMeter limits={limits} />
           <ContextMeter context={state?.context} onCompact={onCompact} />
         </span>

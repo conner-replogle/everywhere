@@ -292,6 +292,8 @@ func (s *session) handle(c Client, msg protocol.AgentClientMsg) {
 		err = s.send(msg.Text, msg.Attachments)
 	case "interrupt":
 		s.interrupt()
+	case "restart":
+		err = s.restart()
 	case "respond":
 		err = s.respond(msg)
 	case "setMode":
@@ -679,6 +681,20 @@ func (s *session) interrupt() {
 		slog.Warn("claude interrupt failed, stopping it", "thread", s.threadID, "err", err)
 		s.closeProc()
 	}
+}
+
+// restart stops the thread's process, ending any turn in progress, and
+// starts a new one on the same conversation: for a stuck process, or to
+// pick up changed settings, MCP servers or a new claude build.
+func (s *session) restart() error {
+	if s.proc != nil {
+		s.stopProc()
+	}
+	if err := s.ensureProc(); err != nil {
+		return err
+	}
+	s.emit(protocol.AgentEvent{Type: "notice", Text: "Restarted " + s.name()})
+	return nil
 }
 
 // rewind rolls the conversation back to before the prompt with event id
