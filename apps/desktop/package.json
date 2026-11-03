@@ -1,0 +1,74 @@
+{
+  "name": "@everywhere/desktop",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Everywhere's desktop app: the web app in a window, with web tabs",
+  "main": "dist/main.cjs",
+  "scripts": {
+    "build": "bun build src/main.ts src/preload.ts --target=node --format=cjs --external electron --outdir dist --entry-naming '[name].cjs'",
+    "start": "bun run build && electron .",
+    "dev": "bun run build && EVERYWHERE_URL=http://localhost:5173 electron .",
+    "typecheck": "tsc -p .",
+    "dist": "bun run build && electron-builder"
+  },
+  "devDependencies": {
+    "@everywhere/protocol": "workspace:*",
+    "@types/node": "^26.6.6",
+    "electron": "^45.2.1",
+    "electron-builder": "^26.0.12",
+    "electron-updater": "^6.8.11",
+    "typescript": "^7.0.2"
+  },
+  "productName": "Everywhere",
+  "build": {
+    "appId": "dev.replogle.everywhere",
+    "productName": "Everywhere",
+    "files": [
+      "dist/**",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Development",
+      "executableName": "everywhere-desktop",
+      "syncDesktopName": true,
+      "artifactName": "everywhere-desktop-${arch}.${ext}"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.developer-tools"
+    },
+    "win": {
+      "target": [
+        "nsis"
+      ]
+    },
+    "artifactName": "everywhere-desktop-${version}-${os}-${arch}.${ext}",
+    "publish": {
+      "provider": "github",
+      "owner": "conner-replogle",
+      "repo": "everywhere",
+      "releaseType": "release"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false
+    },
+    "executableName": "everywhere-desktop",
+    "extraMetadata": {
+      "name": "everywhere-desktop"
+    },
+    "toolsets": {
+      "appimage": "1.0.3"
+    }
+  },
+  "desktopName": "everywhere-desktop.desktop"
+}

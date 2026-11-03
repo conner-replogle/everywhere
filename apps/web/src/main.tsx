@@ -1,6 +1,8 @@
 import { createRouter, RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { desktop } from "@/lib/desktop";
+import { startDesktopTunnels } from "@/lib/desktop-tunnels";
 import { registerServiceWorker } from "@/lib/pwa";
 import { startTheme } from "@/lib/theme";
 import { routeTree } from "./routeTree.gen";
@@ -8,6 +10,8 @@ import "./styles.css";
 
 startTheme();
 registerServiceWorker();
+// In the desktop app, web tabs reach their device's localhost through here.
+if (desktop) startDesktopTunnels(desktop);
 
 const router = createRouter({
   routeTree,

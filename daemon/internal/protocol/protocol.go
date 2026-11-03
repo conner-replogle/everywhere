@@ -96,7 +96,22 @@ const (
 	UploadChannelPrefix = "upload:"
 	FileChannelPrefix   = "file:"
 	ProcChannelPrefix   = "proc:" // a process's output; the term channel's protocol
+	TCPChannelPrefix    = "tcp:"  // a TCP connection to one of the device's own ports
 )
+
+// TCPDial is a tcp:<id> channel's first message: the port to connect to.
+// The daemon answers {t:"open"} and then the connection's bytes go both ways
+// as binary messages; {t:"end"} when the port closes it, or a TCPError.
+type TCPDial struct {
+	T    string `json:"t"` // dial
+	Host string `json:"host"`
+	Port int    `json:"port"`
+}
+
+type TCPError struct {
+	T       string `json:"t"` // error
+	Message string `json:"message"`
+}
 
 type DeviceInfo struct {
 	Hostname string `json:"hostname"`

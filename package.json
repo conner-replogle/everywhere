@@ -11,6 +11,10 @@
     "build": "bun run --filter '@everywhere/web' build",
     "deploy": "bun run build && bun run --filter '@everywhere/worker' deploy",
     "typecheck": "bun run --filter '*' typecheck",
-    "reset-password": "bun apps/worker/scripts/reset-password.ts"
-  }
+    "reset-password": "bun apps/worker/scripts/reset-password.ts",
+    "desktop": "bun run --filter '@everywhere/desktop' start"
+  },
+  "trustedDependencies": [
+    "electron"
+  ]
 }

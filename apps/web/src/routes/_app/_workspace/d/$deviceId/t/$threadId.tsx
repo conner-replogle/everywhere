@@ -4,7 +4,7 @@ import { ArrowLeftRightIcon, Columns2Icon, PlusIcon, PuzzleIcon, XIcon } from "l
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { CenteredMessage } from "@/components/centered-message";
 import { ConfirmDialog } from "@/components/confirm-dialog";
-import { RunInTerminalContext } from "@/components/agent/markdown";
+import { OpenLinkContext, RunInTerminalContext } from "@/components/agent/markdown";
 import { useDevice } from "@/components/device-context";
 import { RenameDialog } from "@/components/rename-dialog";
 import { SplitArea } from "@/components/split-area";
@@ -22,12 +22,16 @@ import { useRpc } from "@/lib/peer";
 import { touchThread } from "@/lib/idle-threads";
 import { isInputKey, retainThread, visitThread } from "@/lib/recent-threads";
 import { loadLayout, saveLayout } from "@/lib/thread-layout";
+import { desktop } from "@/lib/desktop";
+import { openWebTab } from "@/lib/web-tabs";
 import { cn, errorMessage } from "@/lib/utils";
 import { createThreadBus } from "@/plugins/bus";
 import { useExternalPlugins } from "@/plugins/external";
 import { agentViewKinds, isAgentKind } from "@/plugins/builtin/agent";
-import { builtinTabKind, devicePlugins, tabKinds } from "@/plugins/registry";
+import { BUILTIN, builtinTabKind, devicePlugins, tabKinds } from "@/plugins/registry";
 import {
+  isLocal,
+  type LocalTab,
   type OpenTabOptions,
   type Pane,
   type PaneContext,
@@ -84,7 +88,7 @@ function ThreadPage() {
   // Built-ins' tab kinds, and other agents' (drawn with the agent view).
   const kinds = useMemo(() => [...tabKinds(plugins), ...agentViewKinds(info.data?.plugins)], [plugins, info.data?.plugins]);
   const kindOf = (kind: TabKind): TabKindDef => kinds.find((k) => k.kind === kind) ?? builtinTabKind(kind) ?? unknownKind(kind);
-  // One tab per kind, except kinds that are several things by nature.
+  // One tab per kind, except kinds that are several things by nature (web pages).
   const multipleKinds = new Set(kinds.filter((k) => k.multiple).map((k) => k.kind));
 
   // Daemons from before tabs still have their project's browser, as a fixed tab.
@@ -93,8 +97,13 @@ function ThreadPage() {
     legacyBrowser && thread
       ? { ...thread, id: `${thread.id}:browser`, kind: "browser", name: "Browser", parentId: thread.id }
       : undefined;
+  // Tabs only this browser knows of (web pages), from plugins that keep them. Every
+  // built-in's hook runs, in a fixed order, whether or not the device has it.
+  const localByPlugin = BUILTIN.map((p) => (p.localTabs ? p.localTabs.use(deviceId, threadId) : []));
+  const localPanes: LocalTab[] = archived ? [] : localByPlugin.flat();
+  const localOwner = (t: LocalTab) => BUILTIN[localByPlugin.findIndex((l) => l.some((x) => x.id === t.id))];
   const panes: Pane[] = thread
-    ? [thread, ...(canTab ? (tabs.data ?? []) : []), ...(legacyTab ? [legacyTab] : [])]
+    ? [thread, ...(canTab ? (tabs.data ?? []) : []), ...(legacyTab ? [legacyTab] : []), ...localPanes]
     : [];
   // A tab that's gone (closed elsewhere) falls back to the thread.
   const primary = panes.find((p) => p.id === tabParam) ?? thread;
@@ -276,16 +285,37 @@ function ThreadPage() {
   };
 
   const closeTab = async (t: Pane) => {
+    if (isLocal(t)) {
+      leave(t);
+      localOwner(t)?.localTabs?.close(deviceId, threadId, t.id);
+      return;
+    }
     closedAt.current[t.kind] = Date.now();
     leave(t);
     await peer.call("tabs.close", { id: t.id });
     tabs.refetch();
   };
 
-  // Links from plugins (a process's web UI) open in a new browser tab: the page
-  // loads from where you are, not from the device.
-  const openUrl = (url: string) => {
-    window.open(url, "_blank", "noopener,noreferrer");
+  /** Closes a tab the user asked to close, asking first if its kind says to. */
+  const requestClose = (p: Pane) => {
+    keep();
+    const confirm = !isLocal(p) ? kindOf(p.kind).confirmClose?.(p) : null;
+    if (confirm) setClosing({ pane: p as Tab, ...confirm });
+    else void closeTab(p).catch((e: unknown) => setError(errorMessage(e)));
+  };
+
+  // Links (a process's web UI, one in Claude's reply) open as a web tab in the
+  // desktop app, not in the device's browser: you're the one looking. A
+  // browser can't show most sites inside a page, so there they get a new
+  // browser tab.
+  const openUrl = (url: string, opts: { fresh?: boolean; background?: boolean } = {}) => {
+    if (!desktop && url !== "about:blank") {
+      window.open(url, "_blank", "noopener,noreferrer");
+      return;
+    }
+    const t = openWebTab(deviceId, threadId, url, opts);
+    keep();
+    if (!opts.background) setActive(t.id);
   };
 
   // Annotations go to the thread's claude, or else the last claude tab
@@ -364,6 +394,7 @@ function ThreadPage() {
         return fn ? <Fragment key={pl.id}>{fn(paneContext(p))}</Fragment> : null;
       }),
     report: (value) => setReports((r) => (r[p.id] === value ? r : { ...r, [p.id]: value })),
+    close: () => requestClose(p),
     plugins,
   });
 
@@ -403,7 +434,8 @@ function ThreadPage() {
             className={cn("flex min-w-0 items-stretch overflow-x-auto", !(canTab || legacyBrowser) && "hidden")}
           >
             {panes.map((p) => {
-              const closable = !!p.parentId && canTab;
+              const local = isLocal(p);
+              const closable = !!p.parentId && (canTab || local);
               return (
                 <TabButton
                   key={p.id}
@@ -415,16 +447,7 @@ function ThreadPage() {
                   badge={kindOf(p.kind).badge?.(p, thread)}
                   onSelect={() => select(p.id)}
                   onRename={closable ? () => (keep(), setRenaming(p)) : undefined}
-                  onClose={
-                    closable
-                      ? () => {
-                          keep();
-                          const confirm = kindOf(p.kind).confirmClose?.(p);
-                          if (confirm) setClosing({ pane: p as Tab, ...confirm });
-                          else void closeTab(p).catch((e: unknown) => setError(errorMessage(e)));
-                        }
-                      : undefined
-                  }
+                  onClose={closable ? () => requestClose(p) : undefined}
                 />
               );
             })}
@@ -518,6 +541,7 @@ function ThreadPage() {
           </div>
         </div>
       )}
+      <OpenLinkContext.Provider value={thread && !archived && desktop ? openUrl : null}>
       <RunInTerminalContext.Provider value={runInTerminal}>
       {/* Panes wait for the thread list, so a claude thread never flashes a terminal. */}
       <SplitArea
@@ -548,12 +572,17 @@ function ThreadPage() {
         }
       />
       </RunInTerminalContext.Provider>
+      </OpenLinkContext.Provider>
       <RenameDialog
         open={!!renaming}
         onOpenChange={(o) => !o && setRenaming(null)}
         title="Rename tab"
         initial={renaming?.name ?? ""}
         onSubmit={async (name) => {
+          if (renaming && isLocal(renaming)) {
+            localOwner(renaming)?.localTabs?.rename(deviceId, threadId, renaming.id, name);
+            return;
+          }
           await peer.call("threads.rename", { id: renaming!.id, name });
           tabs.refetch();
         }}
@@ -616,7 +645,7 @@ function TabButton({
   const Icon = kind.icon;
   // The thread's own tab is named by its kind; the thread's name is above.
   const label = p.parentId ? p.name : kind.title;
-  const status = p.agentStatus;
+  const status = !isLocal(p) ? p.agentStatus : undefined;
   return (
     <div
       className={cn(
@@ -637,7 +666,11 @@ function TabButton({
         title={onRename ? `${label} — double-click to rename` : label}
         className={cn("flex h-full max-w-48 items-center gap-1.5 pl-3 outline-none", onClose ? "pr-1" : "pr-3")}
       >
-        <Icon className="size-3.5 shrink-0" />
+        {isLocal(p) && p.icon ? (
+          <img src={p.icon} alt="" className="size-3.5 shrink-0 rounded-[2px] object-contain" />
+        ) : (
+          <Icon className="size-3.5 shrink-0" />
+        )}
         <span className="truncate">{label}</span>
         {(status === "working" || status === "starting") && (
           <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-primary" aria-label="working" />

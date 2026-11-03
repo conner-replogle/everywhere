@@ -665,6 +665,20 @@ Small, which makes them the first to move.
 - **Needs**: a composer contribution point with access to the draft and
   the thread's recent text (`rewrite.ts` reads the timeline), Workers AI.
 
+### web tabs (built-in, desktop app)
+- **Contributes**: the app-local `web` pane kind, opening links from
+  processes and claude. In the desktop app (`apps/desktop`) each is a
+  `<webview>` with a browser's toolbar, keys and menus; in a browser, which
+  can't show most sites inside a page, links open a browser tab and a web
+  tab says it needs the app.
+- **Needs**: a client-only tab kind (not stored on the daemon), which the
+  tab contribution should support.
+
+### tunnel (built-in)
+- **Contributes**: `tcp:` channels, connections to the device's own ports,
+  which web tabs in the desktop app load the device's localhost through.
+- **Needs**: `net.loopback`; nothing else.
+
 ### appearance (built-in) and omarchy-theme
 - **Contributes**: Settings → Appearance, stock Omarchy themes, and the
   browser extension (`extensions/omarchy-theme`, native messaging) that

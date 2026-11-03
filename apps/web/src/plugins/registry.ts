@@ -13,6 +13,7 @@ import { scratch } from "./builtin/scratch";
 import { done, github, push, share } from "./builtin/small";
 import { telemetry } from "./builtin/telemetry";
 import { terminal } from "./builtin/terminal";
+import { webTabs } from "./builtin/web-tabs";
 import type { SettingsSection, TabKindDef, ToolRenderer, WebPlugin } from "./types";
 
 /** Built-in plugins, in the order their tabs appear in menus. */
@@ -25,6 +26,7 @@ export const BUILTIN: readonly WebPlugin[] = [
   processes,
   dashboards,
   telemetry,
+  webTabs,
   scratch,
   git,
   share,

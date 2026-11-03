@@ -11,9 +11,29 @@ import { cn } from "@/lib/utils";
  */
 export const RunInTerminalContext = createContext<((command: string) => void) | null>(null);
 
+/**
+ * Opens a web link as a tab of the thread (a web tab, in this browser).
+ * Absent where there are no tabs: links then open in a new browser tab.
+ */
+export const OpenLinkContext = createContext<((url: string) => void) | null>(null);
+
 function Link({ href, children }: { href?: string; children: React.ReactNode }) {
+  const open = useContext(OpenLinkContext);
   return (
-    <a href={href} target="_blank" rel="noreferrer noopener" className="text-primary underline-offset-2 hover:underline">
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer noopener"
+      className="text-primary underline-offset-2 hover:underline"
+      onClick={(e) => {
+        // A modified or middle click still opens a browser tab, as links do.
+        if (!open || !href || !/^https?:/i.test(href) || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) {
+          return;
+        }
+        e.preventDefault();
+        open(href);
+      }}
+    >
       {children}
     </a>
   );

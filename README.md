@@ -141,6 +141,25 @@ bun run build                       # the Worker serves apps/web/dist
 bun run dev                         # worker on :8787, vite on :5173 (proxies /api)
 ```
 
+The desktop app (`apps/desktop`, Electron) is the web app in a window, plus
+web tabs: links open as real pages, even sites that refuse to be framed.
+
+```sh
+bun run desktop                                  # against https://ai.replogle.dev
+bun run --filter @everywhere/desktop dev         # against vite on :5173
+bun run --filter @everywhere/desktop dist        # installers in apps/desktop/release
+```
+
+Releases: a `v*` tag also builds the app (AppImage, dmg/zip, NSIS) and adds it,
+with the `latest*.yml` its updater reads, to the tag's release. Installed
+copies check the latest release at start and every 4 hours, download in the
+background, and install on quit (or Help → Restart to update). macOS only
+updates a signed, notarized build: set the `MAC_CERTIFICATE_P12_BASE64`,
+`MAC_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and
+`APPLE_TEAM_ID` secrets. To try updating locally, serve a folder with a newer
+build and its `latest-linux.yml` and run an older one with
+`EVERYWHERE_UPDATE_URL=http://127.0.0.1:8000/`.
+
 Run a local daemon against it without touching your real config or systemd:
 
 ```sh

@@ -63,3 +63,66 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # The desktop app (apps/desktop): installers, and the latest*.yml its
+  # updater reads from the latest release, versioned by the tag.
+  desktop-app:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            args: --linux AppImage --x64 --arm64
+          - runner: macos-latest
+            args: --mac --x64 --arm64
+          - runner: windows-latest
+            args: --win nsis --x64
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - run: |
+          # Without a certificate, sign ad hoc: Apple silicon won't open an unsigned app.
+          extra=()
+          if [ "$RUNNER_OS" = macOS ] && [ -z "$CSC_LINK" ]; then extra=(-c.mac.identity=- -c.mac.hardenedRuntime=false); fi
+          bunx electron-builder ${{ matrix.args }} --publish never -c.extraMetadata.version="${GITHUB_REF_NAME#v}" "${extra[@]}"
+        env:
+          # macOS only updates a signed, notarized app: these secrets do that.
+          # Without them it still builds (unsigned), but won't update itself.
+          CSC_LINK: ${{ secrets.MAC_CERTIFICATE_P12_BASE64 }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-app-${{ runner.os }}
+          if-no-files-found: error
+          path: |
+            apps/desktop/release/*.AppImage
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.zip
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.blockmap
+            apps/desktop/release/latest*.yml
+
+  # Added to the release goreleaser made, so the daemon's and the app's
+  # "latest release" are the same one.
+  desktop-app-publish:
+    needs: [goreleaser, desktop-app]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: desktop-app-*
+          path: desktop-app
+          merge-multiple: true
+      - run: ls -l desktop-app && gh release upload "$GITHUB_REF_NAME" desktop-app/* --clobber --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

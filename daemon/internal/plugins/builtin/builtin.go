@@ -17,6 +17,7 @@ import (
 	"github.com/conner-replogle/everywhere/daemon/internal/plugins/share"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugins/telemetry"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugins/terminal"
+	"github.com/conner-replogle/everywhere/daemon/internal/plugins/tunnel"
 )
 
 // Plugins makes a fresh set of the built-in plugins.
@@ -36,5 +37,6 @@ func Plugins() []plugin.Plugin {
 		code.New(),
 		share.New(),
 		done.New(),
+		tunnel.New(),
 	}
 }

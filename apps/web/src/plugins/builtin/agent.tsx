@@ -6,7 +6,7 @@ import { ClaudeIcon, pluginLogoIcon } from "@/components/kind-icon";
 import { lazy, Suspense } from "react";
 import { getPrefs } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
-import { definePlugin, type TabKindDef } from "../types";
+import { definePlugin, isLocal, type TabKindDef } from "../types";
 
 // Loaded on demand so terminal-only use skips the markdown stack.
 const AgentView = lazy(() => import("@/components/agent/agent-view").then((m) => ({ default: m.AgentView })));
@@ -34,7 +34,7 @@ function agentTab(kind: string, title: string, icon: LucideIcon, extra: Partial<
     icon,
     // Closing an agent tab deletes its conversation.
     confirmClose: (p) =>
-      p.lastOpenedAt
+      !isLocal(p) && p.lastOpenedAt
         ? { title: `Close ${title} tab?`, description: "Its conversation is deleted with it.", confirmLabel: "Close tab" }
         : null,
     render: (ctx) => (
@@ -56,7 +56,7 @@ function agentTab(kind: string, title: string, icon: LucideIcon, extra: Partial<
         />
       </Suspense>
     ),
-    status: (p) => <AgentStatusLabel status={p.agentStatus} />,
+    status: (p) => <AgentStatusLabel status={!isLocal(p) ? p.agentStatus : undefined} />,
     ...extra,
   };
 }

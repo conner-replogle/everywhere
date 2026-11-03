@@ -125,10 +125,12 @@ export const TERM_CHANNEL_PREFIX = "term:";
 export const AGENT_CHANNEL_PREFIX = "agent:";
 export const UPLOAD_CHANNEL_PREFIX = "upload:";
 export const FILE_CHANNEL_PREFIX = "file:";
+export const TCP_CHANNEL_PREFIX = "tcp:";
 /** A process's output; the terminal channel's protocol. */
 export const PROC_CHANNEL_PREFIX = "proc:";
 
 export * from "./browser";
+export * from "./desktop";
 
 export interface DeviceInfo {
   hostname: string;
@@ -1107,6 +1109,16 @@ export type FileDaemonMsg =
   | { t: "start"; path: string; size: number; modTime: number }
   | { t: "end" }
   | { t: "error"; message: string };
+
+/**
+ * TCP channel `tcp:<id>` (the tunnel plugin): a connection to one of the
+ * device's own ports. The client sends `dial`; the daemon answers `open`,
+ * then the connection's bytes go both ways as binary messages, until `end`
+ * (the port closed it) or `error`. Only loopback hosts are allowed.
+ */
+export type TcpClientMsg = { t: "dial"; host: string; port: number };
+
+export type TcpDaemonMsg = { t: "open" } | { t: "end" } | { t: "error"; message: string };
 
 /**
  * Terminal channel `term:<threadId>`. Binary messages are raw PTY bytes in

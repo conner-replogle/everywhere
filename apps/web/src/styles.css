@@ -155,6 +155,16 @@
   }
 }
 
+/* A web tab's page loading: a bar sweeping under its toolbar. */
+@keyframes web-loading {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
 .xterm {
   padding: 8px 0 0 10px;
   height: 100%;

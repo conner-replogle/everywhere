@@ -220,6 +220,16 @@ closing the tab never removes it). `threads.list` leaves tabs out.
 - **`file:<id>` channel**, one per read: `{t:"read", path}` →
   `{t:"start", size, modTime}`, binary chunks, `{t:"end"}` or `{t:"error"}`.
   Files over 25 MB are refused.
+- **`tcp:<id>` channel** (the tunnel plugin), one per connection: `{t:"dial",
+  host, port}` → `{t:"open"}`, then the connection's bytes both ways as
+  binary messages, until `{t:"end"}` or `{t:"error", message}`. Only this
+  machine's addresses (localhost, `*.localhost`, loopback IPs). The desktop
+  app's web tabs reach their thread's device's localhost through it: a local
+  proxy in the app takes every web-tab request, passes the internet straight
+  on, and sends loopback ones to the tab's device (named by the tab's
+  `<webview>` as it attaches; a request carries it in a header the proxy
+  takes off, and https, which can't, goes to the device that host:port was
+  last loaded for) over a channel the web app opens.
 - **Browser**: each thread has its own page in the daemon's Chromium, on
   `browser:<threadId>` (a tab's id means its thread's page). A browser tab
   shows it, so a thread has at most one; claude's browser tools, from the
