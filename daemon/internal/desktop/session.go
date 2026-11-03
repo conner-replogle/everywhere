@@ -17,6 +17,7 @@ import (
 
 	"github.com/conner-replogle/everywhere/daemon/internal/desktop/ipc"
 	"github.com/conner-replogle/everywhere/daemon/internal/desktop/wire"
+	"github.com/conner-replogle/everywhere/daemon/internal/ice"
 )
 
 const rtpMTU = 1200
@@ -120,7 +121,7 @@ func startSession(m *Manager, id, offer string, mode wire.Mode, v Viewer, src so
 	s.boundCodec = ipc.H264
 	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
 		if c != nil && onCandidate != nil {
-			onCandidate(c.ToJSON())
+			onCandidate(ice.Candidate(c))
 		}
 	})
 	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: offer}); err != nil {
@@ -692,7 +693,7 @@ func (s *session) watchPath() {
 		if pair, err := s.pc.SCTP().Transport().ICETransport().GetSelectedCandidatePair(); err == nil && pair != nil {
 			if pair.Local.Typ == webrtc.ICECandidateTypeRelay || pair.Remote.Typ == webrtc.ICECandidateTypeRelay {
 				info.Relayed, info.Relay = true, "TURN"
-			} else if ip, err := netip.ParseAddr(pair.Remote.Address); err == nil && isTailscale(ip) {
+			} else if ip, err := netip.ParseAddr(pair.Remote.Address); err == nil && ice.IsTailscale(ip) {
 				if known, relayed, region := tailnetPath(ip.Unmap()); known && relayed {
 					info.Relayed, info.Relay = true, "DERP "+region
 				}

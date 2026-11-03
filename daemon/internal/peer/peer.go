@@ -15,6 +15,7 @@ import (
 
 	"github.com/pion/webrtc/v4"
 
+	"github.com/conner-replogle/everywhere/daemon/internal/ice"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugin"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/store"
@@ -213,7 +214,7 @@ func (s *Server) answer(from, sid, sdp string) error {
 		if c == nil {
 			return
 		}
-		init := c.ToJSON()
+		init := ice.Candidate(c)
 		msg := protocol.SignalData{Type: "candidate", Candidate: &protocol.IceCandidate{
 			Candidate: init.Candidate, SDPMid: init.SDPMid, SDPMLineIndex: init.SDPMLineIndex,
 		}}

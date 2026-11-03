@@ -44,11 +44,3 @@ func tailnetPath(ip netip.Addr) (known, relayed bool, relay string) {
 	}
 	return false, false, ""
 }
-
-var tailscaleV4 = netip.MustParsePrefix("100.64.0.0/10")
-var tailscaleV6 = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
-
-func isTailscale(ip netip.Addr) bool {
-	ip = ip.Unmap()
-	return tailscaleV4.Contains(ip) || tailscaleV6.Contains(ip)
-}

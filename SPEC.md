@@ -38,9 +38,10 @@ something you run in a terminal. Harness-specific support comes later.
   is agents using the MCP endpoint (see MCP): their requests and the answers
   are relayed through the hub. Push notifications carry thread names (see
   Push notifications).
-- ICE prefers direct paths: LAN, Tailscale (the daemon's tailnet host candidate
-  plus peer-reflexive discovery) and NAT traversal via STUN. Cloudflare Realtime
-  TURN is the fallback. The Worker mints 12-hour credentials for browsers
+- ICE prefers direct paths: LAN and NAT traversal via STUN first, then
+  Tailscale (the daemon's tailnet host candidate plus peer-reflexive discovery;
+  the daemon signals its tailnet host candidates at a priority below its
+  server-reflexive ones). Cloudflare Realtime TURN is the fallback. The Worker mints 12-hour credentials for browsers
   (`GET /api/ice-servers`) and daemons (`GET /api/daemon/ice-servers`), so it
   still works when the viewer isn't on the tailnet or the daemon's network blocks
   UDP. Relayed traffic stays DTLS-encrypted end to end.
@@ -52,7 +53,7 @@ something you run in a terminal. Harness-specific support comes later.
 |---|---|
 | Tenancy | Self-hosted, single user; every row keyed by `account_id` for later multi-tenant |
 | Daemon | Go, static binary, linux amd64/arm64 (macOS built, unsupported) |
-| Data path | WebRTC (pion): direct/Tailscale first, Cloudflare TURN fallback; Worker only does signaling |
+| Data path | WebRTC (pion): direct, then Tailscale, Cloudflare TURN fallback; Worker only does signaling |
 | Signaling | Hibernatable WebSockets on one `AccountHub` DO per account |
 | Worker storage | D1 for auth + device registry; DO holds sockets only |
 | Local storage | SQLite on daemon (`modernc.org/sqlite`, CGO-free) |

@@ -92,8 +92,8 @@ export const UNREACHABLE_MESSAGE = "Couldn't reach device — direct and relayed
 export const NO_ANSWER_MESSAGE = "Device didn't respond.";
 
 // STUN + short-lived Cloudflare TURN credentials from the Worker, cached until
-// an hour before they expire. ICE prefers direct paths (LAN, Tailscale, NAT
-// traversal); the TURN relay is only picked when none of them work.
+// an hour before they expire. ICE prefers direct paths (LAN, NAT traversal),
+// then Tailscale; the TURN relay is only picked when none of them work.
 let iceCache: { servers: RTCIceServer[]; turn: boolean; expiresAt: number } | null = null;
 
 export async function iceServers(): Promise<{ servers: RTCIceServer[]; turn: boolean }> {
