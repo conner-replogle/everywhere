@@ -62,7 +62,6 @@
       "oneClick": true,
       "perMachine": false
     },
-    "executableName": "everywhere-desktop",
     "extraMetadata": {
       "name": "everywhere-desktop"
     },
