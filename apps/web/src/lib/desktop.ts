@@ -26,6 +26,10 @@ export interface WebviewElement extends HTMLElement {
   findInPage(text: string, options?: { forward?: boolean; findNext?: boolean; matchCase?: boolean }): number;
   stopFindInPage(action: "clearSelection" | "keepSelection" | "activateSelection"): void;
   focus(): void;
+  /** Runs code in the page (its main world, not subject to its CSP); resolves with a cloneable result. */
+  executeJavaScript(code: string): Promise<unknown>;
+  /** A screenshot of the page as shown, in device pixels. */
+  capturePage(): Promise<{ toDataURL(): string; isEmpty(): boolean }>;
 }
 
 /** The events of a <webview> web tabs listen to, with what they carry. */

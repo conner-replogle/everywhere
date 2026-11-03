@@ -24,7 +24,7 @@ func New() *Plugin { return &Plugin{} }
 
 func (p *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
-		ID: "browser", Title: "Browser", API: plugin.API, Builtin: true,
+		ID: "browser", Title: "Agent Browser", API: plugin.API, Builtin: true,
 		Permissions: []string{plugin.PermExec, plugin.PermBrowser, plugin.PermAgentTools},
 	}
 }

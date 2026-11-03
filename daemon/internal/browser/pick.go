@@ -14,6 +14,9 @@ import (
 //
 // It runs in the page, so a hostile page can lie through it; that's fine for
 // pages the user is developing and pointing at.
+//
+// Web tabs in the desktop app run a copy (apps/web/src/lib/page-elements.ts);
+// keep the two alike.
 const elementJS = `(() => {
   if (window.__ewDescribe) return;
   const esc = (s) => (window.CSS && CSS.escape ? CSS.escape(s) : s.replace(/[^\w-]/g, "\\$&"));

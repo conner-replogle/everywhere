@@ -11,12 +11,12 @@ const BROWSER_TOOL = /^mcp__everywhere__browser_/;
 
 export const browser = definePlugin({
   id: "browser",
-  title: "Browser",
+  title: "Agent Browser",
   requires: { plugins: ["browser"], features: ["tabs"] },
   tabs: [
     {
       kind: "browser",
-      title: "Browser (device)",
+      title: "Agent Browser",
       icon: GlobeIcon,
       // One per thread: a second tab would show the same page.
       single: true,

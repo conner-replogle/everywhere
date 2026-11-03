@@ -990,7 +990,7 @@ export function BrowserView({
         </Button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon-sm" className={iconBtn} aria-label="Browser options">
+            <Button variant="ghost" size="icon-sm" className={iconBtn} aria-label="Agent Browser options">
               <EllipsisVerticalIcon />
             </Button>
           </DropdownMenuTrigger>
@@ -1237,7 +1237,7 @@ export function BrowserView({
         )}
         {!connected && (
           <Overlay>
-            <span>{error ?? "Disconnected from the browser."}</span>
+            <span>{error ?? "Disconnected from the Agent Browser."}</span>
             <Button variant="outline" size="sm" onClick={() => setAttachKey((k) => k + 1)}>
               Reconnect
             </Button>

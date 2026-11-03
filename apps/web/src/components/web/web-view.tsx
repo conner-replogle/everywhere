@@ -7,17 +7,29 @@ import {
   ExternalLinkIcon,
   GlobeIcon,
   LockIcon,
+  MessageSquarePlusIcon,
   RotateCwIcon,
   TriangleAlertIcon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { WEBVIEW_DEVICE_PREF, type WebShortcut } from "@everywhere/protocol";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { type BrowserElement, WEBVIEW_DEVICE_PREF, type WebShortcut } from "@everywhere/protocol";
+import {
+  type Annotation,
+  AnnotationBar,
+  AnnotationCanvas,
+  AnnotationComment,
+  type AnnotationTool,
+  annotationRect,
+  composeAnnotations,
+} from "@/components/browser/annotation-layer";
 import { CenteredMessage } from "@/components/centered-message";
 import { Button } from "@/components/ui/button";
+import type { ComposerDraft } from "@/lib/composer-inbox";
 import { desktop, onWebview, type WebviewElement } from "@/lib/desktop";
+import { ELEMENT_JS } from "@/lib/page-elements";
 import { addressToUrl, updateWebTab } from "@/lib/web-tabs";
-import { cn } from "@/lib/utils";
+import { cn, errorMessage } from "@/lib/utils";
 
 /** Chrome's zoom steps. */
 const ZOOMS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5];
@@ -38,6 +50,8 @@ export interface WebViewProps {
   onOpenTab(url: string, background: boolean): void;
   onNewTab(): void;
   onClose(): void;
+  /** Hands annotations to the chat; false if there's nowhere to put them. */
+  onAnnotate?(draft: ComposerDraft): boolean;
 }
 
 /**
@@ -54,7 +68,7 @@ function NeedsDesktop({ url }: { url: string }) {
   const real = /^https?:/i.test(url);
   return (
     <CenteredMessage
-      title="Web tabs need the desktop app"
+      title="The Browser needs the desktop app"
       body="Most sites refuse to be shown inside another page, so a browser can't show them here. The Everywhere desktop app can."
     >
       <AppWindowIcon className="size-6 text-muted-foreground" />
@@ -89,7 +103,27 @@ interface Failure {
   description: string;
 }
 
-function DesktopWebView({ deviceId, threadId, tabId, url: initialUrl, shown, onOpenTab, onNewTab, onClose }: WebViewProps) {
+/** The page held still to annotate: its screenshot, and its viewport in CSS pixels. */
+interface Still {
+  frame: HTMLCanvasElement;
+  src: string;
+  width: number;
+  height: number;
+  url: string;
+  title: string;
+}
+
+function DesktopWebView({
+  deviceId,
+  threadId,
+  tabId,
+  url: initialUrl,
+  shown,
+  onOpenTab,
+  onNewTab,
+  onClose,
+  onAnnotate,
+}: WebViewProps) {
   const bridge = desktop!;
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<WebviewElement | null>(null);
@@ -105,6 +139,7 @@ function DesktopWebView({ deviceId, threadId, tabId, url: initialUrl, shown, onO
   const [failure, setFailure] = useState<Failure | null>(null);
   const [crashed, setCrashed] = useState(false);
   const [find, setFind] = useState<{ text: string; match: number; matches: number } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   // Callbacks change every render; the page's events use the latest.
   const latest = useRef({ onOpenTab, onNewTab, onClose, editing });
@@ -283,6 +318,109 @@ function DesktopWebView({ deviceId, threadId, tabId, url: initialUrl, shown, onO
     el.focus();
   };
 
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(() => setNotice(null), 4000);
+    return () => clearTimeout(t);
+  }, [notice]);
+
+  // --- annotations: marks on a still of the page, sent to the chat ---
+
+  const [still, setStill] = useState<Still | null>(null);
+  const [tool, setTool] = useState<AnnotationTool>("element");
+  const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  const [editingNote, setEditingNote] = useState<number | null>(null);
+  const [sending, setSending] = useState(false);
+  const [hostSize, setHostSize] = useState({ width: 0, height: 0 });
+  const annotating = still !== null;
+
+  useEffect(() => {
+    const host = hostRef.current!;
+    const ro = new ResizeObserver(() => setHostSize({ width: host.clientWidth, height: host.clientHeight }));
+    ro.observe(host);
+    return () => ro.disconnect();
+  }, []);
+
+  const stopAnnotating = useCallback(() => {
+    setStill(null);
+    setAnnotations([]);
+    setEditingNote(null);
+  }, []);
+
+  const startAnnotating = async () => {
+    const el = view();
+    if (!el || wcId === null) return;
+    try {
+      const [info, image] = await Promise.all([
+        el.executeJavaScript("[innerWidth, innerHeight, document.title]") as Promise<[number, number, string]>,
+        el.capturePage(),
+      ]);
+      if (image.isEmpty()) throw new Error("the page gave an empty picture");
+      const src = image.toDataURL();
+      const img = new Image();
+      img.src = src;
+      await img.decode();
+      const frame = document.createElement("canvas");
+      frame.width = img.naturalWidth;
+      frame.height = img.naturalHeight;
+      frame.getContext("2d")?.drawImage(img, 0, 0);
+      setStill({ frame, src, width: info[0], height: info[1], url: el.getURL(), title: info[2] });
+      setTool("element");
+      setFind(null);
+      hostRef.current?.focus({ preventScroll: true });
+    } catch (e) {
+      setNotice(`Couldn't hold the page still: ${errorMessage(e)}`);
+    }
+  };
+
+  const pick = useCallback(async (x: number, y: number): Promise<BrowserElement | null> => {
+    const el = viewRef.current;
+    if (!el) return null;
+    try {
+      const code = `${ELEMENT_JS};\n(() => { const el = __ewDeepAt(${x}, ${y}); return el ? __ewDescribe(el) : null; })()`;
+      return (await el.executeJavaScript(code)) as BrowserElement | null;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!annotating) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (editingNote !== null) setEditingNote(null);
+      else stopAnnotating();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [annotating, editingNote, stopAnnotating]);
+
+  const sendAnnotations = async () => {
+    if (!still || annotations.length === 0) return;
+    setSending(true);
+    try {
+      const { file, text } = await composeAnnotations(still.frame, still, annotations, {
+        intro: `Annotations on ${still.url}${still.title ? ` ("${still.title}")` : ""}, a page the user has open in the Everywhere app's Browser on their computer (not the browser your browser tools drive), viewport ${still.width}×${still.height}. The attached screenshot shows each numbered mark.`,
+        name: "web-annotations",
+      });
+      if (onAnnotate?.({ text, files: [file] })) {
+        stopAnnotating();
+        return;
+      }
+      await navigator.clipboard.writeText(text);
+      setNotice("Copied the annotations; there's no chat here to send them to.");
+      stopAnnotating();
+    } catch (e) {
+      setNotice(`Couldn't send the annotations: ${errorMessage(e)}`);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const noteIndex = annotations.findIndex((a) => a.id === editingNote);
+  const note = noteIndex >= 0 ? annotations[noteIndex] : undefined;
+  const scale = still && still.width ? hostSize.width / still.width : 1;
+
   const secure = /^https:/i.test(url);
   const local = /^http:\/\/(localhost|127\.|\[::1\]|[^/]+\.localhost)/i.test(url);
   const SiteIcon = secure ? LockIcon : /^http:/i.test(url) && !local ? TriangleAlertIcon : GlobeIcon;
@@ -363,6 +501,17 @@ function DesktopWebView({ deviceId, threadId, tabId, url: initialUrl, shown, onO
           </Button>
         )}
         <Button
+          variant={annotating ? "secondary" : "ghost"}
+          size="icon-sm"
+          aria-label="Annotate"
+          aria-pressed={annotating}
+          title="Annotate the page for the chat"
+          disabled={!annotating && (wcId === null || url === "about:blank" || !!failure || crashed)}
+          onClick={() => (annotating ? stopAnnotating() : void startAnnotating())}
+        >
+          <MessageSquarePlusIcon />
+        </Button>
+        <Button
           variant="ghost"
           size="icon-sm"
           aria-label="Open in your browser"
@@ -378,7 +527,59 @@ function DesktopWebView({ deviceId, threadId, tabId, url: initialUrl, shown, onO
           </div>
         )}
       </div>
-      <div ref={hostRef} className="relative min-h-0 flex-1 bg-white">
+      <div ref={hostRef} tabIndex={-1} className="relative min-h-0 flex-1 bg-white outline-none">
+        {still && (
+          // Over the page, so nothing reaches it while annotating.
+          <div className="absolute inset-0 z-[2] bg-background">
+            <img src={still.src} alt="" draggable={false} className="pointer-events-none absolute inset-0 size-full select-none" />
+            <AnnotationCanvas
+              width={still.width}
+              height={still.height}
+              tool={tool}
+              annotations={annotations}
+              editing={editingNote}
+              pick={pick}
+              onAdd={(a) => setAnnotations((as) => [...as, a])}
+              onUpdate={(id, patch) =>
+                setAnnotations((as) => as.map((a) => (a.id === id ? ({ ...a, ...patch } as Annotation) : a)))
+              }
+              onEdit={setEditingNote}
+            />
+            {note && (
+              <AnnotationComment
+                key={note.id}
+                annotation={note}
+                n={noteIndex + 1}
+                left={annotationRect(note).x * scale}
+                top={Math.min((annotationRect(note).y + annotationRect(note).height) * scale + 8, hostSize.height - 130)}
+                maxWidth={hostSize.width}
+                onChange={(comment) => setAnnotations((as) => as.map((a) => (a.id === note.id ? { ...a, comment } : a)))}
+                onDelete={() => {
+                  setAnnotations((as) => as.filter((a) => a.id !== note.id));
+                  setEditingNote(null);
+                }}
+                onClose={() => setEditingNote(null)}
+              />
+            )}
+            <AnnotationBar
+              tool={tool}
+              count={annotations.length}
+              sending={sending}
+              onTool={setTool}
+              onUndo={() => {
+                setAnnotations((as) => as.slice(0, -1));
+                setEditingNote(null);
+              }}
+              onCancel={stopAnnotating}
+              onSend={() => void sendAnnotations()}
+            />
+          </div>
+        )}
+        {notice && (
+          <div className="absolute bottom-3 left-1/2 z-30 -translate-x-1/2 rounded-md border bg-popover px-3 py-1.5 text-xs shadow-md">
+            {notice}
+          </div>
+        )}
         {find && (
           <div className="absolute top-2 right-3 z-10 flex items-center gap-1 rounded-md border bg-popover p-1 pl-2 text-xs shadow-md">
             <input
@@ -465,7 +666,7 @@ function DesktopWebView({ deviceId, threadId, tabId, url: initialUrl, shown, onO
 function failureHint(f: Failure): string {
   const local = /^https?:\/\/(localhost|127\.|\[::1\]|[^/]+\.localhost)/i.test(f.url);
   if (local && /CONNECTION_REFUSED|EMPTY_RESPONSE|CONNECTION_CLOSED|TUNNEL/.test(f.description)) {
-    return "Nothing answered on the device's port. Is the server running there? (localhost in a web tab is the thread's device.)";
+    return "Nothing answered on the device's port. Is the server running there? (localhost in the Browser is the thread's device.)";
   }
   return f.description.replace(/^net::/, "");
 }

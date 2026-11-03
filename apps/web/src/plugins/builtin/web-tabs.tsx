@@ -2,7 +2,8 @@
 // reply) as tabs of a thread, loaded here rather than on the device. In the
 // desktop app each is a page of its own with a browser's toolbar; in a
 // browser, which can't show most sites inside another page, they say so.
-// Unlike the browser tab, Claude can't see or drive them.
+// Unlike the browser tab, Claude can't see or drive them, but they can be
+// annotated for the chat as the browser tab can.
 
 import { AppWindowIcon } from "lucide-react";
 import { lazy, Suspense } from "react";
@@ -24,11 +25,11 @@ function useLocalWebTabs(deviceId: string, threadId: string): LocalTab[] {
 
 export const webTabs = definePlugin({
   id: "web-tabs",
-  title: "Web tabs",
+  title: "Browser",
   tabs: [
     {
       kind: "web",
-      title: "Web page",
+      title: "Browser",
       icon: AppWindowIcon,
       local: true,
       multiple: true,
@@ -45,6 +46,7 @@ export const webTabs = definePlugin({
             onOpenTab={(url, background) => ctx.openUrl(url, { fresh: true, background })}
             onNewTab={() => ctx.openUrl("about:blank", { fresh: true })}
             onClose={ctx.close}
+            onAnnotate={ctx.sendToClaude}
           />
         </Suspense>
       ),

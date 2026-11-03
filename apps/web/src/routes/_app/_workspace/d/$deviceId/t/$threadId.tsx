@@ -517,7 +517,7 @@ function ThreadPage() {
                         onSelect={() => (splitPane ? select(p.id) : openSplit(p.id))}
                       >
                         <Icon />
-                        <span className="truncate">{p.parentId ? p.name : k.title}</span>
+                        <span className="truncate">{paneLabel(p, k)}</span>
                         <span className="ml-auto pl-3 text-xs text-muted-foreground">{splitPane ? "here" : "beside"}</span>
                       </DropdownMenuItem>
                     );
@@ -577,7 +577,7 @@ function ThreadPage() {
         open={!!renaming}
         onOpenChange={(o) => !o && setRenaming(null)}
         title="Rename tab"
-        initial={renaming?.name ?? ""}
+        initial={renaming ? paneLabel(renaming, kindOf(renaming.kind)) : ""}
         onSubmit={async (name) => {
           if (renaming && isLocal(renaming)) {
             localOwner(renaming)?.localTabs?.rename(deviceId, threadId, renaming.id, name);
@@ -643,8 +643,7 @@ function TabButton({
   onClose?: () => void;
 }) {
   const Icon = kind.icon;
-  // The thread's own tab is named by its kind; the thread's name is above.
-  const label = p.parentId ? p.name : kind.title;
+  const label = paneLabel(p, kind);
   const status = !isLocal(p) ? p.agentStatus : undefined;
   return (
     <div
@@ -697,4 +696,15 @@ function TabButton({
       )}
     </div>
   );
+}
+
+/**
+ * A tab's label. The thread's own tab is named by its kind (the thread's
+ * name is above), and so is a tab still named what the daemon names a new
+ * one, so renaming a kind renames them.
+ */
+function paneLabel(p: Pane, kind: TabKindDef): string {
+  if (!p.parentId) return kind.title;
+  if (!isLocal(p) && p.name === p.kind.charAt(0).toUpperCase() + p.kind.slice(1)) return kind.title;
+  return p.name;
 }
