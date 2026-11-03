@@ -18,6 +18,13 @@ import (
 // WorkerArg is the worker's argv[1].
 const WorkerArg = "worker"
 
+// HostArg starts the macOS helper app in host mode instead: it answers the
+// daemon's questions about the desktop (monitors, windows, focus, clipboard),
+// framed both ways like messages, MsgRequest JSON {"op": ...} in, MsgReply
+// JSON {"result": ...} or {"error": ...} out in order, and MsgEvent JSON
+// {"event": "clipboard"} when the clipboard changes. Its Hello comes first.
+const HostArg = "host"
+
 // Version is this protocol's revision. The worker reports it in Hello; a
 // daemon refuses a worker from another revision (they ship together, so a
 // mismatch means a half-finished install).
@@ -32,6 +39,10 @@ const (
 	// Replies to an agent worker's requests, in order.
 	MsgStill = 'I' // u8 ok; then u32 width, u32 height, RGBA pixels, or a UTF-8 error
 	MsgTyped = 'T' // u8: 0 typed, 1 no key on the layout types it
+	// Host mode (macOS).
+	MsgRequest = 'Q' // daemon → host
+	MsgReply   = 'A'
+	MsgEvent   = 'V'
 )
 
 // Daemon → worker commands and their payloads.

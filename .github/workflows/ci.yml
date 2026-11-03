@@ -23,7 +23,7 @@ jobs:
       - run: CGO_ENABLED=0 go test ./...
       - run: CGO_ENABLED=0 go build ./cmd/everywhere
       - run: CGO_ENABLED=0 GOOS=windows go vet ./cmd/everywhere ./cmd/everywhere-desktop ./internal/service ./internal/update ./internal/term ./internal/proc ./internal/desktop/...
-      - run: CGO_ENABLED=0 GOOS=darwin go vet ./cmd/everywhere ./internal/service ./internal/update
+      - run: CGO_ENABLED=0 GOOS=darwin go vet ./cmd/everywhere ./internal/service ./internal/update ./internal/desktop/...
 
   plugins:
     runs-on: ubuntu-latest
@@ -57,6 +57,13 @@ jobs:
           libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
       - run: go vet ./cmd/everywhere-desktop ./internal/desktop/...
       - run: go build -o /dev/null ./cmd/everywhere-desktop
+
+  # The macOS remote desktop helper app (Swift).
+  desktop-app-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: daemon/macos/build.sh dev "$RUNNER_TEMP/app"
 
   web:
     runs-on: ubuntu-latest

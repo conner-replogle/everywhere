@@ -62,10 +62,10 @@ func TestInstallWithWorker(t *testing.T) {
 		}
 	}
 
-	// macOS archives have no worker; the daemon is still replaced.
+	// An archive without a worker still replaces the daemon.
 	dir = t.TempDir()
 	exe = filepath.Join(dir, "everywhere")
-	if err := install(exe, tarball(t, map[string]string{"everywhere": "mac"})); err != nil {
+	if err := install(exe, tarball(t, map[string]string{"everywhere": "plain"})); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "everywhere-desktop")); !os.IsNotExist(err) {
@@ -87,5 +87,32 @@ func TestReplaceMovesOldAside(t *testing.T) {
 	entries, _ := os.ReadDir(dir)
 	if len(entries) != 1 {
 		t.Fatalf("left behind %v", entries)
+	}
+}
+
+func TestReplaceTree(t *testing.T) {
+	archive := tarball(t, map[string]string{
+		"everywhere": "new",
+		"EverywhereDesktop.app/Contents/Info.plist":               "plist",
+		"EverywhereDesktop.app/Contents/MacOS/everywhere-desktop": "app",
+	})
+	files, err := extractTree(archive, "EverywhereDesktop.app")
+	if err != nil || len(files) != 2 {
+		t.Fatalf("extractTree = %v, %v", files, err)
+	}
+	dir := t.TempDir()
+	app := filepath.Join(dir, "EverywhereDesktop.app")
+	os.MkdirAll(filepath.Join(app, "Contents", "Stale"), 0o755)
+	if err := replaceTree(app, files); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(app, "Contents", "MacOS", "everywhere-desktop")); string(got) != "app" {
+		t.Errorf("app binary = %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(app, "Contents", "Stale")); !os.IsNotExist(err) {
+		t.Errorf("the old app's files survived: %v", err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Errorf("left behind %v", entries)
 	}
 }

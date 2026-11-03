@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 
@@ -20,14 +21,19 @@ func desktopCmd(args []string) error {
 	}
 	switch args[0] {
 	case "enable":
-		if runtime.GOOS != "linux" && runtime.GOOS != "windows" {
-			return errors.New("remote desktop is only supported on Linux (Hyprland) and Windows for now")
+		if runtime.GOOS != "linux" && runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+			return errors.New("remote desktop is only supported on Linux (Hyprland), Windows and macOS")
 		}
 		if err := config.SetDesktop(true); err != nil {
 			return err
 		}
 		if err := ensureWorker(); err != nil {
 			return err
+		}
+		if runtime.GOOS == "darwin" {
+			if err := macPermissions(); err != nil {
+				return err
+			}
 		}
 		fmt.Println("Remote desktop is on. Open this device in the web app and choose Remote desktop.")
 		fmt.Println("Anyone signed in to your account can then see and control this screen.")
@@ -66,5 +72,21 @@ func ensureWorker() error {
 	if err := update.InstallWorker(exe, version.Version); err != nil {
 		return fmt.Errorf("installing %s: %w", update.WorkerName, err)
 	}
+	return nil
+}
+
+// macPermissions has EverywhereDesktop.app ask for Screen Recording and
+// Accessibility, which only someone at the Mac can grant.
+func macPermissions() error {
+	exe, err := executable()
+	if err != nil {
+		return err
+	}
+	app := filepath.Join(filepath.Dir(exe), update.WorkerName)
+	if out, err := exec.Command("open", "-W", "-n", "-a", app, "--args", "setup").CombinedOutput(); err != nil {
+		return fmt.Errorf("starting %s: %w %s", update.WorkerName, err, out)
+	}
+	fmt.Println("On this Mac, allow Everywhere Desktop in System Settings › Privacy & Security, under both")
+	fmt.Println("Screen & System Audio Recording (to see the screen) and Accessibility (to control it).")
 	return nil
 }

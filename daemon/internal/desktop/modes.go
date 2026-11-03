@@ -2,6 +2,7 @@ package desktop
 
 import (
 	"runtime"
+	"slices"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/desktop/ipc"
 	"github.com/conner-replogle/everywhere/daemon/internal/desktop/wire"
@@ -20,8 +21,11 @@ type profile struct {
 
 func profileFor(mode wire.Mode, av1 bool) profile {
 	p := baseProfile(mode, av1)
-	if runtime.GOOS == "windows" {
+	switch runtime.GOOS {
+	case "windows":
 		p.codecs = []ipc.Codec{ipc.H264} // its worker encodes H.264 only
+	case "darwin":
+		p.codecs = slices.DeleteFunc(p.codecs, func(c ipc.Codec) bool { return c == ipc.AV1 }) // VideoToolbox has no AV1 encoder
 	}
 	return p
 }

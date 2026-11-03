@@ -19,12 +19,16 @@ import (
 	"github.com/conner-replogle/everywhere/daemon/internal/desktop/ipc"
 )
 
-// HelperName is the worker binary, installed next to the daemon.
+// HelperName is the worker, installed next to the daemon: a binary, or on
+// macOS an app (worker_darwin.go).
 var HelperName = "everywhere-desktop"
 
 func init() {
-	if runtime.GOOS == "windows" {
+	switch runtime.GOOS {
+	case "windows":
 		HelperName += ".exe"
+	case "darwin":
+		HelperName = "EverywhereDesktop.app"
 	}
 }
 
@@ -38,7 +42,7 @@ func helperPath() (string, error) {
 	}
 	if exe, err := os.Executable(); err == nil {
 		p := filepath.Join(filepath.Dir(exe), HelperName)
-		if st, err := os.Stat(p); err == nil && !st.IsDir() {
+		if st, err := os.Stat(p); err == nil && st.IsDir() == (runtime.GOOS == "darwin") {
 			return p, nil
 		}
 	}
@@ -46,6 +50,14 @@ func helperPath() (string, error) {
 		return p, nil
 	}
 	return "", fmt.Errorf("%s isn't installed next to the daemon; run `everywhere desktop enable` on the device to install it", HelperName)
+}
+
+// workerProcess is a running worker: a child process, or on macOS the
+// connection to an app that LaunchServices started.
+type workerProcess interface {
+	// Wait blocks until the worker has exited.
+	Wait() error
+	Kill() error
 }
 
 type frame struct {
@@ -67,7 +79,7 @@ type cursor struct {
 // encoder hang makes Mesa abort the process that owns the encoder; isolating it
 // keeps the daemon alive.
 type worker struct {
-	cmd     *exec.Cmd
+	proc    workerProcess
 	stdin   io.WriteCloser
 	exited  chan struct{} // closed once the process has been reaped; exitErr is then set
 	exitErr error
@@ -97,28 +109,12 @@ func startWorker(cfg ipc.Config, env []string) (*worker, error) {
 		return nil, err
 	}
 	cfgJSON, _ := json.Marshal(cfg)
-	cmd := exec.Command(exe, ipc.WorkerArg, string(cfgJSON))
-	cmd.Env = env
-	cmd.Stderr = os.Stderr
-	stdin, err := cmd.StdinPipe()
+	proc, stdin, stdout, err := launchWorker(exe, cfgJSON, env)
 	if err != nil {
-		return nil, err
-	}
-	// A plain pipe rather than StdoutPipe: Wait must not close it before the
-	// final error message has been read.
-	stdout, stdoutW, err := os.Pipe()
-	if err != nil {
-		return nil, err
-	}
-	cmd.Stdout = stdoutW
-	err = cmd.Start()
-	stdoutW.Close()
-	if err != nil {
-		stdout.Close()
 		return nil, err
 	}
 	w := &worker{
-		cmd:       cmd,
+		proc:      proc,
 		stdin:     stdin,
 		frames:    make(chan *frame, 16),
 		replies:   make(chan reply, 1),
@@ -128,7 +124,7 @@ func startWorker(cfg ipc.Config, env []string) (*worker, error) {
 		exited:    make(chan struct{}),
 	}
 	go func() {
-		w.exitErr = cmd.Wait()
+		w.exitErr = proc.Wait()
 		close(w.exited)
 	}()
 	w.stdoutClose = func() { stdout.Close() }
@@ -433,12 +429,12 @@ func (w *worker) Free() {
 	case <-w.exited:
 	case <-time.After(2 * time.Second):
 		slog.Warn("desktop worker did not exit; killing")
-		_ = w.cmd.Process.Kill()
+		_ = w.proc.Kill()
 		<-w.exited
 	}
 }
 
-func (w *worker) kill() { _ = w.cmd.Process.Kill() }
+func (w *worker) kill() { _ = w.proc.Kill() }
 
 func (w *worker) waitErr() error {
 	select {

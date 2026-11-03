@@ -310,8 +310,8 @@ func uninstall(args []string) error {
 	if err := removeSelf(exe); err != nil {
 		return err
 	}
-	// The remote desktop worker lives next to the daemon.
-	if err := os.Remove(filepath.Join(filepath.Dir(exe), update.WorkerName)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	// The remote desktop worker lives next to the daemon (an app on macOS).
+	if err := os.RemoveAll(filepath.Join(filepath.Dir(exe), update.WorkerName)); err != nil {
 		return err
 	}
 	fmt.Println("Uninstalled. Remove the device in the web UI to revoke its access.")

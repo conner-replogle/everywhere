@@ -63,6 +63,11 @@ archives:
     ids: [darwin]
     formats: [tar.gz]
     name_template: "everywhere_{{ .Os }}_{{ .Arch }}"
+    files:
+      # The remote desktop helper app (Swift, universal), built on a macOS
+      # runner by the release workflow before goreleaser runs.
+      - src: "desktop-bin/darwin/EverywhereDesktop.app"
+        dst: "EverywhereDesktop.app"
   # tar.gz on Windows too, so one updater reads every archive; Windows ships
   # tar.exe for the installer.
   - id: windows

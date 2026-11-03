@@ -42,11 +42,11 @@ func InstallWorker(exe, ver string) error {
 	if err != nil {
 		return err
 	}
-	worker, err := extract(archive, WorkerName)
-	if err != nil {
+	found, err := installWorker(exe, archive)
+	if err == nil && !found {
 		return fmt.Errorf("release %s has no %s for %s/%s", ver, WorkerName, runtime.GOOS, runtime.GOARCH)
 	}
-	return replace(filepath.Join(filepath.Dir(exe), WorkerName), worker)
+	return err
 }
 
 // download fetches this platform's archive from a release's download URL and
@@ -84,25 +84,107 @@ func install(exe string, archive []byte) error {
 	if err != nil {
 		return err
 	}
-	// Linux and Windows releases also carry the remote desktop worker, which
-	// must match the daemon; it goes next to it.
-	worker, err := extract(archive, WorkerName)
-	if err == nil {
-		if err := replace(filepath.Join(filepath.Dir(exe), WorkerName), worker); err != nil {
-			return fmt.Errorf("installing %s: %w", WorkerName, err)
-		}
+	// Releases also carry the remote desktop worker, which must match the
+	// daemon; it goes next to it.
+	if _, err := installWorker(exe, archive); err != nil {
+		return fmt.Errorf("installing %s: %w", WorkerName, err)
 	}
 	return replace(exe, bin)
 }
 
-// WorkerName is the remote desktop worker in Linux and Windows release
-// archives; binaryName is the daemon.
+// WorkerName is the remote desktop worker in release archives: a binary, or
+// on macOS an app; binaryName is the daemon.
 var WorkerName, binaryName = "everywhere-desktop", "everywhere"
 
 func init() {
-	if runtime.GOOS == "windows" {
+	switch runtime.GOOS {
+	case "windows":
 		WorkerName, binaryName = "everywhere-desktop.exe", "everywhere.exe"
+	case "darwin":
+		WorkerName = "EverywhereDesktop.app"
 	}
+}
+
+// installWorker puts the archive's worker next to exe; found is false when
+// the archive has none.
+func installWorker(exe string, archive []byte) (found bool, err error) {
+	dst := filepath.Join(filepath.Dir(exe), WorkerName)
+	if runtime.GOOS == "darwin" {
+		files, err := extractTree(archive, WorkerName)
+		if err != nil || len(files) == 0 {
+			return false, err
+		}
+		return true, replaceTree(dst, files)
+	}
+	worker, err := extract(archive, WorkerName)
+	if err != nil {
+		return false, nil
+	}
+	return true, replace(dst, worker)
+}
+
+type treeFile struct {
+	data []byte
+	mode os.FileMode
+}
+
+// extractTree returns the files under the directory dir in the archive, by
+// their path inside it.
+func extractTree(archive []byte, dir string) (map[string]treeFile, error) {
+	gz, err := gzip.NewReader(strings.NewReader(string(archive)))
+	if err != nil {
+		return nil, err
+	}
+	tr := tar.NewReader(gz)
+	files := map[string]treeFile{}
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			return files, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		_, rel, ok := strings.Cut(path.Clean(h.Name), dir+"/")
+		if !ok || h.Typeflag != tar.TypeReg || !filepath.IsLocal(rel) {
+			continue
+		}
+		data, err := io.ReadAll(tr)
+		if err != nil {
+			return nil, err
+		}
+		files[rel] = treeFile{data, os.FileMode(h.Mode).Perm()}
+	}
+}
+
+// replaceTree writes a directory of files at dst, swapping it in whole: an
+// app's code signature covers every file in it. Running copies keep the
+// files they opened.
+func replaceTree(dst string, files map[string]treeFile) error {
+	tmp := filepath.Join(filepath.Dir(dst), "."+filepath.Base(dst)+".new")
+	if err := os.RemoveAll(tmp); err != nil {
+		return err
+	}
+	for rel, f := range files {
+		p := filepath.Join(tmp, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(p, f.data, f.mode|0o400); err != nil {
+			os.RemoveAll(tmp)
+			return err
+		}
+	}
+	old := filepath.Join(filepath.Dir(dst), "."+filepath.Base(dst)+".old")
+	_ = os.RemoveAll(old)
+	if err := os.Rename(dst, old); err != nil && !os.IsNotExist(err) {
+		os.RemoveAll(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		return err
+	}
+	return os.RemoveAll(old)
 }
 
 // replace atomically writes an executable at path.

@@ -40,8 +40,25 @@ jobs:
           name: desktop-worker-${{ matrix.arch }}
           path: desktop-bin
 
+  # On macOS the worker is an app of its own (daemon/macos, Swift), so Screen
+  # Recording and Accessibility are granted to it; one universal build goes in
+  # both darwin archives. It's a tarball between jobs because artifacts lose
+  # file modes, and the app's signature must survive intact.
+  desktop-app-mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: |
+          daemon/macos/build.sh "${GITHUB_REF_NAME#v}" "$RUNNER_TEMP/app"
+          mkdir -p desktop-bin/darwin
+          tar -C "$RUNNER_TEMP/app" -czf desktop-bin/darwin/EverywhereDesktop.app.tar.gz EverywhereDesktop.app
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-worker-darwin
+          path: desktop-bin
+
   goreleaser:
-    needs: desktop-worker
+    needs: [desktop-worker, desktop-app-mac]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -56,7 +73,11 @@ jobs:
           pattern: desktop-worker-*
           path: desktop-bin
           merge-multiple: true
-      - run: chmod +x desktop-bin/*/everywhere-desktop && ls -lR desktop-bin
+      - run: |
+          chmod +x desktop-bin/linux_*/everywhere-desktop
+          tar -C desktop-bin/darwin -xzf desktop-bin/darwin/EverywhereDesktop.app.tar.gz
+          rm desktop-bin/darwin/EverywhereDesktop.app.tar.gz
+          ls -lR desktop-bin
       - uses: goreleaser/goreleaser-action@v6
         with:
           version: "~> v2"
