@@ -40,6 +40,7 @@ import { ClaudeUpdate, useClaudeUpdateCheck } from "@/components/claude-update";
 import { DeviceUpdate, updateStatus, useUpdateCheck } from "@/components/device-update";
 import { useFleet } from "@/components/fleet";
 import { HubStatus } from "@/components/hub-status";
+import { AppVersion } from "@/components/app-version";
 import { Logo } from "@/components/logo";
 import { NewProjectDialog } from "@/components/new-project-dialog";
 import { PresenceDot } from "@/components/presence-dot";
@@ -605,6 +606,7 @@ export function AppSidebar({
         >
           <Logo className="text-[13px]" />
         </Link>
+        <AppVersion />
         <span className="ml-auto min-w-0">
           <HubStatus />
         </span>

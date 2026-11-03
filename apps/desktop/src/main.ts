@@ -246,6 +246,9 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.on("ew:tunnel-closed", (e, id: number, error?: string) => fromApp(e) && tunnels.closed(id, error));
   ipcMain.on("ew:tunnel-pause", (e, id: number, paused: boolean) => fromApp(e) && tunnels.pause(id, !!paused));
   ipcMain.handle("ew:favicon", (e, url: unknown) => (fromApp(e) && typeof url === "string" ? favicon(url) : null));
+  ipcMain.handle("ew:update-state", (e) => (fromApp(e) ? updateState() : null));
+  ipcMain.on("ew:update-check", (e) => fromApp(e) && checkNow());
+  ipcMain.on("ew:update-install", (e) => fromApp(e) && installNow());
 
   void app.whenReady().then(async () => {
     const proxy = new LoopbackProxy(tunnels, {
@@ -261,6 +264,7 @@ if (!app.requestSingleInstanceLock()) {
     // Progress is only shown at whole tens, so the menu isn't rebuilt per chunk.
     let shown = "";
     startUpdates((u) => {
+      win?.webContents.send("ew:update", u);
       const key = u.t === "downloading" ? `${u.t} ${Math.floor(u.percent / 10)}` : u.t;
       if (key !== shown) {
         shown = key;

@@ -4,18 +4,14 @@
 // background, and installs it when the app quits, or at once from the
 // notification or the menu.
 
+import type { DesktopUpdateState } from "@everywhere/protocol";
 import { app, dialog, Notification, powerMonitor } from "electron";
 import { autoUpdater, type UpdateInfo } from "electron-updater";
 
 const CHECK_EVERY_MS = 4 * 60 * 60 * 1000;
 const FIRST_CHECK_AFTER_MS = 10_000;
 
-export type UpdateState =
-  | { t: "idle" }
-  | { t: "checking" }
-  | { t: "downloading"; version: string; percent: number }
-  | { t: "ready"; version: string }
-  | { t: "error"; message: string };
+export type UpdateState = DesktopUpdateState;
 
 let state: UpdateState = { t: "idle" };
 let onChange: (s: UpdateState) => void = () => {};
@@ -36,7 +32,7 @@ export function canUpdate(): boolean {
 }
 
 export function updateState(): UpdateState {
-  return state;
+  return canUpdate() ? state : { t: "unsupported" };
 }
 
 export function startUpdates(changed: (s: UpdateState) => void) {

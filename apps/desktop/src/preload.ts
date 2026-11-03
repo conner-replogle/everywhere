@@ -2,7 +2,7 @@
 // web app looks for to know it's in the desktop app (and can have web tabs).
 
 import { contextBridge, ipcRenderer } from "electron";
-import type { DesktopBridge, DesktopTunnelMsg, DesktopWebEvent } from "@everywhere/protocol";
+import type { DesktopBridge, DesktopTunnelMsg, DesktopUpdateState, DesktopWebEvent } from "@everywhere/protocol";
 
 const bridge: DesktopBridge = {
   version: process.argv.find((a) => a.startsWith("--everywhere-version="))?.split("=")[1] ?? "",
@@ -29,6 +29,16 @@ const bridge: DesktopBridge = {
   },
   favicon(url) {
     return ipcRenderer.invoke("ew:favicon", url) as Promise<string | null>;
+  },
+  update: {
+    state: () => ipcRenderer.invoke("ew:update-state") as Promise<DesktopUpdateState>,
+    onChange(fn) {
+      const listener = (_e: Electron.IpcRendererEvent, s: DesktopUpdateState) => fn(s);
+      ipcRenderer.on("ew:update", listener);
+      return () => void ipcRenderer.off("ew:update", listener);
+    },
+    check: () => ipcRenderer.send("ew:update-check"),
+    install: () => ipcRenderer.send("ew:update-install"),
   },
 };
 

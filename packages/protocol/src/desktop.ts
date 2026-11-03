@@ -58,4 +58,26 @@ export interface DesktopBridge {
   };
   /** A page's favicon as a data: URL (fetched with the web tabs' cookies), or null. */
   favicon(url: string): Promise<string | null>;
+  /** The app's own updates. Missing in apps from before it. */
+  update?: {
+    state(): Promise<DesktopUpdateState>;
+    /** Subscribes to changes; returns the unsubscribe. */
+    onChange(fn: (s: DesktopUpdateState) => void): () => void;
+    /** Checks now, and says how it went. */
+    check(): void;
+    /** Restarts into a downloaded update. */
+    install(): void;
+  };
 }
+
+/**
+ * Where the desktop app's update is. unsupported: this copy can't update
+ * itself (a dev build, or on Linux not the AppImage).
+ */
+export type DesktopUpdateState =
+  | { t: "unsupported" }
+  | { t: "idle" }
+  | { t: "checking" }
+  | { t: "downloading"; version: string; percent: number }
+  | { t: "ready"; version: string }
+  | { t: "error"; message: string };
