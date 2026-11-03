@@ -88,6 +88,11 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run build
       - run: |
+          # Secrets that aren't set come as empty strings, which electron-builder
+          # takes as set (an empty CSC_LINK is a path to nothing).
+          for v in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!v}" ]; then unset "$v"; fi
+          done
           # Without a certificate, sign ad hoc: Apple silicon won't open an unsigned app.
           extra=()
           if [ "$RUNNER_OS" = macOS ] && [ -z "$CSC_LINK" ]; then extra=(-c.mac.identity=- -c.mac.hardenedRuntime=false); fi
