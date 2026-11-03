@@ -34,10 +34,8 @@ something you run in a terminal. Harness-specific support comes later.
 ```
 
 - Browsers never send project, thread, or terminal data through the Worker.
-  It lives only on the daemon (SQLite) and travels over WebRTC. The exception
-  is agents using the MCP endpoint (see MCP): their requests and the answers
-  are relayed through the hub. Push notifications carry thread names (see
-  Push notifications).
+  It lives only on the daemon (SQLite) and travels over WebRTC. Push
+  notifications carry thread names (see Push notifications).
 - ICE prefers direct paths: LAN and NAT traversal via STUN first, then
   Tailscale (the daemon's tailnet host candidate plus peer-reflexive discovery;
   the daemon signals its tailnet host candidates at a priority below its
@@ -126,7 +124,7 @@ hub → daemon   { t: "signal", from: connId, sid, data }
 daemon → hub   { t: "signal", to: connId, sid, data }           answer | candidates
 hub → client   { t: "signal", from: deviceId, sid, data }
 hub → any      { t: "error", code, message }                    e.g. daemon_too_old, device_offline
-hub → daemon   { t: "rpc", id, method, params }                 from the MCP endpoint (RemoteMethods)
+hub → daemon   { t: "rpc", id, method, params }                 the Worker's own (see Hub RPC)
 daemon → hub   { t: "rpc.result", id, result? | error? }
 ```
 
@@ -462,8 +460,7 @@ that speaks MCP. `internal/process`.
 - **Control RPC**: `processes.list {threadId}`, `processes.start {threadId,
   name, command, cwd?}`, `processes.stop | restart | remove {id}`; event
   `processes.changed {threadId}`. `threads.list` reports each thread's running
-  `processes` count. All are allowed over the hub's RPC (an MCP agent can
-  already `code.exec`).
+  `processes` count.
 - **`proc:<id>` data channel**: the terminal channel's protocol (attach,
   writer, takeover, resize, input, exited), so the log viewer is the
   terminal view and the writer can answer a prompt. Attaching to a finished
@@ -632,8 +629,6 @@ machine, a quick task, some files. Feature `scratch`.
   over the hub). `scratch.usage` counts files and bytes in all and per
   folder (up to 200 000 entries). `tabs.create {kind: "terminal", input}`
   types input into the new shell without running it.
-- **MCP**: `create_thread` without a project starts in Scratch (home on
-  daemons from before it); `list_projects` marks it `isScratch`.
 - **Web app**: Scratch and home leave the Projects list (on daemons that have
   Scratch). The sidebar's Scratch section lists each device with its newest
   Scratch threads and a + menu; device names link to the device page. The
@@ -652,30 +647,16 @@ machine, a quick task, some files. Feature `scratch`.
   panel points to Scratch on the devices that are online. No thread list is
   cached for offline devices.
 
-## MCP (agents such as a ChatGPT connector)
+## Hub RPC
 
-`POST /mcp` is an MCP server (Streamable HTTP, stateless JSON responses) that
-lets another agent use the account: list devices, projects and threads, read
-threads, create projects and threads, send messages, answer permission prompts
-and type into terminals. Tools are in `apps/worker/src/mcp-tools.ts`. It also
-has `search` and `fetch`, the pair ChatGPT expects.
-
-- **Auth**: OAuth 2.1 (`apps/worker/src/oauth.ts`). Discovery through
-  `/.well-known/oauth-protected-resource[/mcp]` and
-  `/.well-known/oauth-authorization-server`. Clients register themselves at
-  `/oauth/register` (RFC 7591). `/oauth/authorize` requires the normal web
-  sign-in and then shows a consent page; only S256 PKCE is accepted. Access
-  tokens last 1 hour and refresh tokens 30 days; refresh tokens rotate. Each
-  approval is a grant (`oauth_grants`), listed and revocable under Settings →
-  Security. Changing or resetting the password revokes every grant.
-- **Transport**: tool calls reach daemons through the AccountHub as `rpc`
-  messages on the daemon's existing socket. Daemons that announce the `rpc`
-  hub feature serve `RemoteMethods` (`daemon/internal/peer/remote.go`): the
-  control methods (except `debug.peer` and `device.update`), plus
-  `threads.get`, `threads.search`, `agent.read` (log page plus state,
-  optionally waiting for a turn to finish), `agent.request` (any agent-channel
-  request except attach/history), `term.read` (scrollback as plain text) and
-  `term.write` (typing; bypasses the writer role).
+The Worker sends a daemon requests of its own as `rpc` messages on the
+daemon's socket (hub feature `rpc`), answered with `rpc.result`. Only the
+methods registered as Remote are served (`RemoteMethods` in
+`packages/protocol`): `agent.setToken` (the account's Claude token),
+`plugins.setAccountSettings` (plugins' account settings) and
+`projects.clone` (with the account's GitHub token). Nothing else is
+reachable that way, so the Worker can't run commands, read files or drive
+threads on a device. There is no MCP endpoint for outside agents.
 
 ## Push notifications
 
@@ -737,7 +718,7 @@ TODO.md items come later.
 - **Opt-in on the device**: off until `everywhere desktop enable` is run there
   (`desktop` in config.json), so neither a stolen web session nor the Worker
   can turn it on. `desktop.info` reports enabled/available and why not.
-  Never reachable over MCP (`RemoteMethods` refuses `desktop.*`).
+  Never reachable over the hub (`desktop.*` isn't Remote).
 - **Signaling**: each session has its **own PeerConnection** (own media
   engine, GCC, playout-delay extension), signaled over the device
   connection's `control` channel: `desktop.start {sdp, mode, viewer, source?, tabId?}` →
@@ -794,7 +775,7 @@ TODO.md items come later.
 /d/$deviceId/desktop            remote desktop: video, workspace bar, monitor picker, fullscreen + keyboard lock
 /settings/devices               add device (shows install command), rename, revoke
 /settings/notifications         push notifications on this browser, test
-/settings/security              password, 2FA, sessions, connected apps (MCP URL, revoke grants)
+/settings/security              password, 2FA, sessions
 ```
 
 The thread page's top row holds the threads opened recently in this browser,

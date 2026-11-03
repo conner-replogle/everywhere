@@ -51,9 +51,8 @@ export const HUB_SESSION_HEADER = "x-ew-session";
 /**
  * One per account. Holds a hibernatable WebSocket for every connected daemon
  * and browser tab, relays WebRTC signaling between them, and broadcasts device
- * presence. It never sees browsers' terminal data; the only project and thread
- * data through it is rpc for agents using the MCP endpoint, and thread names
- * in push notifications.
+ * presence. It never sees browsers' terminal data; the only thread data
+ * through it is thread names in push notifications.
  */
 export class AccountHub extends DurableObject<Env> {
   /** rpc requests waiting on a daemon. In memory: the caller's request keeps the DO awake. */
@@ -248,8 +247,8 @@ export class AccountHub extends DurableObject<Env> {
   }
 
   /**
-   * Relays a request to a daemon over its socket (for agents using the MCP
-   * endpoint, which have no WebRTC connection) and waits for the answer.
+   * Sends a request of the Worker's own to a daemon over its socket (see
+   * RemoteMethods) and waits for the answer.
    */
   async deviceRpc<M extends RemoteMethod>(
     deviceId: string,

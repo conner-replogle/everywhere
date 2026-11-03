@@ -94,7 +94,7 @@ draw a plugin's tab kinds and menus before loading its web code.
   "contributes": {
     "rpc": [
       { "method": "processes.list" },
-      { "method": "processes.start", "remote": true },
+      { "method": "processes.start" },
       { "method": "processes.dashboard", "slow": true }
     ],
     "events":   ["processes.changed"],
@@ -150,7 +150,7 @@ type Host interface {
 }
 
 type RPCContext struct {
-	Peer   PeerRef // nil when the call came over the hub (an MCP agent)
+	Peer   PeerRef // nil when the call came over the hub (the Worker)
 	Remote bool
 }
 type RPCFunc func(ctx context.Context, c RPCContext, params json.RawMessage) (any, error)
@@ -168,9 +168,9 @@ What this removes from `internal/peer`:
   handler per method, each decoding its own params.
 - The hard-coded list of slow methods (`device.checkUpdate`, `agent.login`,
   `desktop.start`…) becomes `Slow()` on the registration.
-- `remote.go`'s denylist (`desktop.*`, `debug.peer`, `device.update`)
-  becomes `Remote()` on the registration: off by default, so a new method
-  isn't reachable over MCP until someone decides it should be.
+- `Remote()` on the registration makes a method reachable over the hub, by
+  the Worker itself. Only `agent.setToken`, `plugins.setAccountSettings` and
+  `projects.clone` have it; external plugins can't.
 - `callDesktop`'s special case for methods that need the calling peer is
   `RPCContext.Peer`.
 - `NewServer`'s tool list and `claudeArgs`' allowed-tool list are built from
@@ -342,7 +342,6 @@ installed.
 | `browser` | the thread's Chromium page |
 | `screen` | the desktop: capture and input. **Local consent**: see below |
 | `secrets` | its sealed secret from the hub |
-| `remote` | any of its methods being reachable over the hub (MCP agents) |
 
 The rules that matter today carry over as host rules, not one-off checks:
 
@@ -354,9 +353,9 @@ The rules that matter today carry over as host rules, not one-off checks:
   can be installed, updated, turned on and removed from the app too
   (Settings → Plugins): the app can already open a shell on the device, so
   keeping that to the CLI added friction, not safety. None of these methods
-  are `remote`, so a connected agent can't install code.
-- **Not over MCP by default.** `Remote()` is opt-in per method, and a plugin
-  with `screen` can't opt in.
+  are `remote`, so the Worker can't install code.
+- **Not over the hub.** Only the core's three Worker methods are `Remote()`;
+  plugins' methods never are.
 - **Ask before running commands.** Tools declared `ask: true` stay out of
   claude's allowed tools, as `process_start` does today.
 
@@ -469,8 +468,8 @@ Host-wide rules that are one-offs today:
 - A session belongs to the browser tab that opened it and closes with it.
 - Limits per plugin: how many at once, and whether a new one takes over
   (the desktop's "one per device; the old viewer is told who").
-- Sessions are never opened over the hub: `rtc.*` isn't `remote`, so an MCP
-  agent can't start a screen stream.
+- Sessions are never opened over the hub: `rtc.*` isn't `remote`, so the
+  Worker can't start a screen stream.
 - The core reports each session's path (direct, Tailscale, TURN) and stats,
   so "this is relayed" warnings and the debug panel work for every plugin.
 
@@ -511,7 +510,7 @@ plugins. "Needs" is the point: it's the API we have to build.
 
 ### terminal (built-in, required)
 - **Contributes**: thread kind and tab kind `terminal`; channel `term:`;
-  `term.read` / `term.write` over the hub (remote); the mobile key row;
+  the mobile key row;
   "Run in terminal" (`tabs.create {kind: terminal, input}`) as a service
   others call.
 - **Needs**: `pty`, `thread.workdir`, thread lifecycle events (stop the
@@ -585,7 +584,7 @@ limits) hide for the others. Built-in agents are listed in
 
 ### processes (built-in)
 - **Contributes**: tab kind `processes`; channel `proc:`; `processes.*`
-  RPC (remote); `process_*` tools (`process_start` asks); `process` timeline
+  RPC; `process_*` tools (`process_start` asks); `process` timeline
   events; the strip above the composer; the sidebar's running count;
   widgets; `/progress` on the loopback server.
 - **Needs**: `exec`, `pty`, the store (`processes`), `AgentService.Notify`
@@ -644,13 +643,6 @@ Small, which makes them the first to move.
 - **done**: the `thread_done` tool, `threads.done`, the sidebar's "N done"
   group. Needs `agent.turnEnded` (only a completed turn counts) and
   `thread.touched` (clears it).
-
-### account MCP (connected agents) (built-in)
-- **Contributes**: worker part: `/mcp`, OAuth, `apps/worker/src/mcp-tools.ts`,
-  Settings → Security's connected apps. Daemon part: `code.exec`,
-  `read_file`… (`internal/code`).
-- **Needs**: every plugin's methods marked `remote`, so its tool list grows
-  with them instead of with `RemoteMethods`; `exec`, `fs.*`.
 
 ### push and alerts (built-in)
 - **Contributes**: worker part: Web Push, VAPID, subscriptions, the `notify`

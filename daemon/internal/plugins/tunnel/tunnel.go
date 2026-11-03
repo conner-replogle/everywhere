@@ -34,7 +34,7 @@ func New() *Plugin { return &Plugin{} }
 func (p *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		ID: "tunnel", Title: "Tunnel", API: plugin.API, Builtin: true,
-		Permissions: []string{plugin.PermNetLoopback, plugin.PermRemote},
+		Permissions: []string{plugin.PermNetLoopback},
 	}
 }
 

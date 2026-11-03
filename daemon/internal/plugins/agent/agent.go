@@ -11,7 +11,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -23,12 +22,6 @@ import (
 	"github.com/conner-replogle/everywhere/daemon/internal/harness"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugin"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
-)
-
-const (
-	remoteEventsDefault = 40
-	remoteEventsMax     = 500
-	remoteWaitMax       = 50 * time.Second
 )
 
 // Plugin is the agent plugin.
@@ -115,7 +108,7 @@ func (p *Plugin) Start(h plugin.Host) error {
 				return nil, err
 			}
 			return fn(ctx, ps)
-		}, append(opts, plugin.Remote())...)
+		}, opts...)
 	}
 	rpc("agent.info", func(context.Context, params) (any, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -150,27 +143,14 @@ func (p *Plugin) Start(h plugin.Host) error {
 		}
 		h.Emit(protocol.RPCEvent{Event: protocol.EventClaudeAuth})
 		return plugin.Empty{}, nil
-	})
+	}, plugin.RemoteOnly())
 
 	h.HandleRPC("threads.search", plugin.Params(func(_ plugin.RPCContext, s struct {
 		Query string `json:"query"`
 		Limit int    `json:"limit"`
 	}) (any, error) {
 		return h.Store().SearchAgentEvents(s.Query, min(max(s.Limit, 1), 50))
-	}), plugin.Remote())
-	h.HandleRPC("agent.read", plugin.Params(p.remoteRead), plugin.RemoteOnly())
-	h.HandleRPC("agent.request", plugin.Params(func(_ plugin.RPCContext, r struct {
-		ThreadID string                  `json:"threadId"`
-		Msg      protocol.AgentClientMsg `json:"msg"`
-	}) (any, error) {
-		if _, err := p.agentThread(r.ThreadID); err != nil {
-			return nil, err
-		}
-		if err := p.m.Request(r.ThreadID, r.Msg); err != nil {
-			return nil, err
-		}
-		return plugin.Empty{}, nil
-	}), plugin.RemoteOnly())
+	}))
 
 	go p.m.ContinueMarked() // turns interrupted by an update
 	return nil
@@ -187,80 +167,6 @@ func (p *Plugin) initialMode(t protocol.Thread, mode string) error {
 		return fmt.Errorf("unknown permission mode %q", mode)
 	}
 	return p.h.Store().SetAgentPermissionMode(t.ID, mode)
-}
-
-// agentThread is a thread of claude or another agent.
-func (p *Plugin) agentThread(id string) (protocol.Thread, error) {
-	t, err := p.h.Threads().Get(id)
-	if err != nil {
-		return t, err
-	}
-	if !agent.IsAgentKind(t.Kind) {
-		return t, errors.New("not an agent thread")
-	}
-	return t, nil
-}
-
-// AgentRead is what agent.read returns: a claude thread, its live state and
-// a page of its log, oldest first.
-type AgentRead struct {
-	Thread protocol.Thread             `json:"thread"`
-	State  protocol.AgentState         `json:"state"`
-	Events []protocol.AgentLoggedEvent `json:"events"`
-	// More: there are older events before the first one here.
-	More bool `json:"more"`
-	// LastSeq is the newest event's seq, for afterSeq next time.
-	LastSeq int64 `json:"lastSeq"`
-}
-
-type readParams struct {
-	ThreadID  string `json:"threadId"`
-	AfterSeq  int64  `json:"afterSeq"`
-	BeforeSeq int64  `json:"beforeSeq"`
-	Limit     int    `json:"limit"`
-	WaitMs    int64  `json:"waitMs"`
-}
-
-// remoteRead reads a claude thread: the newest limit events after afterSeq
-// (and before beforeSeq, if set). With waitMs, it first waits up to that
-// long for a turn in progress to finish or block on a prompt.
-func (p *Plugin) remoteRead(_ plugin.RPCContext, r readParams) (any, error) {
-	t, err := p.agentThread(r.ThreadID)
-	if err != nil {
-		return nil, err
-	}
-	if wait := min(time.Duration(r.WaitMs)*time.Millisecond, remoteWaitMax); wait > 0 {
-		deadline := time.Now().Add(wait)
-		for time.Now().Before(deadline) {
-			if _, status := p.m.Status(t.ID); status != "starting" && status != "working" {
-				break
-			}
-			time.Sleep(250 * time.Millisecond)
-		}
-	}
-	limit := r.Limit
-	if limit <= 0 {
-		limit = remoteEventsDefault
-	}
-	events, more, err := p.h.Store().AgentEvents(t.ID, r.AfterSeq, r.BeforeSeq, min(limit, remoteEventsMax))
-	if err != nil {
-		return nil, err
-	}
-	st, err := p.m.State(t.ID)
-	if err != nil {
-		return nil, err
-	}
-	// Every client gets these from device.info and agent.info instead.
-	st.Models, st.Commands = nil, nil
-	if live, err := p.h.Threads().Live(t.ID); err == nil {
-		t = live
-	}
-	out := AgentRead{Thread: t, State: st, Events: make([]protocol.AgentLoggedEvent, len(events)), More: more}
-	for i, e := range events {
-		out.Events[i] = protocol.AgentLoggedEvent{Seq: e.Seq, At: e.At, Event: e.Event}
-		out.LastSeq = e.Seq
-	}
-	return out, nil
 }
 
 // service is the AgentService other plugins use.

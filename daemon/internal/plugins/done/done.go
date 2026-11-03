@@ -25,7 +25,7 @@ func (p *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		ID: "done", Title: "Done threads", API: plugin.API, Builtin: true,
 		Optional:    []string{"agent"},
-		Permissions: []string{plugin.PermAgentTools, plugin.PermRemote},
+		Permissions: []string{plugin.PermAgentTools},
 		Features:    []string{protocol.FeatureDone},
 	}
 }
@@ -41,7 +41,7 @@ func (p *Plugin) Start(h plugin.Host) error {
 		}
 		h.Threads().Changed()
 		return h.Threads().Live(r.ID)
-	}), plugin.Remote())
+	}))
 	if _, ok := h.Service(plugin.ServiceAgent); ok {
 		for _, t := range p.tools() {
 			h.AddTools(plugin.Tool{Tool: t})

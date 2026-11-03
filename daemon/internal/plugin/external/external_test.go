@@ -34,7 +34,7 @@ func TestMain(m *testing.M) {
 			greeting, team := "Hello", ""
 			p.Setting("greeting", &greeting)
 			p.Setting("team", &team)
-			return map[string]any{"greeting": greeting + ", " + a.Name, "team": team, "remote": c.Remote, "dataDir": p.Init.DataDir}, nil
+			return map[string]any{"greeting": greeting + ", " + a.Name, "team": team, "dataDir": p.Init.DataDir}, nil
 		})
 		p.Method("hello.remember", func(_ context.Context, c sdk.Call) (any, error) {
 			var a struct{ Thread, Value string }
@@ -83,9 +83,9 @@ func helloManifest(t *testing.T) (string, external.Manifest) {
 	m := external.Manifest{
 		ID: "hello", Title: "Hello", Version: "0.1.0", API: plugin.API,
 		Command:     []string{exe},
-		Permissions: []string{plugin.PermAgentTools, plugin.PermRemote},
+		Permissions: []string{plugin.PermAgentTools},
 		Contributes: external.Contributes{
-			RPC:   []external.RPC{{Method: "hello.greet", Remote: true}, {Method: "hello.crash"}, {Method: "hello.remember"}},
+			RPC:   []external.RPC{{Method: "hello.greet"}, {Method: "hello.crash"}, {Method: "hello.remember"}},
 			Tools: []external.Tool{{Name: "wave", Description: "Wave.", InputSchema: json.RawMessage(`{"type":"object"}`)}},
 		},
 		Settings: []protocol.PluginSetting{
@@ -124,23 +124,23 @@ func TestExternalPlugin(t *testing.T) {
 	waitRunning(t, p)
 	ctx := context.Background()
 
-	greet := func(remote bool) (map[string]any, error) {
-		res, err := r.Call(ctx, "hello.greet", plugin.RPCContext{Remote: remote}, json.RawMessage(`{"name":"Ada"}`))
+	greet := func() (map[string]any, error) {
+		res, err := r.Call(ctx, "hello.greet", plugin.RPCContext{}, json.RawMessage(`{"name":"Ada"}`))
 		if err != nil {
 			return nil, err
 		}
 		var out map[string]any
 		return out, json.Unmarshal(res.(json.RawMessage), &out)
 	}
-	out, err := greet(true)
-	if err != nil || out["greeting"] != "Hello, Ada" || out["remote"] != true {
+	out, err := greet()
+	if err != nil || out["greeting"] != "Hello, Ada" {
 		t.Fatalf("greet: %v %v", out, err)
 	}
 	if !strings.Contains(out["dataDir"].(string), filepath.Join("plugin-data", "hello")) {
 		t.Errorf("data dir %v", out["dataDir"])
 	}
-	if _, err := r.Call(ctx, "hello.crash", plugin.RPCContext{Remote: true}, nil); err == nil {
-		t.Error("a method that isn't remote answered over the hub")
+	if _, err := r.Call(ctx, "hello.greet", plugin.RPCContext{Remote: true}, nil); err == nil {
+		t.Error("a plugin's method answered over the hub")
 	}
 
 	// Its tool is on the daemon's MCP server, named for the plugin.
@@ -171,7 +171,7 @@ func TestExternalPlugin(t *testing.T) {
 	// A crash restarts it.
 	_, _ = r.Call(ctx, "hello.crash", plugin.RPCContext{}, nil)
 	for range 200 {
-		if _, err := greet(false); err == nil {
+		if _, err := greet(); err == nil {
 			return
 		}
 		time.Sleep(25 * time.Millisecond)
@@ -200,9 +200,8 @@ func TestManifestValidation(t *testing.T) {
 			m.Permissions = []string{plugin.PermExec}
 			m.Contributes.Agents = []external.Agent{{Kind: "hello", Title: "Hello"}}
 		},
-		"unprefixed method":   func(m *external.Manifest) { m.Contributes.RPC = []external.RPC{{Method: "threads.list"}} },
-		"remote without perm": func(m *external.Manifest) { m.Contributes.RPC = []external.RPC{{Method: "hello.x", Remote: true}} },
-		"unprefixed channel":  func(m *external.Manifest) { m.Contributes.Channels = []string{"term:"} },
+		"unprefixed method":  func(m *external.Manifest) { m.Contributes.RPC = []external.RPC{{Method: "threads.list"}} },
+		"unprefixed channel": func(m *external.Manifest) { m.Contributes.Channels = []string{"term:"} },
 		"tools without perm": func(m *external.Manifest) {
 			m.Contributes.Tools = []external.Tool{{Name: "x", InputSchema: json.RawMessage(`{}`)}}
 		},

@@ -3,8 +3,6 @@
 
 import { Hono } from "hono";
 import { serveDashboardFrame } from "../dashboard";
-import { mcp as mcpRoutes } from "../mcp";
-import { oauth } from "../oauth";
 import { github as githubRoutes } from "../routes/github";
 import { prompt } from "../routes/prompt";
 import { speech } from "../routes/speech";
@@ -28,12 +26,4 @@ export const WORKER_PLUGINS: readonly WorkerPlugin[] = [
   { id: "rewrite", routes: [{ path: "/api/prompt", app: prompt }] },
   // The sandboxed frame dashboards (and external plugins' web parts) run in.
   { id: "dashboards", routes: [{ path: "/dashboard", app: dashboardFrame }] },
-  // The account's MCP endpoint for agents, and the OAuth server that authorizes them.
-  {
-    id: "mcp",
-    routes: [
-      { path: "/", app: oauth },
-      { path: "/", app: mcpRoutes },
-    ],
-  },
 ];

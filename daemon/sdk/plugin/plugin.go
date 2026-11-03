@@ -32,8 +32,6 @@ const API = 1
 type Call struct {
 	Method string
 	Params json.RawMessage
-	// Remote: it came from an agent connected to the account (MCP), not a browser.
-	Remote bool
 }
 
 // Decode decodes the call's params.
@@ -396,7 +394,6 @@ func (p *Plugin) handle(method string, raw json.RawMessage) (any, error) {
 		var a struct {
 			Method string          `json:"method"`
 			Params json.RawMessage `json:"params"`
-			Remote bool            `json:"remote"`
 		}
 		if err := json.Unmarshal(raw, &a); err != nil {
 			return nil, err
@@ -405,7 +402,7 @@ func (p *Plugin) handle(method string, raw json.RawMessage) (any, error) {
 		if fn == nil {
 			return nil, fmt.Errorf("unknown method %q", a.Method)
 		}
-		return fn(ctx, Call{Method: a.Method, Params: a.Params, Remote: a.Remote})
+		return fn(ctx, Call{Method: a.Method, Params: a.Params})
 	case "tool":
 		var a struct {
 			Name     string          `json:"name"`

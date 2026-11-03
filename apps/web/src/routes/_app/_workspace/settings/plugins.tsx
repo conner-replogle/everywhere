@@ -48,7 +48,6 @@ const PERMISSIONS: Record<string, string> = {
   browser: "drive the device's browser",
   screen: "see and control the screen",
   secrets: "use account secrets",
-  remote: "be used by connected agents",
 };
 
 const INSTALL_TIMEOUT = 5 * 60_000;

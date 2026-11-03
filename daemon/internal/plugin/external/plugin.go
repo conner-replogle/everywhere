@@ -135,15 +135,12 @@ func (p *Plugin) Start(h plugin.Host) error {
 	c := p.m.Contributes
 	for _, r := range c.RPC {
 		var opts []plugin.RPCOption
-		if r.Remote {
-			opts = append(opts, plugin.Remote())
-		}
 		if r.Slow {
 			opts = append(opts, plugin.Slow())
 		}
 		method := r.Method
 		h.HandleRPC(method, func(ctx context.Context, rc plugin.RPCContext, params json.RawMessage) (any, error) {
-			res, err := p.call(ctx, "rpc", map[string]any{"method": method, "params": params, "remote": rc.Remote})
+			res, err := p.call(ctx, "rpc", map[string]any{"method": method, "params": params})
 			if err != nil {
 				return nil, err
 			}

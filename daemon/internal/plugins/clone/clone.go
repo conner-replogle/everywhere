@@ -62,7 +62,7 @@ func (p *Plugin) Start(h plugin.Host) error {
 	}), plugin.Remote())
 	h.HandleRPC("clones.list", plugin.Params(func(plugin.RPCContext, struct{}) (any, error) {
 		return p.clones.list(), nil
-	}), plugin.Remote())
+	}))
 	plugin.Subscribe(h.Bus(), plugin.ProjectDeleted, func(id string) {
 		p.clones.drop(id)
 		p.changed()

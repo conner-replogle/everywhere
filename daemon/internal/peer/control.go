@@ -51,9 +51,9 @@ func (s *Server) serveControl(p *peer, dc *webrtc.DataChannel) {
 	})
 }
 
-// Remote answers requests the hub relays from agents using the account's
-// MCP endpoint, which have no WebRTC connection: the methods registered as
-// Remote.
+// Remote answers the Worker's own requests over the hub: only the methods
+// registered as Remote (the Claude token, plugins' account settings, and
+// cloning with a GitHub token). Browsers' requests come over WebRTC.
 func (s *Server) Remote(method string, raw json.RawMessage) (any, error) {
 	return s.plugins.Call(context.Background(), method, plugin.RPCContext{Remote: true}, raw)
 }
@@ -84,11 +84,9 @@ func (s *Server) registerCore(h plugin.Host) {
 	rpc := func(method string, fn func(c plugin.RPCContext, p coreParams) (any, error), opts ...plugin.RPCOption) {
 		h.HandleRPC(method, plugin.Params(fn), opts...)
 	}
-	remote := plugin.Remote()
 
-	rpc("device.info", func(plugin.RPCContext, coreParams) (any, error) { return s.Info(), nil }, remote)
-	rpc("device.checkUpdate", func(_ plugin.RPCContext, p coreParams) (any, error) { return s.checkUpdate(p.Force) }, remote, plugin.Slow())
-	// Not remote: an agent shouldn't restart the daemon.
+	rpc("device.info", func(plugin.RPCContext, coreParams) (any, error) { return s.Info(), nil })
+	rpc("device.checkUpdate", func(_ plugin.RPCContext, p coreParams) (any, error) { return s.checkUpdate(p.Force) }, plugin.Slow())
 	rpc("device.update", func(plugin.RPCContext, coreParams) (any, error) { return s.applyUpdate() }, plugin.Slow())
 	h.HandleRPC("debug.peer", func(_ context.Context, c plugin.RPCContext, _ json.RawMessage) (any, error) {
 		p, ok := c.Peer.(*peer)
@@ -98,21 +96,21 @@ func (s *Server) registerCore(h plugin.Host) {
 		return p.debug(), nil
 	})
 
-	rpc("projects.list", func(plugin.RPCContext, coreParams) (any, error) { return s.store.ListProjects() }, remote)
+	rpc("projects.list", func(plugin.RPCContext, coreParams) (any, error) { return s.store.ListProjects() })
 	rpc("projects.create", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		proj, err := s.store.CreateProject(p.Path, p.Name)
 		if err == nil {
 			s.broadcast(protocol.EventProjectsChanged)
 		}
 		return proj, err
-	}, remote)
+	})
 	rpc("projects.rename", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		proj, err := s.store.RenameProject(p.ID, p.Name)
 		if err == nil {
 			s.broadcast(protocol.EventProjectsChanged)
 		}
 		return proj, err
-	}, remote)
+	})
 	rpc("projects.icon", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		proj, err := s.store.GetProject(p.ID)
 		if err != nil {
@@ -125,8 +123,8 @@ func (s *Server) registerCore(h plugin.Host) {
 		return struct {
 			Icon *favicon.Icon `json:"icon"`
 		}{icon}, nil
-	}, remote)
-	rpc("projects.delete", func(_ plugin.RPCContext, p coreParams) (any, error) { return s.deleteProject(p.ID) }, remote)
+	})
+	rpc("projects.delete", func(_ plugin.RPCContext, p coreParams) (any, error) { return s.deleteProject(p.ID) })
 
 	rpc("threads.list", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		threads, err := s.store.ListThreads(p.ProjectID)
@@ -134,10 +132,10 @@ func (s *Server) registerCore(h plugin.Host) {
 			s.plugins.Decorate(&threads[i])
 		}
 		return threads, err
-	}, remote)
+	})
 	rpc("threads.get", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		return s.Threads().Live(p.ThreadID)
-	}, remote)
+	})
 	rpc("threads.create", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		kind := p.Kind
 		if kind == "" {
@@ -156,7 +154,7 @@ func (s *Server) registerCore(h plugin.Host) {
 			err = k.Created(t, plugin.CreateParams{PermissionMode: p.PermissionMode, Prompt: p.Prompt})
 		}
 		return t, err
-	}, remote)
+	})
 	rpc("threads.rename", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		t, err := s.store.RenameThread(p.ID, p.Name)
 		if err == nil {
@@ -164,7 +162,7 @@ func (s *Server) registerCore(h plugin.Host) {
 			s.broadcast(protocol.EventThreadsChanged)
 		}
 		return t, err
-	}, remote)
+	})
 	rpc("threads.archive", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		t, err := s.store.SetThreadArchived(p.ID, p.Archived)
 		if err != nil {
@@ -183,15 +181,15 @@ func (s *Server) registerCore(h plugin.Host) {
 		s.plugins.Decorate(&t)
 		s.broadcast(protocol.EventThreadsChanged)
 		return t, nil
-	}, remote)
+	})
 	rpc("threads.delete", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		t, err := s.store.GetThread(p.ID)
 		if err != nil {
 			return nil, err
 		}
 		return plugin.Empty{}, s.deleteThread(t, plugin.DeleteParams{KeepWorktree: p.KeepWorktree, RemoveScratch: p.RemoveScratch})
-	}, remote)
-	rpc("threads.workdir", func(_ plugin.RPCContext, p coreParams) (any, error) { return s.Threads().Workdir(p.ID) }, remote)
+	})
+	rpc("threads.workdir", func(_ plugin.RPCContext, p coreParams) (any, error) { return s.Threads().Workdir(p.ID) })
 
 	rpc("tabs.list", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		tabs, err := s.store.ListTabs(p.ThreadID)
@@ -199,7 +197,7 @@ func (s *Server) registerCore(h plugin.Host) {
 			s.plugins.Decorate(&tabs[i])
 		}
 		return tabs, err
-	}, remote)
+	})
 	rpc("tabs.create", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		k, ok := s.plugins.Kind(p.Kind)
 		if !ok {
@@ -214,7 +212,7 @@ func (s *Server) registerCore(h plugin.Host) {
 		}
 		s.broadcast(protocol.EventThreadsChanged)
 		return t, err
-	}, remote)
+	})
 	rpc("tabs.close", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		t, err := s.store.GetThread(p.ID)
 		if err != nil {
@@ -224,17 +222,17 @@ func (s *Server) registerCore(h plugin.Host) {
 			return nil, errors.New("not a tab")
 		}
 		return plugin.Empty{}, s.deleteThread(t, plugin.DeleteParams{})
-	}, remote)
+	})
 	rpc("tabs.setState", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		// Not broadcast: only the tab's own view reads it, when it opens.
 		if err := s.store.SetTabState(p.ID, p.State); err != nil {
 			return nil, err
 		}
 		return plugin.Empty{}, nil
-	}, remote)
+	})
 
-	rpc("fs.listDirs", func(_ plugin.RPCContext, p coreParams) (any, error) { return listDirs(p.Path) }, remote)
-	rpc("fs.mkdir", func(_ plugin.RPCContext, p coreParams) (any, error) { return makeDir(p.Path, p.Name) }, remote)
+	rpc("fs.listDirs", func(_ plugin.RPCContext, p coreParams) (any, error) { return listDirs(p.Path) })
+	rpc("fs.mkdir", func(_ plugin.RPCContext, p coreParams) (any, error) { return makeDir(p.Path, p.Name) })
 }
 
 // deleteThread deletes a thread with its tabs, or one tab: each kind

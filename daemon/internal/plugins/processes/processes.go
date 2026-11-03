@@ -35,7 +35,7 @@ func (p *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		ID: "processes", Title: "Processes", API: plugin.API, Builtin: true,
 		Optional:    []string{"agent"},
-		Permissions: []string{plugin.PermExec, plugin.PermPTY, plugin.PermAgentTools, plugin.PermAgentNotify, plugin.PermRemote},
+		Permissions: []string{plugin.PermExec, plugin.PermPTY, plugin.PermAgentTools, plugin.PermAgentNotify},
 		Features:    []string{protocol.FeatureProcesses},
 	}
 }
@@ -83,7 +83,7 @@ func (p *Plugin) Start(h plugin.Host) error {
 		Cwd      string `json:"cwd"`
 	}
 	rpc := func(method string, fn func(params) (any, error)) {
-		h.HandleRPC(method, plugin.Params(func(_ plugin.RPCContext, ps params) (any, error) { return fn(ps) }), plugin.Remote())
+		h.HandleRPC(method, plugin.Params(func(_ plugin.RPCContext, ps params) (any, error) { return fn(ps) }))
 	}
 	// A tab's processes are its thread's.
 	rpc("processes.list", func(ps params) (any, error) {

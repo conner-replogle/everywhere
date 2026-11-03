@@ -34,7 +34,7 @@ type CatalogPlugin struct {
 // device, so the CLI alone adds friction, not safety. What still takes the
 // device itself: plugins from anywhere but the registry, and permissions
 // that need local consent (the screen). None of these is reachable over the
-// hub (not Remote), so connected agents can't install code.
+// hub (not Remote), so the Worker can't install code.
 func (m *Manager) serveCatalog(h plugin.Host) {
 	h.HandleRPC("plugins.catalog", func(ctx context.Context, _ plugin.RPCContext, raw json.RawMessage) (any, error) {
 		var r struct {

@@ -70,7 +70,6 @@ type Contributes struct {
 // RPC is a control method.
 type RPC struct {
 	Method string `json:"method"`
-	Remote bool   `json:"remote,omitempty"`
 	Slow   bool   `json:"slow,omitempty"`
 }
 
@@ -157,7 +156,7 @@ func (m Manifest) Validate() error {
 	}
 	known := []string{plugin.PermFSRead, plugin.PermFSWrite, plugin.PermExec, plugin.PermPTY, plugin.PermNetLoopback,
 		plugin.PermAgentTools, plugin.PermAgentNotify, plugin.PermAgentRead, plugin.PermAgentLaunch, plugin.PermBrowser,
-		plugin.PermScreen, plugin.PermSecrets, plugin.PermRemote}
+		plugin.PermScreen, plugin.PermSecrets}
 	for _, p := range m.Permissions {
 		if !slices.Contains(known, p) {
 			bad("unknown permission %q", p)
@@ -167,9 +166,6 @@ func (m Manifest) Validate() error {
 	for _, r := range m.Contributes.RPC {
 		if !strings.HasPrefix(r.Method, m.ID+".") || len(r.Method) <= len(m.ID)+1 {
 			bad("method %q: plugin methods start with %q", r.Method, m.ID+".")
-		}
-		if r.Remote && !has(plugin.PermRemote) {
-			bad("method %q is remote: that needs the %q permission", r.Method, plugin.PermRemote)
 		}
 	}
 	for _, c := range m.Contributes.Channels {

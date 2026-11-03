@@ -43,28 +43,27 @@ func call[T any](t *testing.T, s *Server, remote bool, method string, params any
 	return out, json.Unmarshal(b, &out)
 }
 
-// Every method from before plugins is still served, and reachable over the
-// hub exactly as before: everything but debug.peer, device.update and
-// remote desktop; code.*, agent.read and agent.request only there.
+// Every method from before plugins is still served, and the hub (the Worker
+// itself) reaches only what it must send: the Claude token, plugins' account
+// settings, and clones with a GitHub token.
 func TestMethodsAndRemoteAccess(t *testing.T) {
 	s := testServer(t)
 	local := []string{
 		"device.info", "agent.info", "agent.claudeVersion", "agent.updateClaude", "agent.auth", "agent.login",
-		"agent.setToken", "agent.loginCode", "agent.loginCancel", "device.checkUpdate",
-		"projects.list", "projects.create", "projects.rename", "projects.clone", "projects.icon", "projects.delete", "clones.list",
+		"agent.loginCode", "agent.loginCancel", "device.checkUpdate",
+		"projects.list", "projects.create", "projects.rename", "projects.icon", "projects.delete", "clones.list",
 		"threads.list", "threads.create", "threads.rename", "threads.done", "threads.archive", "threads.delete", "threads.workdir",
 		"threads.search", "threads.promote", "threads.continueIn", "scratch.usage",
 		"processes.list", "processes.start", "processes.stop", "processes.restart", "processes.remove",
 		"processes.dashboard", "processes.output", "processes.file", "processes.dashboardError", "processes.setState",
 		"tabs.list", "tabs.create", "tabs.close", "tabs.setState", "fs.listDirs", "fs.list", "fs.mkdir",
 		"git.status", "git.fetch", "git.pull", "git.updateDefault", "git.info",
-		"telemetry.catalog", "telemetry.query", "telemetry.events", "telemetry.deleteRun",
-		"term.read", "term.write", "threads.get",
+		"telemetry.catalog", "telemetry.query", "telemetry.events", "telemetry.deleteRun", "threads.get",
+		"debug.peer", "device.update", "desktop.info", "desktop.start", "desktop.candidate", "desktop.stop", "rtc.open", "rtc.candidate", "rtc.close",
 	}
-	notRemote := []string{"debug.peer", "device.update", "desktop.info", "desktop.start", "desktop.candidate", "desktop.stop", "rtc.open", "rtc.candidate", "rtc.close"}
-	remoteOnly := []string{"code.exec", "code.read", "code.write", "code.edit", "code.glob", "code.grep", "agent.read", "agent.request"}
+	remote := []string{"projects.clone"}
+	remoteOnly := []string{"agent.setToken", "plugins.setAccountSettings"}
 
-	s.plugins.Manifests() // all started
 	registered := map[string]bool{}
 	for _, m := range s.plugins.Manifests() {
 		for _, r := range m.Contributes.RPC {
@@ -73,8 +72,9 @@ func TestMethodsAndRemoteAccess(t *testing.T) {
 	}
 	core := []string{"device.info", "device.checkUpdate", "device.update", "debug.peer", "projects.list", "projects.create", "projects.rename",
 		"projects.icon", "projects.delete", "threads.list", "threads.get", "threads.create", "threads.rename", "threads.archive", "threads.delete",
-		"threads.workdir", "tabs.list", "tabs.create", "tabs.close", "tabs.setState", "fs.listDirs", "fs.mkdir", "rtc.open", "rtc.candidate", "rtc.close"}
-	for _, m := range slices.Concat(local, notRemote, remoteOnly) {
+		"threads.workdir", "tabs.list", "tabs.create", "tabs.close", "tabs.setState", "fs.listDirs", "fs.mkdir", "rtc.open", "rtc.candidate", "rtc.close",
+		"plugins.setAccountSettings"}
+	for _, m := range slices.Concat(local, remote, remoteOnly) {
 		if !registered[m] && !slices.Contains(core, m) {
 			t.Errorf("%s isn't registered", m)
 		}
@@ -82,19 +82,24 @@ func TestMethodsAndRemoteAccess(t *testing.T) {
 	unavailable := func(err error) bool {
 		return err != nil && (strings.Contains(err.Error(), "isn't available remotely") || strings.Contains(err.Error(), "unknown method"))
 	}
-	for _, m := range notRemote {
+	for _, m := range local {
 		if _, err := call[any](t, s, true, m, map[string]any{}); !unavailable(err) {
+			t.Errorf("%s over the hub: %v", m, err)
+		}
+	}
+	for _, m := range []string{"code.exec", "term.write", "agent.read", "agent.request"} {
+		if _, err := call[any](t, s, true, m, map[string]any{}); err == nil || !strings.Contains(err.Error(), "unknown method") {
+			t.Errorf("%s over the hub: %v", m, err)
+		}
+	}
+	for _, m := range remote {
+		if _, err := call[any](t, s, true, m, map[string]any{}); unavailable(err) {
 			t.Errorf("%s over the hub: %v", m, err)
 		}
 	}
 	for _, m := range remoteOnly {
 		if _, err := call[any](t, s, false, m, map[string]any{}); err == nil || !strings.Contains(err.Error(), "unknown method") {
 			t.Errorf("%s from a browser: %v", m, err)
-		}
-	}
-	for _, m := range []string{"projects.list", "fs.listDirs", "scratch.usage"} {
-		if _, err := call[any](t, s, true, m, map[string]any{}); err != nil {
-			t.Errorf("%s over the hub: %v", m, err)
 		}
 	}
 }
@@ -114,7 +119,7 @@ func TestDeviceInfoListsPlugins(t *testing.T) {
 	for _, p := range info.Plugins {
 		ids[p.ID] = p
 	}
-	for _, id := range []string{"terminal", "agent", "browser", "desktop", "files", "processes", "telemetry", "dashboards", "scratch", "git", "clone", "code", "share", "done"} {
+	for _, id := range []string{"terminal", "agent", "browser", "desktop", "files", "processes", "telemetry", "dashboards", "scratch", "git", "clone", "share", "done"} {
 		if _, ok := ids[id]; !ok {
 			t.Errorf("plugin %s missing from %v", id, info.Plugins)
 		}

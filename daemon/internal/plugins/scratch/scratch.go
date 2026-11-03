@@ -41,7 +41,7 @@ func (p *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		ID: "scratch", Title: "Scratch", API: plugin.API, Builtin: true,
 		Optional:    []string{"agent", "clone"},
-		Permissions: []string{plugin.PermFSWrite, plugin.PermAgentLaunch, plugin.PermAgentRead, plugin.PermAgentTools, plugin.PermRemote},
+		Permissions: []string{plugin.PermFSWrite, plugin.PermAgentLaunch, plugin.PermAgentRead, plugin.PermAgentTools},
 		Features:    []string{protocol.FeatureScratch},
 	}
 }
@@ -53,17 +53,17 @@ func (p *Plugin) Start(h plugin.Host) error {
 		Name string `json:"name"`
 	}) (any, error) {
 		return p.promote(r.ID, r.Name)
-	}), plugin.Remote())
+	}))
 	h.HandleRPC("threads.continueIn", plugin.Params(func(_ plugin.RPCContext, r struct {
 		ID             string `json:"id"`
 		ProjectID      string `json:"projectId"`
 		PermissionMode string `json:"permissionMode"`
 	}) (any, error) {
 		return p.continueIn(r.ID, r.ProjectID, r.PermissionMode)
-	}), plugin.Remote())
+	}))
 	h.HandleRPC("scratch.usage", plugin.Params(func(plugin.RPCContext, struct{}) (any, error) {
 		return p.usage()
-	}), plugin.Remote())
+	}))
 	// A Scratch thread's folder stays unless the user asked for it to go.
 	plugin.Subscribe(h.Bus(), plugin.ThreadDeleted, func(e plugin.ThreadEvent) {
 		if !e.Delete.RemoveScratch || e.Thread.ScratchDir == "" {

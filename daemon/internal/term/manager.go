@@ -204,7 +204,7 @@ func (m *Manager) Scrollback(threadID string) []byte {
 
 // Type writes p to the thread's shell as keystrokes, whoever the writer is,
 // spawning the shell at cols x rows if it isn't running. It's for callers
-// with no terminal of their own (an agent over the hub's RPC).
+// with no terminal of their own (a new tab's input).
 func (m *Manager) Type(threadID string, p []byte, cols, rows uint16) error {
 	s, spawned, err := m.getOrSpawn(threadID, cols, rows)
 	if err != nil {

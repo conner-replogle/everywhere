@@ -63,35 +63,6 @@ app.delete("/api/devices/:id", requireUser, async (c) => {
   return c.json({});
 });
 
-// --- connected apps (OAuth grants for the MCP endpoint) ----------------------
-
-app.get("/api/connections", requireUser, async (c) => {
-  const { results } = await c.env.DB.prepare(
-    `SELECT g.id, c.name, c.redirect_uris, g.created_at AS createdAt, g.last_used_at AS lastUsedAt
-     FROM oauth_grants g JOIN oauth_clients c ON c.id = g.client_id
-     WHERE g.user_id = ? ORDER BY g.created_at DESC`,
-  )
-    .bind(c.var.user.id)
-    .all<{ id: string; name: string; redirect_uris: string; createdAt: number; lastUsedAt: number | null }>();
-  return c.json({
-    mcpUrl: `${c.env.PUBLIC_URL}/mcp`,
-    connections: results.map(({ redirect_uris, ...r }) => ({
-      ...r,
-      // Where the app said it lives; client names are self-reported.
-      hosts: [...new Set((JSON.parse(redirect_uris) as string[]).map((u) => new URL(u).host))],
-    })),
-  });
-});
-
-app.delete("/api/connections/:id", requireUser, async (c) => {
-  // RETURNING, not meta.changes: D1 counts the cascaded token rows too.
-  const row = await c.env.DB.prepare("DELETE FROM oauth_grants WHERE id = ? AND user_id = ? RETURNING id")
-    .bind(c.req.param("id"), c.var.user.id)
-    .first();
-  if (!row) return c.json({ error: "not found" }, 404);
-  return c.json({});
-});
-
 // --- WebRTC -------------------------------------------------------------------
 
 app.get("/api/ice-servers", requireUser, async (c) => {

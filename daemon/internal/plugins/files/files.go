@@ -26,7 +26,7 @@ func New() *Plugin { return &Plugin{} }
 func (p *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		ID: "files", Title: "Files", API: plugin.API, Builtin: true,
-		Permissions: []string{plugin.PermFSRead, plugin.PermRemote},
+		Permissions: []string{plugin.PermFSRead},
 	}
 }
 
@@ -39,7 +39,7 @@ func (p *Plugin) Start(h plugin.Host) error {
 		Path string `json:"path"`
 	}) (any, error) {
 		return listDir(p.Path)
-	}), plugin.Remote())
+	}))
 	return nil
 }
 

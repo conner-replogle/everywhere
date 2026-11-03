@@ -6,7 +6,6 @@ import (
 	"github.com/conner-replogle/everywhere/daemon/internal/plugins/agent"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugins/browser"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugins/clone"
-	"github.com/conner-replogle/everywhere/daemon/internal/plugins/code"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugins/dashboards"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugins/desktop"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugins/done"
@@ -34,7 +33,6 @@ func Plugins() []plugin.Plugin {
 		scratch.New(),
 		git.New(),
 		clone.New(),
-		code.New(),
 		share.New(),
 		done.New(),
 		tunnel.New(),

@@ -167,7 +167,7 @@ type RPCFunc func(ctx context.Context, c RPCContext, params json.RawMessage) (an
 // RPCContext says who called.
 type RPCContext struct {
 	// Peer is the browser tab's connection; nil when the call came over the
-	// hub (an MCP agent) or from inside the daemon.
+	// hub (the Worker) or from inside the daemon.
 	Peer Peer
 	// Remote: the call came over the hub.
 	Remote bool
@@ -183,11 +183,11 @@ type RPCSpec struct {
 	// Slow methods are answered concurrently instead of in order, so they
 	// don't hold up the ones behind them.
 	Slow bool
-	// Remote methods are reachable over the hub (MCP agents). Off by
-	// default, so a new method isn't until someone decides it should be.
+	// Remote methods are reachable over the hub, i.e. by the Worker
+	// itself. Off by default, and only for what the Worker must send
+	// (secrets it keeps): anything else would let it drive the device.
 	Remote bool
-	// RemoteOnly methods are only for the hub (e.g. code.*: a browser has
-	// terminals and the files tab).
+	// RemoteOnly methods are only for the hub (e.g. agent.setToken).
 	RemoteOnly bool
 }
 

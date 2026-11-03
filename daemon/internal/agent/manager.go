@@ -252,7 +252,7 @@ func (m *Manager) MarkDone(threadID string) (afterTurn bool, err error) {
 }
 
 // Request runs a request other than attach for a caller with no channel
-// of its own (an agent over the hub's RPC) and returns its error.
+// of its own (a new thread's first prompt) and returns its error.
 func (m *Manager) Request(threadID string, msg protocol.AgentClientMsg) error {
 	if msg.T == "attach" || msg.T == "history" {
 		return fmt.Errorf("%s needs a channel", msg.T)

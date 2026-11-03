@@ -27,7 +27,6 @@ const statements = [
   `UPDATE users SET password_hash = ${sqlString(hash)} WHERE username = ${sqlString(username)}`,
   `DELETE FROM sessions WHERE user_id = ${who}`,
   `DELETE FROM mfa_challenges WHERE user_id = ${who}`,
-  `DELETE FROM oauth_grants WHERE user_id = ${who}`,
 ];
 if (disable2fa) {
   statements.push(

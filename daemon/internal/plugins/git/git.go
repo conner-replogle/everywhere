@@ -26,7 +26,7 @@ func New() *Plugin { return &Plugin{} }
 func (p *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
 		ID: "git", Title: "Git", API: plugin.API, Builtin: true,
-		Permissions: []string{plugin.PermExec, plugin.PermRemote},
+		Permissions: []string{plugin.PermExec},
 		Features:    []string{protocol.FeatureGitStatus},
 	}
 }
@@ -44,11 +44,11 @@ func (p *Plugin) Start(h plugin.Host) error {
 			return nil, err
 		}
 		return p.status(dir)
-	}), plugin.Remote())
+	}))
 	for _, m := range []string{"git.fetch", "git.pull", "git.updateDefault"} {
 		h.HandleRPC(m, plugin.Params(func(_ plugin.RPCContext, ps params) (any, error) {
 			return p.action(m, ps.ThreadID, ps.ProjectID)
-		}), plugin.Remote())
+		}))
 	}
 	h.HandleRPC("git.info", plugin.Params(func(_ plugin.RPCContext, ps params) (any, error) {
 		proj, err := h.Store().GetProject(ps.ProjectID)
@@ -56,7 +56,7 @@ func (p *Plugin) Start(h plugin.Host) error {
 			return nil, err
 		}
 		return Info(proj.Path), nil
-	}), plugin.Remote())
+	}))
 	return nil
 }
 

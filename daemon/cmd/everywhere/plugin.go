@@ -194,15 +194,6 @@ func confirmInstall(m external.Manifest, question string) bool {
 		}
 		fmt.Printf("Tools for Claude: %s\n", strings.Join(names, ", "))
 	}
-	var remote []string
-	for _, r := range c.RPC {
-		if r.Remote {
-			remote = append(remote, r.Method)
-		}
-	}
-	if len(remote) > 0 {
-		fmt.Printf("Usable by connected agents (MCP): %s\n", strings.Join(remote, ", "))
-	}
 	fmt.Printf("\n%s [y/N] ", question)
 	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 	a := strings.ToLower(strings.TrimSpace(line))
@@ -369,8 +360,6 @@ func permissionText(p string) string {
 		return "see and control the screen"
 	case "secrets":
 		return "use account secrets"
-	case "remote":
-		return "be used by agents connected to your account (MCP)"
 	}
 	return p
 }

@@ -37,8 +37,8 @@ type Client struct {
 	OnSignal   SignalHandler
 	// OnClientRevoked is called when a browser connection's session is signed out.
 	OnClientRevoked func(connID string)
-	// OnRPC, if set, answers requests relayed from agents using the
-	// account's MCP endpoint. It's called on its own goroutine.
+	// OnRPC, if set, answers the Worker's own requests (the methods
+	// registered as Remote). It's called on its own goroutine.
 	OnRPC func(method string, params json.RawMessage) (any, error)
 
 	conn atomic.Pointer[websocket.Conn]

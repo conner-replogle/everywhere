@@ -15,8 +15,6 @@ export const API = 1;
 export interface Call {
   method: string;
   params: unknown;
-  /** It came from an agent connected to the account (MCP), not a browser. */
-  remote: boolean;
 }
 
 export interface ToolCall {
@@ -233,7 +231,7 @@ export class Plugin {
       case "rpc": {
         const fn = this.methods.get(String(p.method));
         if (!fn) throw new Error(`unknown method ${String(p.method)}`);
-        return fn({ method: String(p.method), params: p.params, remote: !!p.remote });
+        return fn({ method: String(p.method), params: p.params });
       }
       case "tool": {
         const fn = this.tools.get(String(p.name));

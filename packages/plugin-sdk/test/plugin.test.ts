@@ -39,7 +39,7 @@ function fakeDaemon() {
 test("serves methods and tools, and asks the daemon", async () => {
   const d = fakeDaemon();
   const p = new Plugin(d.io)
-    .method("hello.greet", ({ params, remote }) => ({ greeting: `Hello, ${(params as { name: string }).name}`, remote }))
+    .method("hello.greet", ({ params }) => ({ greeting: `Hello, ${(params as { name: string }).name}` }))
     .tool("wave", async ({ threadId }) => {
       await p.emit({ event: "hello.waved", threadId });
       return `waved at ${threadId}`;
@@ -56,8 +56,8 @@ test("serves methods and tools, and asks the daemon", async () => {
   for (let i = 0; i < 100 && !heard; i++) await Bun.sleep(5);
   expect(heard?.greeting).toBe("Hi");
 
-  d.send({ jsonrpc: "2.0", id: 2, method: "rpc", params: { method: "hello.greet", params: { name: "Ada" }, remote: true } });
-  expect((await d.reply(2)).result).toEqual({ greeting: "Hello, Ada", remote: true });
+  d.send({ jsonrpc: "2.0", id: 2, method: "rpc", params: { method: "hello.greet", params: { name: "Ada" } } });
+  expect((await d.reply(2)).result).toEqual({ greeting: "Hello, Ada" });
 
   d.send({ jsonrpc: "2.0", id: 3, method: "rpc", params: { method: "hello.nope" } });
   expect((await d.reply(3)).error).toBeDefined();

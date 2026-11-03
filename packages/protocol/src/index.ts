@@ -106,7 +106,7 @@ export type HubToDaemon =
   | { t: "signal"; from: string; sid: string; data: SignalData }
   /** The browser connection's session was signed out; close its peers. */
   | { t: "client.revoked"; connId: string }
-  /** A request from an agent using the account's MCP endpoint; answered with rpc.result. */
+  /** A request from the Worker itself (see RemoteMethods); answered with rpc.result. */
   | { t: "rpc"; id: string; method: string; params: unknown }
   | { t: "error"; code: HubErrorCode; message: string };
 
@@ -956,105 +956,23 @@ export interface RpcMethods {
 export type RpcMethod = keyof RpcMethods;
 
 /**
- * What the hub's rpc requests can call on a daemon: the control methods
- * (except debug.peer and device.update), plus reading and driving threads
- * for callers without a WebRTC connection.
+ * What the hub's rpc requests can call on a daemon: only what the Worker
+ * itself needs (account secrets it keeps, and cloning with the GitHub token).
  */
-export interface RemoteMethods
-  extends Omit<RpcMethods, "debug.peer" | "device.update" | `desktop.${string}` | `rtc.${string}`> {
-  // Coding tools for MCP agents. Relative paths (and cwd) are resolved against
-  // the thread's working directory (its worktree, if any), else the project,
-  // else home.
-  /** Runs a command with bash -c and the user's login environment. */
-  "code.exec": [CodeWhere & { command: string; stdin?: string; timeoutMs?: number }, CodeExecResult];
-  /** offset: first line (1-based); limit: lines (default 2000). */
-  "code.read": [CodeWhere & { path: string; offset?: number; limit?: number }, CodeReadResult];
-  "code.write": [CodeWhere & { path: string; content: string }, { path: string; bytes: number; created: boolean }];
-  /** Replaces old with new: exactly one occurrence, or all of them. */
-  "code.edit": [CodeWhere & { path: string; old: string; new: string; all?: boolean }, { path: string; replacements: number }];
-  /** Files matching pattern under path, newest first; follows .gitignore in a repo. */
-  "code.glob": [CodeWhere & { pattern?: string; limit?: number }, { dir: string; files: string[]; truncated?: boolean }];
-  "code.grep": [
-    CodeWhere & { pattern: string; glob?: string; ignoreCase?: boolean; filesOnly?: boolean; context?: number; limit?: number },
-    { dir: string; output: string; count: number; truncated?: boolean },
-  ];
+export interface RemoteMethods {
   /** projects.clone, with a token answering git's HTTPS credential prompt. */
   "projects.clone": [{ url: string; path: string; name?: string; token?: string }, Project];
-  "threads.get": [{ threadId: string }, Thread];
+  "agent.setToken": RpcMethods["agent.setToken"];
   /** A plugin's account settings, whole (sealed in the hub, sent to each device that takes them). */
   "plugins.setAccountSettings": [{ id: string; values: Record<string, unknown> }, Record<string, never>];
-  /**
-   * A claude thread's state and the newest limit events after afterSeq (and
-   * before beforeSeq). waitMs: first wait up to that long (at most 50s) for
-   * a turn in progress to finish or block on a prompt.
-   */
-  "agent.read": [
-    { threadId: string; afterSeq?: number; beforeSeq?: number; limit?: number; waitMs?: number },
-    AgentRead,
-  ];
-  /** Any agent channel request but attach and history. */
-  "agent.request": [{ threadId: string; msg: AgentClientMsg }, Record<string, never>];
-  /** The end of a terminal's scrollback as plain text. */
-  "term.read": [{ threadId: string; maxBytes?: number }, TermRead];
-  /** Types into a terminal thread, starting its shell if needed. */
-  "term.write": [{ threadId: string; text: string }, Record<string, never>];
 }
 export type RemoteMethod = keyof RemoteMethods;
-
-/** Where a code.* request is rooted, and the path it's about. */
-export interface CodeWhere {
-  threadId?: string;
-  projectId?: string;
-  /** A directory to resolve relative paths against instead. */
-  cwd?: string;
-  path?: string;
-}
-
-export interface CodeExecResult {
-  /** -1 if it didn't exit on its own. */
-  exitCode: number;
-  stdout: string;
-  stderr: string;
-  /** Bytes dropped from the start of the stream (the end is kept). */
-  stdoutCut?: number;
-  stderrCut?: number;
-  timedOut?: boolean;
-  durationMs: number;
-  cwd: string;
-}
-
-export interface CodeReadResult {
-  path: string;
-  /** Each line prefixed with its number and a tab. */
-  content: string;
-  startLine: number;
-  endLine: number;
-  totalLines: number;
-  truncated?: boolean;
-}
 
 export interface SearchHit {
   threadId: string;
   /** Around the newest matching message; absent when only the name matched. */
   snippet?: string;
   at: number;
-}
-
-export interface AgentRead {
-  thread: Thread;
-  /** Without models and commands. */
-  state: AgentState;
-  events: { seq: number; at: number; event: AgentEvent }[];
-  /** There are older events before these. */
-  more: boolean;
-  /** The newest event's seq (0 if none). */
-  lastSeq: number;
-}
-
-export interface TermRead {
-  thread: Thread;
-  output: string;
-  truncated: boolean;
 }
 
 export interface RpcRequest<M extends RpcMethod = RpcMethod> {

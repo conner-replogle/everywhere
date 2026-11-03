@@ -37,7 +37,7 @@ func (p *Plugin) Manifest() plugin.Manifest {
 		ID: "dashboards", Title: "Dashboards", API: plugin.API, Builtin: true,
 		Requires:    []string{"processes"},
 		Optional:    []string{"telemetry"},
-		Permissions: []string{plugin.PermFSRead, plugin.PermFSWrite, plugin.PermAgentTools, plugin.PermRemote},
+		Permissions: []string{plugin.PermFSRead, plugin.PermFSWrite, plugin.PermAgentTools},
 	}
 }
 
@@ -48,7 +48,7 @@ func (p *Plugin) Start(h plugin.Host) error {
 	for _, m := range []string{"processes.dashboard", "processes.output", "processes.file", "processes.dashboardError", "processes.setState"} {
 		h.HandleRPC(m, func(_ context.Context, _ plugin.RPCContext, raw json.RawMessage) (any, error) {
 			return p.call(m, raw)
-		}, plugin.Remote())
+		})
 	}
 	for _, t := range p.tools() {
 		h.AddTools(plugin.Tool{Tool: t})

@@ -29,7 +29,7 @@ type SignalData struct {
 
 // HubToDaemon is a relayed signal from a browser, an error,
 // "client.revoked" (a browser connection's session was signed out), or
-// "rpc" (a request from an agent using the account's MCP endpoint).
+// "rpc" (a request from the Worker itself: see Server.Remote).
 type HubToDaemon struct {
 	T       string     `json:"t"`
 	ConnID  string     `json:"connId,omitempty"`
