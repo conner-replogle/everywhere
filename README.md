@@ -1,214 +1,140 @@
 # everywhere
 
-Run terminals on any of your machines and use them from a browser. A small Go
-daemon runs on each machine; a Cloudflare Worker handles login, the device
-list and WebRTC signaling; terminal traffic goes browser ↔ daemon directly
-over WebRTC (via Tailscale). See [SPEC.md](SPEC.md) for the design.
+Use the terminals, Claude Code sessions, browsers and desktops of all your
+machines from one web app.
+
+A small daemon runs on each machine. A Cloudflare Worker that you deploy
+handles sign-in and connects your browser to each machine. Your data then
+travels directly between the browser and the machine over WebRTC, without
+passing through the Worker.
 
 ```
-apps/worker/       Cloudflare Worker (Hono, D1, AccountHub Durable Object)
-apps/web/          React SPA served by the Worker
-packages/protocol/ wire protocol types (mirrored in daemon/internal/protocol)
-daemon/            Go daemon + CLI (`everywhere`)
+ browser ──HTTPS──▶ your Worker (Cloudflare) ◀──WSS── everywhere daemon
+    │                sign-in, devices, signaling            │
+    └──────────── WebRTC, end to end (DTLS) ─────────────────┘
+          terminals · Claude threads · files · browser · desktop
 ```
 
-## Adding a device
+## Features
 
-In the web UI: **Add device**, then run the one-time command it shows on the
-machine:
+- **Terminals** on any machine, live in the browser, with take-over between tabs.
+- **Claude Code threads** that keep running while you're away, with
+  worktrees, attachments, permission prompts and push notifications.
+- **Scratch:** ask Claude to work on the machine itself, outside any project.
+- **Remote desktop** for Hyprland and Windows, low latency over WebRTC (opt-in on each machine).
+- **Agent browser:** each thread gets a Chromium page that you and Claude share.
+- **Processes and dashboards** for dev servers and long-running jobs.
+- **Desktop app** (Electron) with web tabs that can open a machine's localhost.
+- **Plugins** for adding thread kinds, tools and UI. See [PLUGINS.md](PLUGINS.md).
+
+## Self-hosting on Cloudflare
+
+You need a Cloudflare account with a domain on it, plus [Bun](https://bun.sh).
 
 ```sh
-curl -fsSL https://ai.replogle.dev/i/<token> | sh
+git clone https://github.com/conner-replogle/everywhere
+cd everywhere && bun install
+cd apps/worker
+bunx wrangler login
+bunx wrangler d1 create everywhere      # note the database_id it prints
 ```
 
-The installer downloads the latest release for the machine's architecture,
-enrolls it, and installs a systemd service: a user service with lingering, or
-a system service when run as root. The viewing device must be on the same
-tailnet as the device.
+Edit `apps/worker/wrangler.jsonc` for your account:
 
-On the device:
+| Setting | Set it to |
+|---|---|
+| `account_id` | your Cloudflare account ID |
+| `routes[0].pattern` | the hostname to serve on, e.g. `everywhere.example.com` |
+| `vars.PUBLIC_URL` | `https://` plus that hostname |
+| `d1_databases[0].database_id` | the ID from `d1 create` |
+| `vars.TURN_KEY_ID` | a Realtime TURN key ID, or `""` to skip TURN (see below) |
+
+Set the secrets:
 
 ```sh
-everywhere add ~/code/api     # register a project (also possible from the web UI)
+openssl rand -base64 32 | tr -d '\n' | bunx wrangler secret put TOTP_KEY   # encrypts 2FA seeds and tokens
+bun run vapid-key | bunx wrangler secret put VAPID_KEY                    # signs push notifications
+```
+
+Deploy from the repo root. This builds the web app, applies the database
+migrations and deploys the Worker:
+
+```sh
+cd ../.. && bun run deploy
+```
+
+Open your URL and **sign up right away**. The first account is the only one,
+and signup closes after it.
+
+### Optional
+
+- **TURN relay**, for networks that block direct connections: create a
+  Realtime TURN key in the Cloudflare dashboard. Put its ID in `TURN_KEY_ID`
+  and run `bunx wrangler secret put TURN_API_TOKEN`. Without it, connections
+  only work where a direct path or Tailscale gets through.
+- **GitHub** (connect an account and clone repos onto machines): create a
+  GitHub OAuth app with the callback `<PUBLIC_URL>/api/github/callback`, then
+  set `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET` as secrets.
+
+Keep `TOTP_KEY` once 2FA is in use: rotating it makes the stored 2FA seeds
+unreadable.
+
+## Adding a machine
+
+In the web app, click **Add device** and run the one-time command it shows
+on the machine:
+
+```sh
+curl -fsSL https://<your-host>/i/<token> | sh              # Linux, macOS
+irm https://<your-host>/i/<token>/windows | iex            # Windows (PowerShell)
+```
+
+The command installs the daemon, enrolls the machine, and starts it as a
+service. Remote desktop on macOS is in progress.
+
+On the machine:
+
+```sh
+everywhere add ~/code/api        # register a project (also possible from the web app)
 everywhere status
 everywhere update
-everywhere uninstall [--purge]   # --purge keeps Scratch folders unless --purge-scratch
+everywhere desktop enable        # allow remote desktop on this machine
+everywhere uninstall [--purge]
 ```
 
-## Scratch
+Remote desktop on Linux needs Hyprland 0.56 or later, a VA-API GPU,
+GStreamer's `va` plugins and `wl-clipboard`.
 
-For anything on a machine that isn't a project, such as working out why a
-laptop is slow, what's filling its disk or why Wi-Fi drops, or a quick task
-with some files: open the device (its name in the sidebar, or the launcher
-on the home page), say what you need, and Start. Each Scratch thread works in
-a fresh folder of its own under the daemon's data directory
-(`~/.local/share/everywhere/scratch/<date>-<thread>`), kept until you delete
-it. Claude starts in Auto there, knows it's on a machine rather than in a
-project, and has no root: commands that need sudo come with a "Run in
-terminal" button that types them in for you to check and run. A thread's
-"Changes to this computer" filter lists what it changed outside its folder.
-When the work turns into a project, "Make this a project" keeps the thread
-going in the same folder, and "Continue in a project" starts a thread
-elsewhere with the conversation so far.
+## Desktop app
 
-## Remote desktop (Omarchy / Hyprland, Windows)
+Installers for Linux, macOS and Windows are attached to each
+[release](https://github.com/conner-replogle/everywhere/releases). Point the
+app at your own server with `EVERYWHERE_URL=https://<your-host>` or
+`--url=https://<your-host>`.
 
-See and control a machine's logged-in desktop from the web app, with low
-latency over WebRTC. Turn it on at the machine itself:
+## Updating
+
+Pull, then run `bun run deploy` again. Machines update with
+`everywhere update`, or from the app.
+
+## Locked out?
+
+There is no email reset. From a machine logged in to your Cloudflare account:
 
 ```sh
-everywhere desktop enable
+bun run reset-password <username>                 # prints a temporary password
+bun run reset-password <username> --disable-2fa   # also removes 2FA
 ```
-
-Then use the monitor button on the device's row in the sidebar for the whole
-desktop (workspaces, monitors), or add a **Desktop** tab to a thread to keep
-one monitor or one window next to it. Fullscreen also sends Super, Alt+Tab and
-Esc to the desktop (Chromium), and the clipboard is shared (text). It needs
-Hyprland ≥ 0.56, a VA-API GPU, GStreamer's `va` plugins (`gst-plugins-bad`,
-`gst-plugin-va`) and `wl-clipboard`; the `everywhere-desktop` worker comes in
-the Linux release next to `everywhere`.
-
-On Windows (10 1809 or later) it streams the signed-in user's desktop: Desktop
-Duplication capture, H.264 from the GPU's Media Foundation encoder (or
-Windows' software one), and input through `SendInput`. There are no
-workspaces and no separate Claude's desktop, so agents work on the user's own
-screen. `everywhere-desktop.exe` comes in the Windows release. macOS is
-planned (see TODO.md).
-
-Claude threads on the device get `desktop_*` tools while remote desktop is on:
-list the windows, open one (or a monitor), take screenshots, and click, drag,
-scroll, type and press keys there, through their own virtual pointer and
-keyboard. The thread's Desktop tab opens on what Claude opened and marks where
-it acts. The tab's Annotate button marks up a still of the picture with
-regions and drawings, and sends it to the thread's chat.
-
-## Connecting ChatGPT (or another agent)
-
-The Worker serves an MCP server at `https://ai.replogle.dev/mcp`. An agent that
-connects to it can see every device's projects and threads, read them, create
-projects and threads, message claude threads and answer their permission
-prompts, and type into terminals. It can also work on code directly, like a
-coding agent: `run_command` runs a shell command (with your login environment)
-and returns its exit code and output, and `read_file`, `write_file`,
-`edit_file`, `glob` and `grep` work with files, rooted in a thread's or
-project's directory. These run as your user on the device, so only connect
-agents you trust with a shell. In ChatGPT, turn on developer mode
-(Settings → Apps & Connectors → Advanced), create a connector with that URL
-and OAuth authentication, then sign in and approve it. Connected apps are
-listed under Settings → Security, where you can disconnect them. Devices need
-a daemon that includes this feature (`everywhere update`).
-
-## Security
-
-- **Accounts:** passwords are hashed with PBKDF2-SHA256 (100k iterations) and must be 10–256
-  characters. Optional TOTP two-factor auth uses any authenticator app, with 10 single-use
-  recovery codes. TOTP seeds are AES-GCM encrypted with the `TOTP_KEY` Worker secret.
-- **Sessions:** `__Host-` cookie (HttpOnly, Secure, SameSite=Lax), valid for 30 days. You can list
-  and revoke them under Settings → Security. Changing the password signs out every other session.
-  Revoking a session closes its WebSocket, and daemons drop any WebRTC connections it opened.
-- **Brute force:** login, 2FA, signup, enrollment and install links are rate-limited per IP.
-  Login is also limited per username. A 2FA challenge dies after 5 wrong codes, and a TOTP code
-  can't be used twice.
-- **CSRF and hijacking:** state-changing API calls must be JSON from an allowed Origin, and the
-  browser WebSocket checks Origin. Static pages have a strict CSP (`script-src 'self'`,
-  `frame-ancestors 'none'`), HSTS, nosniff and no-referrer.
-- **Connected apps (MCP):** OAuth 2.1 with PKCE, behind your normal sign-in plus a consent page.
-  Access tokens last an hour and refresh tokens rotate. Tokens are stored hashed. Tool calls and
-  their results pass through the Worker, unlike browser traffic.
-- **Devices:** each daemon has its own bearer credential, stored hashed on the server and `0600`
-  on the device. Removing a device revokes it immediately. Terminal data goes browser ↔ daemon
-  over DTLS and never passes through the Worker.
-
-**Locked out?** There's no email reset. From a machine logged in to the Cloudflare account:
-
-```sh
-bun run reset-password <username>                 # prints a temporary password, signs out all sessions
-bun run reset-password <username> --disable-2fa   # also removes the authenticator + recovery codes
-```
-
-Don't rotate `TOTP_KEY` while 2FA is enabled; the stored seeds would become unreadable
-(recover with `--disable-2fa`).
 
 ## Development
-
-Prerequisites: Bun, Go 1.27+, Wrangler logged in.
 
 ```sh
 bun install
 cp apps/worker/.dev.vars.example apps/worker/.dev.vars
 bun run --filter @everywhere/worker migrate:local
-bun run build                       # the Worker serves apps/web/dist
-bun run dev                         # worker on :8787, vite on :5173 (proxies /api)
+bun run build && bun run dev          # Worker on :8787, Vite on :5173
+cd daemon && go build -o bin/everywhere ./cmd/everywhere
 ```
 
-The desktop app (`apps/desktop`, Electron) is the web app in a window, plus
-web tabs: links open as real pages, even sites that refuse to be framed.
-
-```sh
-bun run desktop                                  # against https://ai.replogle.dev
-bun run --filter @everywhere/desktop dev         # against vite on :5173
-bun run --filter @everywhere/desktop dist        # installers in apps/desktop/release
-```
-
-Releases: a `v*` tag also builds the app (AppImage, dmg/zip, NSIS) and adds it,
-with the `latest*.yml` its updater reads, to the tag's release. Installed
-copies check the latest release at start and every 4 hours, download in the
-background, and install on quit (or Help → Restart to update). macOS only
-updates a signed, notarized build: set the `MAC_CERTIFICATE_P12_BASE64`,
-`MAC_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and
-`APPLE_TEAM_ID` secrets. To try updating locally, serve a folder with a newer
-build and its `latest-linux.yml` and run an older one with
-`EVERYWHERE_UPDATE_URL=http://127.0.0.1:8000/`.
-
-Run a local daemon against it without touching your real config or systemd:
-
-```sh
-cd daemon && CGO_ENABLED=0 go build -o bin/everywhere ./cmd/everywhere
-go build -o bin/everywhere-desktop ./cmd/everywhere-desktop   # remote desktop worker (cgo)
-# In the web UI (http://localhost:5173) sign up, click "Add device", copy the command, then:
-EVERYWHERE_HOME=/tmp/ew EVERYWHERE_BIN_DIR=/tmp/ew/bin EVERYWHERE_NO_SERVICE=1 \
-  EVERYWHERE_BINARY=$PWD/bin/everywhere sh -c '<paste command>'
-EVERYWHERE_HOME=/tmp/ew /tmp/ew/bin/everywhere daemon -v
-```
-
-API security test (auth, 2FA, CSRF, sessions, rate limits) against a fresh local Worker:
-
-```sh
-cd apps/worker && EW_TEST_SERVER=http://localhost:8787 bun test/security.e2e.ts
-```
-
-Remote desktop capture against the running Hyprland session (worker built as above):
-
-```sh
-cd daemon && EW_DESKTOP_LIVE=1 EVERYWHERE_DESKTOP_HELPER=$PWD/bin/everywhere-desktop \
-  go test ./internal/desktop -run Live -v
-```
-
-On Windows, `TestWindowsLive` does the same; it must run in the signed-in
-session (a scheduled task, not SSH), and `EW_DESKTOP_DUMP=file.h264` saves the
-stream to check with ffmpeg:
-
-```sh
-GOOS=windows go test -c -o desktop.test.exe ./internal/desktop
-GOOS=windows go build -o everywhere-desktop.exe ./cmd/everywhere-desktop
-```
-
-End-to-end test (hub signaling → WebRTC → RPC → PTY), against that stack:
-
-```sh
-cd daemon
-EW_E2E_SERVER=http://localhost:8787 EW_E2E_COOKIE='__Host-ew_session=…' EW_E2E_DEVICE=<device id> \
-  go test ./internal/e2e -v -count=1
-```
-
-## Releasing and deploying
-
-- **Daemon:** push a `v*` tag. GitHub Actions runs goreleaser and publishes
-  `everywhere_{linux,darwin}_{amd64,arm64}.tar.gz` plus `checksums.txt`. The
-  installer and `everywhere update` depend on those names.
-- **Worker:** one-time setup, in `apps/worker`:
-  `openssl rand -base64 32 | tr -d '\n' | bunx wrangler secret put TOTP_KEY` and
-  `bun run vapid-key | bunx wrangler secret put VAPID_KEY` (signs push notifications; changing it
-  later means every browser turns notifications on again). Then `bun run deploy`. This builds the web app, applies D1 migrations
-  remotely and deploys to `ai.replogle.dev`. Sign up immediately after the
-  first deploy; the first signup becomes the only account.
+The design is documented in [SPEC.md](SPEC.md) and the plugin API in
+[PLUGINS.md](PLUGINS.md).
