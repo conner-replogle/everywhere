@@ -37,7 +37,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { dictationSupported, useDictation } from "@/lib/dictation";
+import { type Dictation, dictationSupported } from "@/lib/dictation";
 import type { DevicePeer } from "@/lib/peer";
 import { cn, errorMessage } from "@/lib/utils";
 
@@ -342,9 +342,8 @@ function formatElapsed(ms: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-/** Records while on; the transcription goes to onText. Hidden where browsers can't record. */
-export function DictateButton({ disabled, onText }: { disabled: boolean; onText: (text: string) => void }) {
-  const dictation = useDictation(onText);
+/** Records while on; the composer shows the words as they come. Hidden where browsers can't stream audio. */
+export function DictateButton({ disabled, dictation }: { disabled: boolean; dictation: Dictation }) {
   const { state, error, startedAt } = dictation;
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
@@ -362,8 +361,8 @@ export function DictateButton({ disabled, onText }: { disabled: boolean; onText:
           size="sm"
           className="h-6 gap-1.5 px-1.5 font-normal text-destructive tabular-nums"
           onClick={dictation.stop}
-          aria-label="Stop and transcribe"
-          title="Stop and transcribe"
+          aria-label="Stop dictating"
+          title="Stop dictating"
         >
           <span className="size-2 animate-pulse rounded-full bg-current" />
           {formatElapsed(Math.max(0, now - startedAt))}
@@ -374,8 +373,8 @@ export function DictateButton({ disabled, onText }: { disabled: boolean; onText:
           size="icon-sm"
           className="size-6"
           onClick={dictation.cancel}
-          aria-label="Discard recording"
-          title="Discard recording"
+          aria-label="Discard dictation"
+          title="Discard dictation"
         >
           <XIcon />
         </Button>
@@ -388,12 +387,12 @@ export function DictateButton({ disabled, onText }: { disabled: boolean; onText:
         variant="ghost"
         size="icon-sm"
         className={cn("size-6", error && "text-destructive")}
-        disabled={disabled || state === "transcribing"}
+        disabled={disabled || state === "finishing"}
         onClick={dictation.start}
-        aria-label={state === "transcribing" ? "Transcribing" : "Dictate"}
-        title={state === "transcribing" ? "Transcribing…" : error ? `${error}. Dictate again` : "Dictate"}
+        aria-label={state === "finishing" ? "Finishing" : "Dictate"}
+        title={state === "finishing" ? "Catching the last words…" : error ? `${error}. Dictate again` : "Dictate"}
       >
-        {state === "transcribing" ? <LoaderIcon className="animate-spin" /> : <MicIcon />}
+        {state === "finishing" ? <LoaderIcon className="animate-spin" /> : <MicIcon />}
       </Button>
       {error && (
         <button

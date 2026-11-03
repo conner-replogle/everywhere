@@ -661,7 +661,7 @@ Small, which makes them the first to move.
 
 ### dictation and rewrite (built-in)
 - **Contributes**: composer buttons; worker parts `/api/speech`
-  (Whisper) and `/api/prompt` (Gemma). Pure web + worker.
+  (Deepgram Nova-3, streamed over a WebSocket) and `/api/prompt` (Gemma). Pure web + worker.
 - **Needs**: a composer contribution point with access to the draft and
   the thread's recent text (`rewrite.ts` reads the timeline), Workers AI.
 

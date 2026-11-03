@@ -172,10 +172,6 @@ export const api = {
   setClaudeToken: (token: string) => request<ClaudeTokenResult>("PUT", "/api/claude/token", { token }),
   removeClaudeToken: () => request<ClaudeTokenResult>("DELETE", "/api/claude/token"),
 
-  /** Speech to text: base64 audio from a MediaRecorder, and the speaker's language if known. */
-  transcribe: (audio: string, language?: string) =>
-    request<{ text: string }>("POST", "/api/speech/transcribe", { audio, language }),
-
   /** A clearer version of a composer draft, given the thread's recent messages. */
   rewritePrompt: (draft: string, context: { role: "user" | "claude"; text: string }[]) =>
     request<{ text: string }>("POST", "/api/prompt/rewrite", { draft, context }),

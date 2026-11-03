@@ -1,47 +1,53 @@
-// Dictation: record from the microphone, then have the Worker transcribe it
-// (Workers AI Whisper). Recording happens here; nothing streams while talking.
+// Dictation: stream the microphone to the Worker (Workers AI, Deepgram Nova-3)
+// and show the transcript as it comes. Text joins the draft only on Stop, so
+// Discard leaves the draft as it was.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api } from "@/lib/api";
 import { errorMessage } from "@/lib/utils";
 
-/** Long enough for any prompt, short enough to stay under the Worker's limit. */
+/** Long enough for any prompt; the Worker cuts sessions off a little later. */
 const MAX_RECORDING_MS = 5 * 60 * 1000;
-/** Containers Whisper decodes, best first; Safari only records mp4. */
-const MIME_TYPES = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"];
+/** How often MediaRecorder hands over audio; smaller is snappier, chattier. */
+const CHUNK_MS = 250;
+/** After Stop, how long to wait for the last words before giving up. */
+const FINISH_TIMEOUT_MS = 8000;
+/** Opus in a container Nova reads while it's still being written. */
+const MIME_TYPES = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"];
 
-export type DictationState = "idle" | "recording" | "transcribing";
+export type DictationState = "idle" | "recording" | "finishing";
+
+function mimeType(): string | undefined {
+  return typeof MediaRecorder === "undefined" ? undefined : MIME_TYPES.find((t) => MediaRecorder.isTypeSupported(t));
+}
 
 export function dictationSupported(): boolean {
-  return typeof MediaRecorder !== "undefined" && !!navigator.mediaDevices?.getUserMedia;
+  return !!mimeType() && !!navigator.mediaDevices?.getUserMedia;
 }
 
-function blobToBase64(blob: Blob): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result).replace(/^data:[^,]*,/, ""));
-    reader.onerror = () => reject(reader.error ?? new Error("couldn't read the recording"));
-    reader.readAsDataURL(blob);
-  });
+/** Two-letter language from the browser; the Worker falls back to multilingual. */
+function language(): string {
+  return /^[a-z]{2}/.exec(navigator.language?.toLowerCase() ?? "")?.[0] ?? "";
 }
 
-/** Two-letter language for Whisper, from the browser; undefined lets it detect. */
-function language(): string | undefined {
-  return /^[a-z]{2}/.exec(navigator.language?.toLowerCase() ?? "")?.[0];
+function join(parts: string[]): string {
+  return parts.filter(Boolean).join(" ");
 }
 
-/** Calls onText with each finished transcription. */
+type Session = { rec: MediaRecorder; discard: boolean; end: () => void };
+
+/** Calls onText with the whole transcription when a dictation is stopped. */
 export function useDictation(onText: (text: string) => void) {
   const [state, setState] = useState<DictationState>("idle");
   const [error, setError] = useState<string>();
   const [startedAt, setStartedAt] = useState(0);
-  const recorder = useRef<MediaRecorder | null>(null);
-  const discard = useRef(false);
+  /** What's been said so far: finished phrases, then the one in progress. */
+  const [live, setLive] = useState("");
+  const session = useRef<Session | null>(null);
   const onTextRef = useRef(onText);
   onTextRef.current = onText;
 
   const start = useCallback(async () => {
-    if (recorder.current) return;
+    if (session.current) return;
     setError(undefined);
     let stream: MediaStream;
     try {
@@ -50,49 +56,101 @@ export function useDictation(onText: (text: string) => void) {
       setError(e instanceof DOMException && e.name === "NotAllowedError" ? "Microphone access was denied" : errorMessage(e));
       return;
     }
-    const mimeType = MIME_TYPES.find((t) => MediaRecorder.isTypeSupported(t));
-    const rec = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-    const chunks: Blob[] = [];
-    const timer = setTimeout(() => rec.state !== "inactive" && rec.stop(), MAX_RECORDING_MS);
-    rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-    rec.onstop = async () => {
-      clearTimeout(timer);
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    const ws = new WebSocket(`${proto}//${location.host}/api/speech/stream?language=${language()}`);
+    const rec = new MediaRecorder(stream, { mimeType: mimeType() });
+    const timers: number[] = [];
+    const finals: string[] = [];
+    let interim = "";
+    let failed = false;
+    let done = false;
+
+    const end = () => {
+      if (done) return;
+      done = true;
+      for (const t of timers) clearTimeout(t);
       for (const t of stream.getTracks()) t.stop();
-      recorder.current = null;
-      if (discard.current || chunks.length === 0) {
-        discard.current = false;
-        setState("idle");
-        return;
-      }
-      setState("transcribing");
-      try {
-        const audio = await blobToBase64(new Blob(chunks, { type: rec.mimeType }));
-        const { text } = await api.transcribe(audio, language());
-        if (text) onTextRef.current(text);
-        else setError("Didn't catch anything");
-      } catch (e) {
-        setError(errorMessage(e));
-      }
+      if (rec.state !== "inactive") rec.stop();
+      if (ws.readyState <= WebSocket.OPEN) ws.close();
+      session.current = null;
+      // A connection lost midway keeps what was heard; the rest is the error.
+      const text = join([...finals, interim]);
+      if (!s.discard && text) onTextRef.current(text);
+      else if (!s.discard && !failed) setError("Didn't catch anything");
+      setLive("");
       setState("idle");
     };
-    recorder.current = rec;
-    discard.current = false;
-    rec.start();
+    const s: Session = { rec, discard: false, end };
+    session.current = s;
+
+    // Audio recorded before the socket opens waits; the first chunk holds the
+    // container header, so none can be dropped.
+    const pending: Blob[] = [];
+    rec.ondataavailable = (e) => {
+      if (!e.data.size || s.discard) return;
+      if (ws.readyState === WebSocket.OPEN) ws.send(e.data);
+      else pending.push(e.data);
+    };
+    rec.onstop = () => {
+      if (s.discard || done) return;
+      // The last chunk has been sent; Nova finishes up and closes the socket.
+      setState("finishing");
+      if (ws.readyState === WebSocket.OPEN) ws.send("stop");
+      timers.push(window.setTimeout(end, FINISH_TIMEOUT_MS));
+    };
+    let opened = false;
+    ws.onopen = () => {
+      opened = true;
+      for (const b of pending.splice(0)) ws.send(b);
+      if (rec.state === "inactive") ws.send("stop");
+    };
+    ws.onmessage = (e) => {
+      let msg: { text?: string; final?: boolean };
+      try {
+        msg = JSON.parse(String(e.data));
+      } catch {
+        return;
+      }
+      const text = msg.text ?? "";
+      if (msg.final) {
+        if (text) finals.push(text);
+        interim = "";
+      } else {
+        interim = text;
+      }
+      setLive(join([...finals, interim]));
+    };
+    ws.onclose = (e) => {
+      if (done) return;
+      if (e.code !== 1000 && !s.discard) {
+        failed = true;
+        setError(opened ? "Dictation was cut off" : "Couldn't start dictation");
+      }
+      end();
+    };
+
+    rec.start(CHUNK_MS);
+    timers.push(window.setTimeout(() => rec.state !== "inactive" && rec.stop(), MAX_RECORDING_MS));
+    setLive("");
     setStartedAt(Date.now());
     setState("recording");
   }, []);
 
   const stop = useCallback(() => {
-    if (recorder.current?.state === "recording") recorder.current.stop();
+    if (session.current?.rec.state === "recording") session.current.rec.stop();
   }, []);
 
   const cancel = useCallback(() => {
-    discard.current = true;
-    stop();
-  }, [stop]);
+    const s = session.current;
+    if (!s) return;
+    s.discard = true;
+    s.end();
+  }, []);
 
-  // Leaving the thread mid-recording releases the microphone.
+  // Leaving the thread mid-dictation releases the microphone.
   useEffect(() => cancel, [cancel]);
 
-  return { state, error, startedAt, start, stop, cancel, clearError: () => setError(undefined) };
+  return { state, error, startedAt, live, start, stop, cancel, clearError: () => setError(undefined) };
 }
+
+export type Dictation = ReturnType<typeof useDictation>;

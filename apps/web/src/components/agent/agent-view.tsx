@@ -31,6 +31,7 @@ import {
 import { type AgentThread, useAgentThread } from "@/lib/agent";
 import { api } from "@/lib/api";
 import { listenComposer, sendToComposer } from "@/lib/composer-inbox";
+import { useDictation } from "@/lib/dictation";
 import { loadDraft, saveDraft } from "@/lib/drafts";
 import { type DevicePeer, useRpc } from "@/lib/peer";
 import { rewriteContext } from "@/lib/rewrite";
@@ -559,6 +560,11 @@ function Composer({
     setText((t) => (t.trim() ? `${t.trimEnd()} ${said}` : said));
     ref.current?.focus();
   }, []);
+  // While dictating, the box shows the words as they come and is read-only;
+  // they join the draft on Stop.
+  const dictation = useDictation(addDictation);
+  const dictating = dictation.state !== "idle";
+  const shown = dictating && dictation.live ? (text.trim() ? `${text.trimEnd()} ${dictation.live}` : dictation.live) : text;
 
   // Rewrite: the draft goes to a small model with the recent conversation;
   // the box is read-only meanwhile, so the result can't clobber new typing.
@@ -599,18 +605,19 @@ function Composer({
     ref.current?.focus();
   };
 
-  // Grow with the text, up to a limit.
+  // Grow with the text, up to a limit; dictation keeps its newest words in view.
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 240)}px`;
-  }, [text]);
+    if (dictating) el.scrollTop = el.scrollHeight;
+  }, [shown, dictating]);
 
   // A prompt sent mid-recap would join the recap's turn; it's only a few seconds.
   // Other agents take one prompt per turn: nothing joins a turn in progress.
   const oneAtATime = !!state?.harness && active;
-  const canSend = ready && !recapping && !oneAtATime && !files.uploading && (text.trim() !== "" || files.ready.length > 0);
+  const canSend = ready && !dictating && !recapping && !oneAtATime && !files.uploading && (text.trim() !== "" || files.ready.length > 0);
   const submit = () => {
     if (!canSend) return;
     const attachments = files.ready.map((a) => a.id);
@@ -644,11 +651,11 @@ function Composer({
       <div className="relative">
       <textarea
         ref={ref}
-        value={text}
+        value={shown}
         rows={1}
         autoFocus
         disabled={!ready}
-        readOnly={rewriting}
+        readOnly={rewriting || dictating}
         onChange={(e) => {
           setText(e.target.value);
           setBeforeRewrite(null);
@@ -750,7 +757,7 @@ function Composer({
             />
           </>
         )}
-        <DictateButton disabled={!ready} onText={addDictation} />
+        <DictateButton disabled={!ready} dictation={dictation} />
         <RewriteButton
           rewriting={rewriting}
           canUndo={beforeRewrite !== null}

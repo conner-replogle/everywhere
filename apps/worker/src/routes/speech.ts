@@ -1,39 +1,96 @@
 import { Hono } from "hono";
-import { rateLimited, tooMany } from "../security";
+import { originAllowed, rateLimited, tooMany } from "../security";
 import type { App } from "../types";
 import { requireUser } from "./auth";
 
-// Speech to text for the composer, on Workers AI. Audio arrives base64 in a
-// JSON body (the API only takes JSON; see apiGuard), as whatever the browser's
-// MediaRecorder made: webm/opus in most, mp4/aac in Safari.
+// Live speech to text for the composer, on Workers AI (Deepgram Nova-3 over a
+// WebSocket). The browser sends MediaRecorder chunks (webm or ogg Opus; Nova
+// reads the container) as binary messages and "stop" when it's done; it gets
+// back {text, final} as you talk. Interim text is replaced by the next
+// message until one is final; finals add up to the whole transcript.
 
-const MODEL = "@cf/openai/whisper-large-v3-turbo";
-/** About 7.5 MB of audio: minutes of opus, more than one dictation needs. */
-const MAX_AUDIO_BASE64 = 10 << 20;
+const MODEL = "@cf/deepgram/nova-3";
+/** Languages Nova-3 transcribes on their own; anything else goes to "multi". */
+const LANGUAGES = new Set(["en", "es", "fr", "de", "hi", "ru", "pt", "ja", "it", "nl"]);
+/** A dictation is minutes at most; don't hold an upstream socket forever. */
+const MAX_SESSION_MS = 6 * 60 * 1000;
+/** Close code for a failed transcription (1000 is a normal end). */
+const FAILED = 4000;
 
 export const speech = new Hono<App>();
 
 speech.use("*", requireUser);
 
-speech.post("/transcribe", async (c) => {
+speech.get("/stream", async (c) => {
+  if (c.req.header("upgrade") !== "websocket") return c.text("expected websocket", 426);
+  if (!originAllowed(c)) return c.json({ error: "cross-origin websocket rejected" }, 403);
   if (await rateLimited(c, `speech:${c.var.user.id}`)) return tooMany(c);
-  const body = await c.req.json<{ audio?: unknown; language?: unknown }>().catch(() => ({}) as Record<string, unknown>);
-  const { audio, language } = body as { audio?: unknown; language?: unknown };
-  if (typeof audio !== "string" || !audio) return c.json({ error: "audio is required" }, 400);
-  if (audio.length > MAX_AUDIO_BASE64) return c.json({ error: "recording is too long" }, 413);
+  const lang = c.req.query("language") ?? "";
+
+  let upstream: WebSocket;
   try {
-    const out = await c.env.AI.run(MODEL, {
-      audio,
-      task: "transcribe",
-      // Two-letter codes only; otherwise Whisper detects the language itself.
-      ...(typeof language === "string" && /^[a-z]{2}$/.test(language) ? { language } : {}),
-      vad_filter: true,
-      // Silence makes Whisper invent text; skip it rather than transcribe it.
-      condition_on_previous_text: false,
-    });
-    return c.json({ text: (out.text ?? "").trim() });
+    // Over the socket every option is a string, and there's no audio up front.
+    const params = {
+      language: LANGUAGES.has(lang) ? lang : "multi",
+      interim_results: "true",
+      punctuate: "true",
+      smart_format: "true",
+    };
+    const res = await c.env.AI.run(MODEL, params as never, { websocket: true });
+    if (!res.webSocket) throw new Error(`no websocket (${res.status}): ${await res.text()}`);
+    upstream = res.webSocket;
   } catch (e) {
-    console.error("transcribe failed", e);
-    return c.json({ error: "couldn't transcribe that recording" }, 502);
+    console.error("speech stream failed", e);
+    return c.json({ error: "speech to text is unavailable" }, 502);
   }
+  upstream.accept();
+
+  const pair = new WebSocketPair();
+  const [client, server] = [pair[0], pair[1]];
+  server.accept();
+  const close = (code = 1000, reason = "") => {
+    clearTimeout(timer);
+    for (const ws of [server, upstream]) {
+      try {
+        ws.close(code, reason);
+      } catch {}
+    }
+  };
+  const timer = setTimeout(() => close(1000, "too long"), MAX_SESSION_MS);
+
+  // Audio may arrive as a Blob; reading one is async, so a queue keeps order.
+  let queue = Promise.resolve();
+  server.addEventListener("message", (e) => {
+    queue = queue
+      .then(async () => {
+        if (typeof e.data === "string") {
+          // Nova transcribes what's left, sends its finals, then closes.
+          if (e.data === "stop") upstream.send(JSON.stringify({ type: "CloseStream" }));
+          return;
+        }
+        upstream.send(e.data instanceof Blob ? await e.data.arrayBuffer() : e.data);
+      })
+      .catch(() => close(FAILED, "upstream send failed"));
+  });
+  upstream.addEventListener("message", (e) => {
+    if (typeof e.data !== "string") return;
+    let msg: { type?: string; is_final?: boolean; channel?: { alternatives?: { transcript?: string }[] } };
+    try {
+      msg = JSON.parse(e.data);
+    } catch {
+      return;
+    }
+    if (msg.type === "Error") {
+      console.error("speech upstream error", e.data);
+      return close(FAILED, "transcription failed");
+    }
+    if (msg.type !== "Results") return;
+    const text = msg.channel?.alternatives?.[0]?.transcript?.trim() ?? "";
+    server.send(JSON.stringify({ text, final: !!msg.is_final }));
+  });
+  upstream.addEventListener("close", (e) => close(e.code === 1000 ? 1000 : FAILED, e.reason.slice(0, 100)));
+  upstream.addEventListener("error", () => close(FAILED, "transcription failed"));
+  server.addEventListener("close", () => close());
+
+  return new Response(null, { status: 101, webSocket: client });
 });
