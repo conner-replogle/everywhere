@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -66,6 +67,9 @@ const IconMaxBytes = 32 << 10
 
 var iconTypes = map[string]string{".svg": "image/svg+xml", ".png": "image/png"}
 
+// IconData is the icon of the plugin in dir as a data: URL, or "".
+func IconData(dir string, m Manifest) string { return readIcon(dir, m) }
+
 // readIcon reads a plugin's icon as a data: URL; "" if it has none, or it's
 // missing or too big (logged: the plugin works without it).
 func readIcon(dir string, m Manifest) string {
@@ -94,6 +98,9 @@ func Stamp(dir string, m Manifest) string {
 		name = filepath.Join(dir, name)
 	}
 	info, err := os.Stat(name)
+	if err != nil && runtime.GOOS == "windows" {
+		info, err = os.Stat(name + ".exe")
+	}
 	if err != nil {
 		return ""
 	}
@@ -272,8 +279,15 @@ func (p *Plugin) resolve(name string) (string, error) {
 	if filepath.IsAbs(name) {
 		return name, nil
 	}
-	if strings.ContainsRune(name, filepath.Separator) || strings.HasPrefix(name, ".") {
-		return filepath.Join(p.dir, name), nil
+	if strings.ContainsRune(name, filepath.Separator) || strings.ContainsRune(name, '/') || strings.HasPrefix(name, ".") {
+		path := filepath.Join(p.dir, name)
+		// A registry build of "./linear" is linear.exe on Windows.
+		if runtime.GOOS == "windows" && filepath.Ext(path) == "" {
+			if _, err := os.Stat(path); err != nil {
+				path += ".exe"
+			}
+		}
+		return path, nil
 	}
 	if _, err := os.Stat(filepath.Join(p.dir, name)); err == nil {
 		return filepath.Join(p.dir, name), nil

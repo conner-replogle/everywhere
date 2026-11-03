@@ -320,7 +320,8 @@ func Installed(root string) (map[string]Manifest, map[string]error) {
 	out, bad := map[string]Manifest{}, map[string]error{}
 	entries, _ := os.ReadDir(root)
 	for _, e := range entries {
-		if !e.IsDir() {
+		// Dot directories are installs in progress (see SwapDir).
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
 			continue
 		}
 		dir := filepath.Join(root, e.Name())

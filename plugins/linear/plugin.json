@@ -1,0 +1,104 @@
+{
+  "id": "linear",
+  "title": "Linear",
+  "version": "0.1.0",
+  "api": 1,
+  "description": "Link a project to Linear: a Linear tab with its issues, an issue's page, comments and status, and handing an issue to the thread's agent.",
+  "command": ["./linear"],
+  "icon": "icon.svg",
+  "permissions": ["agent.tools", "agent.notify"],
+  "contributes": {
+    "rpc": [
+      { "method": "linear.status" },
+      { "method": "linear.link.get" },
+      { "method": "linear.link.set" },
+      { "method": "linear.targets", "slow": true },
+      { "method": "linear.issues", "slow": true },
+      { "method": "linear.issue", "slow": true },
+      { "method": "linear.setState", "slow": true },
+      { "method": "linear.assignMe", "slow": true },
+      { "method": "linear.comment", "slow": true },
+      { "method": "linear.work", "slow": true },
+      { "method": "linear.header" },
+      { "method": "linear.sidebar", "slow": true }
+    ],
+    "tools": [
+      {
+        "name": "issues",
+        "title": "List the project's Linear issues",
+        "description": "List the open issues of the Linear project or team this thread's project is linked to: identifier, status, title, priority and assignee. Narrow it with search (title words or an identifier like ENG-123), mine (only the user's) or closed (include done and canceled).",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "search": { "type": "string" },
+            "mine": { "type": "boolean" },
+            "closed": { "type": "boolean" },
+            "limit": { "type": "number", "description": "At most this many, newest activity first (default 50)." }
+          }
+        },
+        "readOnly": true
+      },
+      {
+        "name": "issue",
+        "title": "Read a Linear issue",
+        "description": "Read a Linear issue by its identifier (ENG-123): status, priority, assignee, labels, branch name, parent and sub-issues, description and comments.",
+        "inputSchema": {
+          "type": "object",
+          "required": ["id"],
+          "properties": { "id": { "type": "string", "description": "The issue's identifier, e.g. ENG-123." } }
+        },
+        "readOnly": true
+      },
+      {
+        "name": "comment",
+        "title": "Comment on a Linear issue",
+        "description": "Add a comment (markdown) to a Linear issue, as the user.",
+        "inputSchema": {
+          "type": "object",
+          "required": ["id", "body"],
+          "properties": {
+            "id": { "type": "string", "description": "The issue's identifier, e.g. ENG-123." },
+            "body": { "type": "string" }
+          }
+        },
+        "ask": true
+      },
+      {
+        "name": "set_status",
+        "title": "Move a Linear issue",
+        "description": "Move a Linear issue to another status of its team's workflow, by the status's name (e.g. In Progress, In Review, Done).",
+        "inputSchema": {
+          "type": "object",
+          "required": ["id", "status"],
+          "properties": {
+            "id": { "type": "string", "description": "The issue's identifier, e.g. ENG-123." },
+            "status": { "type": "string" }
+          }
+        },
+        "ask": true
+      }
+    ],
+    "kinds": [{ "kind": "linear", "title": "Linear", "single": true }],
+    "ui": {
+      "sidebar": { "method": "linear.sidebar" },
+      "threadHeader": { "method": "linear.header" },
+      "deviceMenu": [{ "label": "Open Linear", "icon": "external", "href": "https://linear.app" }]
+    }
+  },
+  "web": "web",
+  "settings": [
+    {
+      "key": "api_key",
+      "type": "secret",
+      "title": "API key",
+      "description": "A personal API key, from Linear → Settings → Security & access.",
+      "scope": "account"
+    },
+    {
+      "key": "sidebar",
+      "type": "boolean",
+      "title": "List my issues in progress in the sidebar",
+      "default": true
+    }
+  ]
+}

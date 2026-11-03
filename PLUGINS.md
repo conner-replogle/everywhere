@@ -348,10 +348,13 @@ The rules that matter today carry over as host rules, not one-off checks:
 
 - **Local consent.** Remote desktop stays off until `everywhere desktop
   enable` on the device, so neither a stolen web session nor the Worker can
-  turn it on. Generalized: a permission marked local-consent (`screen`, and
-  installing any external plugin) can only be granted from the device's CLI:
-  `everywhere plugin install <path|url>`, `everywhere plugin enable <id>`.
-  The web app can list, disable and configure plugins, not install them.
+  turn it on. Generalized: a permission marked local-consent (`screen`) can
+  only be granted from the device's CLI (`everywhere plugin install|enable`),
+  and so can installing a plugin from a folder. Plugins from the registry
+  can be installed, updated, turned on and removed from the app too
+  (Settings → Plugins): the app can already open a shell on the device, so
+  keeping that to the CLI added friction, not safety. None of these methods
+  are `remote`, so a connected agent can't install code.
 - **Not over MCP by default.** `Remote()` is opt-in per method, and a plugin
   with `screen` can't opt in.
 - **Ask before running commands.** Tools declared `ask: true` stay out of
@@ -722,9 +725,13 @@ Each step ships on its own and leaves the app working.
 - **Plugins contributing into other plugins' views** (telemetry's Charts
   inside the processes tab, a plugin adding a timeline filter). Probably named
   slots a plugin offers (`processes.views`), as VS Code's view containers.
-- **Distribution.** A directory on the device to start; a list in the app
-  (per account, installed on chosen devices) later, still installed through
-  the CLI for consent.
+- **Distribution.** Settled: the repo's `plugins/` folder is the registry's
+  source. CI builds each plugin for every platform and publishes the
+  archives and `index.json` on the rolling `plugins` release. Devices
+  install from it, from the app or the CLI, checking each archive's sha256
+  and its plugin.json against the index. See plugins/README.md. Still open:
+  signing the index (today it's trusted because it comes over HTTPS from
+  GitHub), and plugins from other registries in the app.
 - **Per-device or per-account enablement.** Probably per device for the
   daemon part (it's that machine's code), with the web part following
   whichever devices have it.

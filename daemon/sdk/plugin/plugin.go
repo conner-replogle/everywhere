@@ -299,6 +299,13 @@ func (p *Plugin) NotifyAgent(threadID, name, text string, wake bool) error {
 	return err
 }
 
+// SendToAgent sends a thread's claude a prompt, as the user would (needs
+// agent.notify).
+func (p *Plugin) SendToAgent(threadID, text string) error {
+	_, err := p.call(context.Background(), "host.agent.send", map[string]any{"threadId": threadID, "text": text})
+	return err
+}
+
 // Log writes to the daemon's log.
 func (p *Plugin) Log(level, format string, a ...any) {
 	_, _ = p.call(context.Background(), "host.log", map[string]any{"level": level, "message": fmt.Sprintf(format, a...)})

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -9,8 +10,10 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/config"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugin/external"
@@ -20,13 +23,17 @@ import (
 const pluginUsage = `usage: everywhere plugin <command>
 
   list                       installed plugins and whether they're on
-  install DIR [--yes]        install the plugin in DIR (a plugin.json and its program) and turn it on
+  available                  the registry's plugins (EVERYWHERE_PLUGIN_REGISTRY, or everywhere's own)
+  install ID|DIR [--yes]     install a plugin from the registry, or the one in DIR (a plugin.json
+                             and its program), and turn it on
+  update [ID]                update plugins installed from the registry (all, or ID)
   enable ID | disable ID     turn an installed plugin on or off
   remove ID [--purge]        uninstall a plugin (its data, state and settings stay unless --purge)
 `
 
-// Plugins are installed and turned on only here, on the device: a web
-// session can turn one off but never add code to the machine.
+// Plugins from the registry can also be installed from the app (see
+// external/manager_catalog.go); from a folder, or with permissions that
+// need local consent, only here, on the device.
 func pluginCmd(args []string) error {
 	if len(args) == 0 {
 		return errors.New(pluginUsage)
@@ -34,6 +41,13 @@ func pluginCmd(args []string) error {
 	switch cmd, rest := args[0], args[1:]; cmd {
 	case "list":
 		return pluginList()
+	case "available":
+		return pluginAvailable()
+	case "update":
+		if len(rest) > 1 {
+			return errors.New(pluginUsage)
+		}
+		return pluginUpdate(rest)
 	case "install":
 		fs := flag.NewFlagSet("plugin install", flag.ExitOnError)
 		yes := fs.Bool("yes", false, "don't ask before installing")
@@ -48,7 +62,10 @@ func pluginCmd(args []string) error {
 		if dir == "" {
 			return errors.New(pluginUsage)
 		}
-		return pluginInstall(dir, *yes)
+		if st, err := os.Stat(dir); err == nil && st.IsDir() {
+			return pluginInstall(dir, *yes)
+		}
+		return pluginInstallFromRegistry(dir, *yes)
 	case "enable", "disable":
 		if len(rest) != 1 {
 			return errors.New(pluginUsage)
@@ -128,6 +145,32 @@ func pluginInstall(src string, yes bool) error {
 	if err != nil {
 		return err
 	}
+	if !yes && !confirmInstall(m, "Install and turn it on?") {
+		return errors.New("not installed")
+	}
+	dst := filepath.Join(config.PluginsDir(), m.ID)
+	if src != dst {
+		tmp, err := os.MkdirTemp(config.DataDir(), ".plugin-"+m.ID+"-")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(tmp)
+		if err := copyDir(src, tmp); err != nil {
+			return err
+		}
+		if err := external.SwapDir(tmp, dst); err != nil {
+			return err
+		}
+	}
+	if err := config.SetPluginEnabled(m.ID, true); err != nil {
+		return err
+	}
+	fmt.Printf("Installed %s.\n", m.ID)
+	return pluginsChanged()
+}
+
+// confirmInstall shows what a plugin asks for and asks the user.
+func confirmInstall(m external.Manifest, question string) bool {
 	fmt.Printf("%s (%s) %s\n", m.Title, m.ID, m.Version)
 	if m.Description != "" {
 		fmt.Println(m.Description)
@@ -160,31 +203,143 @@ func pluginInstall(src string, yes bool) error {
 	if len(remote) > 0 {
 		fmt.Printf("Usable by connected agents (MCP): %s\n", strings.Join(remote, ", "))
 	}
-	if !yes {
-		fmt.Print("\nInstall and turn it on? [y/N] ")
-		line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
-		if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
-			return errors.New("not installed")
-		}
-	}
-	dst := filepath.Join(config.PluginsDir(), m.ID)
-	if src != dst {
-		tmp := dst + ".new"
-		_ = os.RemoveAll(tmp)
-		if err := copyDir(src, tmp); err != nil {
-			_ = os.RemoveAll(tmp)
-			return err
-		}
-		_ = os.RemoveAll(dst)
-		if err := os.Rename(tmp, dst); err != nil {
-			return err
-		}
-	}
-	if err := config.SetPluginEnabled(m.ID, true); err != nil {
+	fmt.Printf("\n%s [y/N] ", question)
+	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	a := strings.ToLower(strings.TrimSpace(line))
+	return a == "y" || a == "yes"
+}
+
+func fetchCatalog() (external.Catalog, string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	url := external.RegistryURL()
+	cat, err := external.FetchCatalog(ctx, url, true)
+	return cat, url, err
+}
+
+func pluginAvailable() error {
+	cat, url, err := fetchCatalog()
+	if err != nil {
 		return err
 	}
-	fmt.Printf("Installed %s.\n", m.ID)
+	installed, _ := external.Installed(config.PluginsDir())
+	fmt.Printf("From %s:\n\n", url)
+	for _, e := range cat.Plugins {
+		m := e.Manifest
+		state := ""
+		if have, ok := installed[m.ID]; ok {
+			state = "installed " + have.Version
+		}
+		if p := e.Problem(); p != "" {
+			state = p
+		}
+		fmt.Printf("%-20s %-8s %-24s %s\n", m.ID, m.Version, m.Title, state)
+		if m.Description != "" {
+			fmt.Printf("%-20s %s\n", "", m.Description)
+		}
+	}
+	if len(cat.Plugins) == 0 {
+		fmt.Println("The registry has no plugins.")
+	} else {
+		fmt.Println("\nInstall one with: everywhere plugin install ID")
+	}
+	return nil
+}
+
+func pluginInstallFromRegistry(id string, yes bool) error {
+	cat, url, err := fetchCatalog()
+	if err != nil {
+		return err
+	}
+	e, ok := cat.Find(id)
+	if !ok {
+		return fmt.Errorf("%q isn't a folder, and the registry has no plugin %q (see everywhere plugin available)", id, id)
+	}
+	if !yes && !confirmInstall(e.Manifest, "Download, install and turn it on?") {
+		return errors.New("not installed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	if err := external.InstallFrom(ctx, url, e, config.PluginsDir()); err != nil {
+		return err
+	}
+	if err := config.SetPluginEnabled(id, true); err != nil {
+		return err
+	}
+	fmt.Printf("Installed %s %s.\n", id, e.Manifest.Version)
 	return pluginsChanged()
+}
+
+// pluginUpdate updates plugins installed from the registry. A newer version
+// asking for more than the installed one did is asked about again.
+func pluginUpdate(ids []string) error {
+	cat, url, err := fetchCatalog()
+	if err != nil {
+		return err
+	}
+	installed, _ := external.Installed(config.PluginsDir())
+	updated := 0
+	for id, have := range installed {
+		if len(ids) > 0 && ids[0] != id {
+			continue
+		}
+		src, ok := external.InstalledFrom(filepath.Join(config.PluginsDir(), id))
+		e, inCat := cat.Find(id)
+		if !ok || !inCat || src.Version == e.Manifest.Version {
+			continue
+		}
+		if p := e.Problem(); p != "" {
+			fmt.Printf("%s %s: %s\n", id, e.Manifest.Version, p)
+			continue
+		}
+		if asksMore(have, e.Manifest) && !confirmInstall(e.Manifest, "It asks for more than before. Update?") {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		err := external.InstallFrom(ctx, url, e, config.PluginsDir())
+		cancel()
+		if err != nil {
+			return fmt.Errorf("%s: %w", id, err)
+		}
+		fmt.Printf("Updated %s %s → %s.\n", id, src.Version, e.Manifest.Version)
+		updated++
+	}
+	if len(ids) > 0 {
+		if _, ok := installed[ids[0]]; !ok {
+			return fmt.Errorf("no plugin %q is installed", ids[0])
+		}
+	}
+	if updated == 0 {
+		fmt.Println("Everything is up to date.")
+		return nil
+	}
+	return pluginsChanged()
+}
+
+// asksMore: next has permissions or tools that run without asking that
+// have didn't.
+func asksMore(have, next external.Manifest) bool {
+	for _, p := range next.Permissions {
+		if !slices.Contains(have.Permissions, p) {
+			return true
+		}
+	}
+	quiet := func(m external.Manifest) []string {
+		var out []string
+		for _, t := range m.Contributes.Tools {
+			if !t.Ask {
+				out = append(out, t.Name)
+			}
+		}
+		return out
+	}
+	old := quiet(have)
+	for _, t := range quiet(next) {
+		if !slices.Contains(old, t) {
+			return true
+		}
+	}
+	return false
 }
 
 // permissionText says what a permission lets a plugin do.

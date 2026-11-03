@@ -75,3 +75,8 @@ checksum:
 
 changelog:
   use: github-native
+
+git:
+  # The plugin registry's rolling release (.github/workflows/plugins.yml) has
+  # a tag of its own; it's not a daemon version.
+  ignore_tags: ["plugins"]
