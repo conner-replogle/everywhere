@@ -25,6 +25,21 @@ jobs:
       - run: CGO_ENABLED=0 GOOS=windows go vet ./cmd/everywhere ./cmd/everywhere-desktop ./internal/service ./internal/update ./internal/term ./internal/proc ./internal/desktop/...
       - run: CGO_ENABLED=0 GOOS=darwin go vet ./cmd/everywhere ./internal/service ./internal/update
 
+  plugins:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: daemon/go.mod
+          cache-dependency-path: daemon/go.sum
+      - run: test -z "$(gofmt -l plugins)"
+      - working-directory: plugins
+        run: CGO_ENABLED=0 go vet ./... && CGO_ENABLED=0 go test ./...
+      # Each plugin's plugin.json and web part, as the daemon checks them.
+      - working-directory: daemon
+        run: go run ./cmd/plugin-registry -plugins ../plugins -check
+
   desktop-worker:
     runs-on: ubuntu-latest
     defaults:

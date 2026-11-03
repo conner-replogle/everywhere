@@ -17,8 +17,9 @@ type Config struct {
 	// Desktop allows remote desktop sessions. Only `everywhere desktop enable`,
 	// run on the device, turns it on.
 	Desktop bool `json:"desktop,omitempty"`
-	// Plugins are the external plugins enabled on this device. Only
-	// `everywhere plugin enable`, run on the device, adds one.
+	// Plugins are the external plugins enabled on this device: by
+	// `everywhere plugin install|enable`, or from the app for registry
+	// plugins that need no local consent.
 	Plugins []string `json:"plugins,omitempty"`
 }
 

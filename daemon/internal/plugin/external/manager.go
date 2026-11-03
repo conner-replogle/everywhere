@@ -212,8 +212,8 @@ func (m *Manager) Start(h plugin.Host) error {
 			return plugin.CallKV(plugin.NewKV(h.Store(), r.Plugin, h.Emit), method, r.KVParams)
 		}))
 	}
-	// Turning a plugin off is safe from anywhere; turning one on takes the
-	// device itself (everywhere plugin enable).
+	// Turning a plugin off is safe from anywhere; turning one on, installing
+	// and removing are in manager_catalog.go.
 	h.HandleRPC("plugins.disable", plugin.Params(func(_ plugin.RPCContext, r struct {
 		ID string `json:"id"`
 	}) (any, error) {
@@ -229,6 +229,7 @@ func (m *Manager) Start(h plugin.Host) error {
 		m.Reconcile()
 		return plugin.Empty{}, nil
 	}))
+	m.serveCatalog(h)
 	return nil
 }
 

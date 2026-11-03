@@ -170,6 +170,60 @@ export interface PluginInfo {
   icon?: string;
 }
 
+/** An external plugin's plugin.json, as a registry lists it. */
+export interface PluginManifest {
+  id: string;
+  title: string;
+  version: string;
+  api: number;
+  description?: string;
+  permissions?: string[];
+  contributes: {
+    rpc?: { method: string; remote?: boolean }[];
+    tools?: { name: string; title?: string; description: string; ask?: boolean; readOnly?: boolean }[];
+    kinds?: { kind: string; title: string; thread?: boolean }[];
+    agents?: { kind: string; title: string }[];
+  };
+  settings?: PluginSetting[];
+}
+
+/** A registry plugin and how it stands on one device (plugins.catalog). */
+export interface CatalogPlugin {
+  manifest: PluginManifest;
+  /** Its logo, a data: URL. */
+  icon?: string;
+  homepage?: string;
+  /** The version installed on the device, if any. */
+  installed?: string;
+  enabled?: boolean;
+  /** The registry has a newer version than the one installed from it. */
+  update?: boolean;
+  /** Why it can't be installed on the device. */
+  problem?: string;
+  /** Permissions only the device's CLI can grant: install it there. */
+  localConsent?: string[];
+}
+
+/** plugins.catalog: the registry, as one device sees it. */
+export interface PluginCatalog {
+  registry: string;
+  /** The device's platform, e.g. linux-amd64. */
+  platform: string;
+  plugins: CatalogPlugin[];
+}
+
+/** plugins.installed: an installed external plugin, running or not. */
+export interface InstalledPlugin {
+  id: string;
+  title: string;
+  version?: string;
+  description?: string;
+  permissions?: string[];
+  enabled: boolean;
+  running: boolean;
+  error?: string;
+}
+
 export interface PluginSetting {
   key: string;
   type: "string" | "text" | "number" | "boolean" | "select" | "secret";

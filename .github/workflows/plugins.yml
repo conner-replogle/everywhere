@@ -1,0 +1,47 @@
+name: plugins
+
+# Publishes the plugin registry: every plugin in plugins/, built for each
+# platform, as assets of the rolling `plugins` release, with index.json
+# (external.DefaultRegistry). A plugin version is published once: changing a
+# plugin means bumping its version in plugin.json. The release is a
+# prerelease, so the daemon's self-update (releases/latest) never sees it.
+
+on:
+  push:
+    branches: [main]
+    paths: ["plugins/**", "daemon/sdk/**", "daemon/internal/plugin/**", "daemon/cmd/plugin-registry/**", ".github/workflows/plugins.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: plugins
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REGISTRY: https://github.com/${{ github.repository }}/releases/download/plugins/index.json
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: daemon/go.mod
+          cache-dependency-path: daemon/go.sum
+      - name: Test the plugins
+        working-directory: plugins
+        run: CGO_ENABLED=0 go vet ./... && CGO_ENABLED=0 go test ./...
+      - name: Build the registry
+        working-directory: daemon
+        run: go run ./cmd/plugin-registry -plugins ../plugins -out ../dist -previous "$REGISTRY"
+      - name: Publish
+        run: |
+          gh release view plugins >/dev/null 2>&1 || gh release create plugins --prerelease --latest=false \
+            --title "Plugin registry" --notes "Plugins for everywhere, installed from Settings → Plugins or \`everywhere plugin install ID\`. Built from plugins/ by .github/workflows/plugins.yml."
+          # New archives first, then the index that names them.
+          archives=$(ls dist/*.tar.gz 2>/dev/null || true)
+          if [ -n "$archives" ]; then gh release upload plugins $archives; fi
+          gh release upload plugins dist/index.json --clobber
