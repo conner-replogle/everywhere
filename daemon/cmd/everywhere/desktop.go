@@ -55,22 +55,21 @@ func desktopCmd(args []string) error {
 }
 
 // ensureWorker installs the remote desktop worker for this release if it
-// isn't next to the daemon: an update from a release before it didn't know
-// to install it.
+// isn't next to the daemon (see update.EnsureWorker).
 func ensureWorker() error {
 	exe, err := executable()
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(filepath.Join(filepath.Dir(exe), update.WorkerName)); err == nil {
-		return nil
-	}
-	if !update.Newer(version.Version, "0") {
+	if _, err := os.Stat(filepath.Join(filepath.Dir(exe), update.WorkerName)); err != nil && !update.Newer(version.Version, "0") {
 		return fmt.Errorf("%s isn't next to %s; build it (see README) for this development build", update.WorkerName, exe)
 	}
-	fmt.Printf("Installing %s %s...\n", update.WorkerName, version.Version)
-	if err := update.InstallWorker(exe, version.Version); err != nil {
+	installed, err := update.EnsureWorker(exe, version.Version)
+	if err != nil {
 		return fmt.Errorf("installing %s: %w", update.WorkerName, err)
+	}
+	if installed {
+		fmt.Printf("Installed %s %s.\n", update.WorkerName, version.Version)
 	}
 	return nil
 }

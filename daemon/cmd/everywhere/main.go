@@ -190,6 +190,16 @@ func daemon(args []string) error {
 	}
 	if exe, err := executable(); err == nil {
 		update.Cleanup(exe)
+		// The updater that installed this binary was the last release's, so
+		// it may have left the remote desktop worker out.
+		go func() {
+			installed, err := update.EnsureWorker(exe, version.Version)
+			if err != nil {
+				slog.Warn("installing the remote desktop worker", "worker", update.WorkerName, "err", err)
+			} else if installed {
+				slog.Info("installed the remote desktop worker", "worker", update.WorkerName, "version", version.Version)
+			}
+		}()
 	}
 	slog.Info("everywhere daemon starting", "version", version.Version, "device", cfg.DeviceID)
 	if err := hc.Run(ctx); err != nil {

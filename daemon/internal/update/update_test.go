@@ -116,3 +116,17 @@ func TestReplaceTree(t *testing.T) {
 		t.Errorf("left behind %v", entries)
 	}
 }
+
+func TestEnsureWorkerLeavesPresentOrDev(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "everywhere")
+	// A development build doesn't download a release's worker.
+	if installed, err := EnsureWorker(exe, "dev"); installed || err != nil {
+		t.Errorf("dev build: installed %v, %v", installed, err)
+	}
+	// Nor does a release whose worker is already there.
+	os.MkdirAll(filepath.Join(dir, WorkerName), 0o755)
+	if installed, err := EnsureWorker(exe, "0.28.1"); installed || err != nil {
+		t.Errorf("worker present: installed %v, %v", installed, err)
+	}
+}

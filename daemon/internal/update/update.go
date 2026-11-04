@@ -49,6 +49,22 @@ func InstallWorker(exe, ver string) error {
 	return err
 }
 
+// EnsureWorker installs release ver's remote desktop worker next to exe if
+// it's missing. An update runs the previous release's updater, which may not
+// know where this release keeps the worker: before 0.28.0 a Mac updater took
+// only the binary out of the app, which it removes here. Development builds
+// are left alone; installed reports whether it downloaded the worker.
+func EnsureWorker(exe, ver string) (installed bool, err error) {
+	dir := filepath.Dir(exe)
+	if runtime.GOOS == "darwin" {
+		_ = os.Remove(filepath.Join(dir, "everywhere-desktop"))
+	}
+	if _, err := os.Stat(filepath.Join(dir, WorkerName)); err == nil || !Newer(ver, "0") {
+		return false, nil
+	}
+	return true, InstallWorker(exe, ver)
+}
+
 // download fetches this platform's archive from a release's download URL and
 // checks it against the release's checksums.
 func download(base string) ([]byte, error) {
