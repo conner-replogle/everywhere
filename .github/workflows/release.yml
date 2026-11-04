@@ -49,13 +49,31 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: |
+          # Signed with the Developer ID when there is one, so the Screen Recording
+          # and Accessibility grants survive updates; otherwise ad hoc.
+          if [ -n "$CSC_LINK" ]; then
+            kc="$RUNNER_TEMP/signing.keychain-db"
+            security create-keychain -p ci "$kc"
+            security set-keychain-settings -lut 3600 "$kc"
+            security unlock-keychain -p ci "$kc"
+            echo "$CSC_LINK" | base64 --decode >"$RUNNER_TEMP/cert.p12"
+            security import "$RUNNER_TEMP/cert.p12" -k "$kc" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign
+            rm "$RUNNER_TEMP/cert.p12"
+            security set-key-partition-list -S apple-tool:,apple: -s -k ci "$kc" >/dev/null
+            security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+            export MAC_SIGN_IDENTITY="$(security find-identity -v -p codesigning "$kc" | sed -n 's/.*"\(Developer ID Application: .*\)"/\1/p' | head -1)"
+          fi
           daemon/macos/build.sh "${GITHUB_REF_NAME#v}" "$RUNNER_TEMP/app"
+          codesign -dvv "$RUNNER_TEMP/app/EverywhereDesktop.app" 2>&1 | grep -E 'Authority|TeamIdentifier|Signature'
           mkdir -p desktop-bin/darwin
           tar -C "$RUNNER_TEMP/app" -czf desktop-bin/darwin/EverywhereDesktop.app.tar.gz EverywhereDesktop.app
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-worker-darwin
           path: desktop-bin
+    env:
+      CSC_LINK: ${{ secrets.MAC_CERTIFICATE_P12_BASE64 }}
+      CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
 
   goreleaser:
     needs: [desktop-worker, desktop-app-mac]
@@ -111,9 +129,15 @@ jobs:
       - run: |
           # Secrets that aren't set come as empty strings, which electron-builder
           # takes as set (an empty CSC_LINK is a path to nothing).
-          for v in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+          for v in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID APPLE_API_KEY_P8 APPLE_API_KEY_ID APPLE_API_ISSUER; do
             if [ -z "${!v}" ]; then unset "$v"; fi
           done
+          # electron-builder wants the API key as a path to the .p8.
+          if [ "$RUNNER_OS" = macOS ] && [ -n "$APPLE_API_KEY_P8" ]; then
+            printf '%s\n' "$APPLE_API_KEY_P8" >"$RUNNER_TEMP/AuthKey.p8"
+            export APPLE_API_KEY="$RUNNER_TEMP/AuthKey.p8"
+          fi
+          unset APPLE_API_KEY_P8
           # Without a certificate, sign ad hoc: Apple silicon won't open an unsigned app.
           extra=()
           if [ "$RUNNER_OS" = macOS ] && [ -z "$CSC_LINK" ]; then extra=(-c.mac.identity=- -c.mac.hardenedRuntime=false); fi
@@ -121,8 +145,13 @@ jobs:
         env:
           # macOS only updates a signed, notarized app: these secrets do that.
           # Without them it still builds (unsigned), but won't update itself.
+          # Notarization takes an App Store Connect API key (APPLE_API_*) or an
+          # Apple ID with an app-specific password.
           CSC_LINK: ${{ secrets.MAC_CERTIFICATE_P12_BASE64 }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}

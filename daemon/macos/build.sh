@@ -23,5 +23,9 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 lipo -create -output "$APP/Contents/MacOS/everywhere-desktop" "$TMP"/everywhere-desktop-*
 sed "s/VERSION/$VERSION/g" Info.plist >"$APP/Contents/Info.plist"
-codesign --force --options runtime --timestamp=none --sign "${MAC_SIGN_IDENTITY:--}" "$APP"
+if [ -n "${MAC_SIGN_IDENTITY:-}" ]; then
+  codesign --force --options runtime --timestamp --sign "$MAC_SIGN_IDENTITY" "$APP"
+else
+  codesign --force --options runtime --timestamp=none --sign - "$APP"
+fi
 echo "$APP"
