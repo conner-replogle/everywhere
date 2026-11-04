@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -118,7 +119,13 @@ func TestProcessReportsAndExit(t *testing.T) {
 		t.Fatalf("list %+v", list)
 	}
 
-	// A notify the process sent wakes the model; the exit nobody asked about doesn't.
+	// A notify the process sent wakes the model; the exit nobody asked about
+	// doesn't. The exit note follows the status, so it may still be coming.
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if slices.ContainsFunc(fx.notesNow(), func(n note) bool { return strings.Contains(n.text, `status="exited"`) }) {
+			break
+		}
+	}
 	var sawNotify, sawExit bool
 	for _, n := range fx.notesNow() {
 		if n.agent != "agent1" {
