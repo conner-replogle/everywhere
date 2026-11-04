@@ -175,7 +175,9 @@ func launchChrome(ctx context.Context, profileDir string, onEvent func(string, s
 	}()
 	c.conn = newConn(cmdW, outR, onEvent, onExit)
 
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	// A cold start on a busy machine can take well over 15s; a later one
+	// takes a second or two.
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	var ver struct {
 		UserAgent string `json:"userAgent"`
