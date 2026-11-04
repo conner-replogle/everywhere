@@ -42,12 +42,12 @@ func pair(t *testing.T) *webrtc.DataChannel {
 		client.Close()
 		daemon.Close()
 	})
+	// Served as soon as it arrives, as peer does: waiting for OnOpen would
+	// drop the client's first message when it arrives before the handler.
 	daemon.OnDataChannel(func(dc *webrtc.DataChannel) {
-		dc.OnOpen(func() {
-			chCtx, done := context.WithCancel(ctx)
-			dc.OnClose(done)
-			serve(chCtx, dc)
-		})
+		chCtx, done := context.WithCancel(ctx)
+		dc.OnClose(done)
+		serve(chCtx, dc)
 	})
 	dc, err := client.CreateDataChannel("tcp:1", nil)
 	if err != nil {
