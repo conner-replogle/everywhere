@@ -112,3 +112,41 @@ export function approvalAnswer(text: string): boolean | null {
   if (YES.test(t)) return true;
   return null;
 }
+
+/** Text compared loosely: no markdown quoting or emphasis, one case, single spaces. */
+function loose(s: string): string {
+  return s.replace(/^\s*>\s?/gm, "").replace(/[*_`"“”]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * Whether the user already approved sending this text in the conversation:
+ * their last message is a yes, and the assistant's reply just before it
+ * showed this exact text (in its words, or on a card). Then that yes is the
+ * approval, and no card asks again.
+ */
+export function confirmedDraft(messages: AgentMessage[], text: string): boolean {
+  const want = loose(text);
+  if (!want) return false;
+  const all = messages as Message[];
+  let yes = -1;
+  for (let i = all.length - 1; i >= 0; i--) {
+    if (all[i]!.role === "user") {
+      yes = i;
+      break;
+    }
+  }
+  if (yes < 0) return false;
+  const said = spokenPart(messageText(all[yes]!));
+  if (said.startsWith("[Update]") || approvalAnswer(said) !== true) return false;
+  // The reply before the yes: everything since the user message before it.
+  const shown: string[] = [];
+  for (let i = yes - 1; i >= 0 && all[i]!.role !== "user"; i--) {
+    const m = all[i]!;
+    if (m.role !== "assistant") continue;
+    for (const b of m.content) {
+      if (b.type === "text") shown.push(b.text);
+      else if (b.type === "toolCall" && typeof b.arguments?.markdown === "string") shown.push(b.arguments.markdown);
+    }
+  }
+  return shown.some((t) => loose(t).includes(want));
+}

@@ -249,7 +249,7 @@ export function assistantTools(host: ToolHost): AgentTool<TSchema>[] {
     tool(
       "send_to_thread",
       "Sending to a thread",
-      "Send a prompt to a claude thread, as the user. The user sees the exact text and must allow it first. Write it as the user would: complete, specific, standing on its own.",
+      "Send a prompt to a claude thread, as the user. Only after the user said yes to this exact draft in the conversation; send the text they saw, unchanged. Otherwise they're asked to allow it first.",
       Type.Object({
         thread: Type.String({ description: "Thread id, or its name." }),
         device: Type.Optional(Type.String()),
@@ -272,7 +272,7 @@ export function assistantTools(host: ToolHost): AgentTool<TSchema>[] {
     tool(
       "start_thread",
       "Starting a thread",
-      "Start a new claude thread in a project with a first prompt; it starts working right away. The user sees the prompt and must allow it first. The new thread knows nothing of this conversation: the prompt must stand on its own.",
+      "Start a new claude thread in a project with a first prompt; it starts working right away. Only after the user said yes to this exact draft in the conversation; send the prompt they saw, unchanged. Otherwise they're asked to allow it first. The new thread knows nothing of this conversation: the prompt must stand on its own.",
       Type.Object({
         device: Type.String({ description: "Device name or id." }),
         project: Type.String({ description: "Project name or id." }),

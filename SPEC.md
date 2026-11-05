@@ -652,7 +652,7 @@ machine, a quick task, some files. Feature `scratch`.
 One conversation per account, about every device, project and thread at
 once, by voice or text. It isn't on any device and can't read files or run
 commands: it sees the fleet through the app's own RPC and gets work done by
-prompting threads, each time after the user allows it.
+prompting threads, each time after the user says yes to the prompt.
 
 - **Where it runs**: the agent loop (pi's `@mariozechner/pi-agent-core`) runs
   in a browser tab (`apps/web/src/lib/assistant`). Its tools run there too,
@@ -688,8 +688,15 @@ prompting threads, each time after the user allows it.
   long for a page is split into parts across pages), `search_threads`
   (every online device),
   `thread_processes` (and a process's output), `git_status`, `open_thread`,
-  `watch_thread`, and, after the user allows the exact action,
-  `send_to_thread` and `start_thread` (never `bypassPermissions`). A thread
+  `watch_thread`, and, after the user says yes to the exact text,
+  `send_to_thread` and `start_thread` (never `bypassPermissions`).
+  Prompts are drafted in the conversation: the agent writes the draft in
+  its reply (a quote block; on a card with id "draft" when the user is
+  speaking), works in what the user adds, asks "Ready to send it?", and on
+  yes sends it. That yes is the approval (`confirmedDraft`): the user's
+  last message is a yes and the reply before it showed the exact text being
+  sent. Anything else, such as changed text or no draft shown, gets the
+  approval card as before. A thread
   the assistant prompts or starts is watched: when it stops working, the
   runner gets an `[Update]` message and tells the user. Watches live in the
   runner tab.
@@ -725,13 +732,15 @@ prompting threads, each time after the user allows it.
   (two at most), the voice bar, and in the corner the mic with a keyboard
   button that opens the composer. The thread composer keeps clear of the
   corner (`--assistant-dock`). On phones: the mic and a chat button, the
-  newest reply in a bubble above them for 6 s (tap or swipe up to open), a
-  full-screen frosted layer with the whole conversation and the composer
-  (full width, the mic above it), and while talking the same layer as the
-  voice screen (the large ring, the live transcript, a card filling it when
-  there is one). Only the voice screen gives a card the whole screen;
-  otherwise it's a normal card, at the top of the page or above the
-  composer, at most 45% of the screen's height.
+  newest reply in a bubble above them for 6 s (tap to open, swipe away), a
+  frosted sheet from the bottom (78% of the height, swipe its top down to
+  close) with the whole conversation and the composer (full width, the mic
+  above it), and while talking the full-screen voice screen (the large
+  ring, the live transcript, a card filling it when there is one). Only the
+  voice screen covers the whole screen. Otherwise a card is a normal card,
+  at the top of the page or above the composer, at most 45% of the screen's
+  height. Cards, the reply bubble and the reading placeholder all swipe
+  away in any direction (`swipe.ts`); a card that scrolls swipes sideways.
 - **Model**: Workers AI behind `POST /api/assistant/v1/chat/completions`,
   OpenAI-compatible so pi-ai's provider talks to it as is. The Worker allows
   a fixed list of models (`ASSISTANT_MODELS`), passes the fields Workers AI

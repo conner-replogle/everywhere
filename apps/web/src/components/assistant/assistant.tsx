@@ -52,6 +52,7 @@ import { assistantSync, useAssistantSync } from "@/lib/assistant/sync";
 import { useVoice, voice } from "@/lib/assistant/voice";
 import { cn } from "@/lib/utils";
 import { CardStack, useScreenCards } from "./cards";
+import { useSwipeAway } from "./swipe";
 import { VoiceBars, VoiceRing } from "./visualizer";
 
 /** The feed, at rest: this many of the newest messages. */
@@ -656,24 +657,14 @@ function PhoneAssistant() {
       ) : (
         <div className="pointer-events-none fixed right-4 bottom-24 z-40 flex flex-col items-end gap-4">
           {toast && (
-            <button
-              type="button"
-              onClick={() => {
+            <ReplyToast
+              text={toast.text}
+              onOpen={() => {
                 setToast(null);
                 setOpen(true);
               }}
-              onTouchStart={(e) => (e.currentTarget.dataset.y = String(e.touches[0]?.clientY ?? 0))}
-              onTouchMove={(e) => {
-                if (Number(e.currentTarget.dataset.y) - (e.touches[0]?.clientY ?? 0) > 40) {
-                  setToast(null);
-                  setOpen(true);
-                }
-              }}
-              className="pointer-events-auto max-w-[min(20rem,calc(100vw-2rem))] rounded-2xl rounded-br-md border border-border bg-background/90 px-3 py-2 text-left text-sm shadow-xl backdrop-blur-md animate-in fade-in slide-in-from-bottom-2 motion-reduce:animate-none"
-            >
-              <span className="line-clamp-4">{toast.text}</span>
-              <span className="mt-1 block text-xs text-muted-foreground">Tap or swipe up for the conversation</span>
-            </button>
+              onDismiss={() => setToast(null)}
+            />
           )}
           <Button
             variant="outline"
@@ -701,6 +692,25 @@ function PhoneAssistant() {
  * The card on a phone. voice: the voice screen's, taking the space it has.
  * float: over the page at the top, its own size. chat: above the message box.
  */
+/** The newest reply for a moment: tap for the conversation, swipe it away. */
+function ReplyToast({ text, onOpen, onDismiss }: { text: string; onOpen: () => void; onDismiss: () => void }) {
+  const swipe = useSwipeAway(onDismiss, ["left", "right", "up", "down"]);
+  return (
+    <button
+      type="button"
+      {...swipe.handlers}
+      style={swipe.style}
+      onClick={() => {
+        if (!swipe.swiped()) onOpen();
+      }}
+      className="pointer-events-auto max-w-[min(20rem,calc(100vw-2rem))] touch-none rounded-2xl rounded-br-md border border-border bg-background/90 px-3 py-2 text-left text-sm shadow-xl backdrop-blur-md animate-in fade-in slide-in-from-bottom-2 motion-reduce:animate-none"
+    >
+      <span className="line-clamp-4">{text}</span>
+      <span className="mt-1 block text-xs text-muted-foreground">Tap for the conversation, swipe to dismiss</span>
+    </button>
+  );
+}
+
 function PhoneCards({ mode }: { mode: "voice" | "float" | "chat" }) {
   if (mode === "voice") {
     return (
@@ -721,7 +731,10 @@ function PhoneCards({ mode }: { mode: "voice" | "float" | "chat" }) {
   );
 }
 
-/** The full-screen conversation; when talking, the voice screen. */
+/**
+ * The conversation, as a sheet from the bottom with the page still showing
+ * above it (swipe its top down to close); when talking, the full-screen voice screen.
+ */
 function PhoneLayer({ voiceMode, onClose, onMinimize }: { voiceMode: boolean; onClose: () => void; onMinimize: () => void }) {
   const sync = useAssistantSync();
   const v = useVoice();
@@ -733,9 +746,19 @@ function PhoneLayer({ voiceMode, onClose, onMinimize }: { voiceMode: boolean; on
     if (el) el.scrollTop = el.scrollHeight;
   }, [items.length, sync.live?.text, sync.live?.approvals.length]);
   const said = items.at(-1);
+  const swipe = useSwipeAway(onMinimize, ["down"]);
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-background/85 pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] backdrop-blur-xl animate-in fade-in duration-200 motion-reduce:animate-none">
-      <header className="flex shrink-0 items-center gap-2 px-3 py-2">
+    <div
+      style={voiceMode ? undefined : swipe.style}
+      className={cn(
+        "fixed z-50 flex flex-col bg-background/85 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl motion-reduce:animate-none",
+        voiceMode
+          ? "inset-0 pt-[env(safe-area-inset-top)] animate-in fade-in duration-200"
+          : "inset-x-0 bottom-0 h-[78dvh] rounded-t-2xl border-t border-border shadow-2xl animate-in slide-in-from-bottom-8 fade-in duration-200",
+      )}
+    >
+      <header {...(voiceMode ? {} : swipe.handlers)} className={cn("relative flex shrink-0 items-center gap-2 px-3 py-2", !voiceMode && "touch-none pt-4")}>
+        {!voiceMode && <span aria-hidden className="absolute top-1.5 left-1/2 h-1 w-10 -translate-x-1/2 rounded-full bg-muted-foreground/40" />}
         <Button variant="ghost" size="icon" onClick={onMinimize} aria-label="Minimize">
           <ChevronDownIcon className="size-5" />
         </Button>

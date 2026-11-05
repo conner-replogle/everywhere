@@ -11,11 +11,10 @@ import { Button } from "@/components/ui/button";
 import { screenCards, type ScreenCard, withWriting } from "@/lib/assistant/screen";
 import { useAssistantSync } from "@/lib/assistant/sync";
 import { cn } from "@/lib/utils";
+import { useSwipeAway } from "./swipe";
 
 /** How long a card takes to fade out, before it's removed. */
 const LEAVE_MS = 220;
-/** A swipe this far dismisses. */
-const SWIPE_PX = 90;
 
 /** The cards to show: the log's, the ones being written, minus those dismissed here. */
 export function useScreenCards(): { cards: ScreenCard[]; reading: string | null; dismiss: (c: ScreenCard) => void } {
@@ -85,10 +84,16 @@ export function CardStack({ max = 2, className, fill }: { max?: number; classNam
 }
 
 function ReadingCard({ what }: { what: string }) {
+  // Swiped away, it stays away while this read lasts.
+  const [hidden, setHidden] = useState<string | null>(null);
+  const swipe = useSwipeAway(() => setHidden(what), ["left", "right", "up", "down"]);
+  if (hidden === what) return null;
   return (
     <section
       aria-label="The assistant is reading"
-      className="rounded-xl border border-border bg-background/80 px-4 py-3 text-sm shadow-xl backdrop-blur-md animate-in fade-in slide-in-from-bottom-2 duration-200 motion-reduce:animate-none"
+      {...swipe.handlers}
+      style={swipe.style}
+      className="touch-none rounded-xl border border-border bg-background/80 px-4 py-3 text-sm shadow-xl backdrop-blur-md animate-in fade-in slide-in-from-bottom-2 duration-200 motion-reduce:animate-none"
     >
       <p className="text-muted-foreground">
         Reading <span className="text-foreground">{what || "a thread"}</span>…
@@ -128,34 +133,29 @@ export function OverlayCard({
     return () => clearTimeout(t);
   }, [card.seq]);
 
-  // Swipe aside (or down on a phone) to dismiss.
-  const [drag, setDrag] = useState(0);
-  const start = useRef<{ x: number; y: number } | null>(null);
-  const axis = fill ? "y" : "x";
+  // Swipe it away in any direction. A card that scrolls keeps vertical drags for scrolling,
+  // so it goes sideways only.
+  const ref = useRef<HTMLElement>(null);
+  const [scrolls, setScrolls] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => setScrolls(el.scrollHeight > el.clientHeight + 1);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [card.markdown]);
+  const swipe = useSwipeAway(onDismiss, scrolls ? ["left", "right"] : ["left", "right", "up", "down"]);
   return (
     <section
+      ref={ref}
       aria-label="From the assistant"
-      onPointerDown={(e) => {
-        if (e.pointerType === "mouse" || (e.target as HTMLElement).closest("button,a,input")) return;
-        start.current = { x: e.clientX, y: e.clientY };
-      }}
-      onPointerMove={(e) => {
-        if (!start.current) return;
-        const d = axis === "x" ? e.clientX - start.current.x : e.clientY - start.current.y;
-        setDrag(Math.max(0, d));
-      }}
-      onPointerUp={() => {
-        if (drag > SWIPE_PX) onDismiss();
-        start.current = null;
-        setDrag(0);
-      }}
-      onPointerCancel={() => {
-        start.current = null;
-        setDrag(0);
-      }}
-      style={drag ? { transform: axis === "x" ? `translateX(${drag}px)` : `translateY(${drag}px)`, opacity: 1 - drag / 300 } : undefined}
+      {...swipe.handlers}
+      style={swipe.style}
       className={cn(
-        "relative overflow-y-auto overscroll-contain rounded-xl border bg-background/85 px-4 py-3 text-[13px] shadow-xl backdrop-blur-md transition-[border-color,box-shadow] duration-500 touch-pan-y",
+        "relative overflow-y-auto overscroll-contain rounded-xl border bg-background/85 px-4 py-3 text-[13px] shadow-xl backdrop-blur-md transition-[border-color,box-shadow] duration-500",
+        scrolls ? "touch-pan-y" : "touch-none",
         fill ? "h-full" : "max-h-[min(26rem,50vh)]",
         flash ? "border-primary/60 shadow-primary/20" : "border-border",
         leaving

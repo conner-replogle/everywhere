@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AssistantEntry } from "@everywhere/protocol";
-import { contextFrom, messageText, speakable, spokenPart } from "../src/lib/assistant/messages";
+import { confirmedDraft, contextFrom, messageText, speakable, spokenPart } from "../src/lib/assistant/messages";
 
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
 const user = (text: string) => ({ role: "user", content: text, timestamp: 0 });
@@ -103,5 +103,30 @@ describe("transcriptPages", () => {
     expect(pages.at(-1)).toStartWith("USER: plan it");
     const text = [...pages].reverse().join("").replace(/USER: plan it\n\n|CLAUDE \(part \d of \d\): /g, "");
     expect(text).toBe(long);
+  });
+});
+
+describe("confirmedDraft", () => {
+  const u = (text: string) => ({ role: "user", content: `${text}\n\n<context>The user is looking at the home page.</context>`, timestamp: 0 });
+  const a = (...content: unknown[]) => ({ role: "assistant", content, stopReason: "stop", timestamp: 0 });
+  const said = (text: string) => ({ type: "text", text });
+  const card = (markdown: string) => ({ type: "toolCall", id: "c1", name: "show_on_screen", arguments: { id: "draft", markdown } });
+  const draft = "Run the flaky test 20 times and fix whatever makes it fail.";
+  const sending = a({ type: "toolCall", id: "c2", name: "send_to_thread", arguments: { thread: "x", text: draft } });
+
+  test("a yes to the draft just shown is the approval", () => {
+    expect(confirmedDraft([u("make a prompt"), a(said(`For **fix flaky test**:\n\n> ${draft}\n\nReady to send it?`)), u("Yes."), sending] as never, draft)).toBe(true);
+    expect(confirmedDraft([u("make a prompt"), a(card(`## Draft\n> ${draft}`), said("It's on screen. Ready to send it?")), u("yeah send it"), sending] as never, draft)).toBe(true);
+  });
+
+  test("anything else still asks", () => {
+    // Not a yes.
+    expect(confirmedDraft([u("make a prompt"), a(said(`> ${draft}`)), u("add the logs too"), sending] as never, draft)).toBe(false);
+    // Changed after the yes.
+    expect(confirmedDraft([u("make a prompt"), a(said(`> ${draft}`)), u("yes"), sending] as never, `${draft} Also check CI.`)).toBe(false);
+    // Shown earlier, not in the reply the yes answers.
+    expect(confirmedDraft([u("make a prompt"), a(said(`> ${draft}`)), u("what time is it"), a(said("Noon.")), u("yes"), sending] as never, draft)).toBe(false);
+    // A watched thread's update isn't the user.
+    expect(confirmedDraft([u("make a prompt"), a(said(`> ${draft}`)), u("[Update] yes"), sending] as never, draft)).toBe(false);
   });
 });

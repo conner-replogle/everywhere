@@ -9,7 +9,7 @@ import type { Message, Model } from "@mariozechner/pi-ai";
 import type { AgentDaemonMsg, AgentEvent as ThreadEvent, AssistantApproval, AssistantEntry, AssistantLive } from "@everywhere/protocol";
 import { useSyncExternalStore } from "react";
 import { describeView, type FleetDevice, fleetDevices, fleetOverview, threadStatus } from "./fleet";
-import { contextFrom, convertToLlm, messageText, userMessage } from "./messages";
+import { confirmedDraft, contextFrom, convertToLlm, messageText, userMessage } from "./messages";
 import { assistantSystemPrompt, contextNote } from "./prompt";
 import { cardId, MAX_CARD_MARKDOWN, SHOW_TOOL, screenNote } from "./screen";
 import { assistantSync, tabId } from "./sync";
@@ -224,6 +224,8 @@ class AssistantRunner {
   }
 
   private requestApproval(title: string, detail?: string): Promise<boolean> {
+    // The user said yes to this exact draft just now: that was the approval.
+    if (detail && confirmedDraft(this.agent.state.messages, detail)) return Promise.resolve(true);
     const approval: AssistantApproval = { id: `a${this.nextApproval++}-${Date.now()}`, title, detail };
     this.live = { ...this.live, approvals: [...this.live.approvals, approval], activity: undefined };
     this.publish(true);
