@@ -733,6 +733,12 @@ prompting threads, each time after the user allows it.
     (`POST /api/assistant/speak`, Aura 2, MP3, played through Web Audio since
     the CSP has no blob: media). Talking over a reply stops it. Used when
     GPT-Live isn't set up, saying so in the voice bar.
+- **The microphone** is picked per browser in Settings → Assistant
+  (`mic.ts`): the desktop app has no picker of its own, and the system's
+  default input is often the wrong one (a Bluetooth headset's, a monitor).
+  Both voices open the chosen input, or the default if it's gone. The page
+  tests it with a level meter, and bug reports include the inputs there are
+  and the one a voice opened (its settings, live or muted).
 - **The OpenAI API key** is an account setting: `GET`/`PUT`/`DELETE
   /api/assistant/openai-key`, kept sealed (`secretbox`) in the Assistant DO;
   the app only sees its last four characters, and only the Worker uses it.

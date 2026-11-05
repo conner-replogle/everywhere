@@ -7,6 +7,7 @@ import type { DeviceContextValue } from "@/components/device-context";
 import type { Device } from "@/lib/api";
 import { readAgent } from "./agent-read";
 import { assistantSync } from "./assistant/sync";
+import { micInputs } from "./assistant/mic";
 import { consoleEntries } from "./console-log";
 import { desktop } from "./desktop";
 import { hub } from "./hub";
@@ -155,6 +156,10 @@ export async function collectBugReport(
       uptimeMs: Math.round(performance.now()),
     },
     hub: { ...hub.getSnapshot(), online: [...hub.getSnapshot().online] },
+    // The microphones there are (labels are empty until the page has had mic access).
+    mics: await attempt(async () =>
+      (await micInputs()).map((d) => ({ label: d.label, id: d.deviceId.slice(0, 12), group: d.groupId.slice(0, 12) })),
+    ),
     devices: deviceReports,
     thread,
     assistant,

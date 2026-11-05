@@ -8,6 +8,7 @@ import { useSyncExternalStore } from "react";
 import { assistantRunner, composePrompt } from "./agent";
 import { NO, speakable, YES } from "./messages";
 import { outputAnalyser, watchStream } from "./levels";
+import { type MicInfo, micDeviceId, micInfo, openMic } from "./mic";
 import { voiceEngine } from "./voice-engine";
 import { assistantSync } from "./sync";
 
@@ -113,6 +114,7 @@ class Speaker {
 
 /** Workers AI as the voice: Flux listens, Aura speaks. */
 class FluxVoice {
+  private lastMic: MicInfo | null = null;
   private snap: VoiceSnapshot = { state: "off", heard: "", error: null };
   private listeners = new Set<() => void>();
   private stream: MediaStream | null = null;
@@ -148,6 +150,10 @@ class FluxVoice {
     return this.snap.state !== "off";
   }
 
+  mic(): MicInfo | null {
+    return micInfo(this.stream) ?? this.lastMic;
+  }
+
   toggle(): void {
     if (this.on) this.stop();
     else void this.start();
@@ -158,9 +164,8 @@ class FluxVoice {
     this.update({ state: "starting", heard: "", error: null });
     this.speaker.unlock();
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
-      });
+      this.stream = await openMic();
+      this.lastMic = micInfo(this.stream);
       watchStream("mic", this.stream);
       this.ctx = new AudioContext();
       await this.ctx.audioWorklet.addModule("/pcm-worklet.js");
@@ -296,6 +301,8 @@ class FluxVoice {
 }
 
 interface Engine {
+  /** The mic it's using, or used last. */
+  mic(): MicInfo | null;
   getSnapshot(): VoiceSnapshot;
   subscribe(fn: () => void): () => void;
   start(): Promise<void>;
@@ -355,9 +362,15 @@ class Voice {
   }
 
   /** For bug reports: which voice ran last, and GPT-Live's session if it did. */
-  debug(): { engine: "live" | "flux"; live: unknown } {
+  debug(): { engine: "live" | "flux"; chosenMic: string; mic: MicInfo | null; live: unknown } {
     const live = this.live as (Engine & { debug?: () => unknown }) | null;
-    return { engine: this.engine === this.flux ? "flux" : "live", live: live?.debug?.() ?? null };
+    return {
+      engine: this.engine === this.flux ? "flux" : "live",
+      // "" is the system default.
+      chosenMic: micDeviceId(),
+      mic: this.engine.mic(),
+      live: live?.debug?.() ?? null,
+    };
   }
 
   private use(engine: Engine): void {

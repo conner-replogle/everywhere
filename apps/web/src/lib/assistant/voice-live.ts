@@ -9,6 +9,7 @@ import type { Message } from "@mariozechner/pi-ai";
 import { api } from "@/lib/api";
 import { assistantRunner, composePrompt } from "./agent";
 import { watchStream } from "./levels";
+import { type MicInfo, micInfo, openMic } from "./mic";
 import { LiveBridge, type LiveEvent } from "./live-bridge";
 import { messageText, spokenPart } from "./messages";
 import { assistantSync } from "./sync";
@@ -87,6 +88,7 @@ export class LiveVoice {
   private lastActivity = 0;
   private dbg: LiveDebug = emptyDebug();
   private loggedTranscript = new Set<string>();
+  private lastMic: MicInfo | null = null;
 
   getSnapshot = (): VoiceSnapshot => this.snap;
   subscribe = (fn: () => void): (() => void) => {
@@ -97,6 +99,11 @@ export class LiveVoice {
   private update(patch: Partial<VoiceSnapshot>): void {
     this.snap = { ...this.snap, ...patch };
     for (const fn of this.listeners) fn();
+  }
+
+  /** The mic it's using, or used last. */
+  mic(): MicInfo | null {
+    return micInfo(this.stream) ?? this.lastMic;
   }
 
   debug(): LiveDebug {
@@ -145,9 +152,8 @@ export class LiveVoice {
     this.loggedTranscript.clear();
     this.update({ state: "starting", heard: "", error: null });
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
-      });
+      this.stream = await openMic();
+      this.lastMic = micInfo(this.stream);
       watchStream("mic", this.stream);
       const pc = new RTCPeerConnection();
       this.pc = pc;

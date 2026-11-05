@@ -1,10 +1,14 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { KeyRoundIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { KeyRoundIcon, MicIcon, SquareIcon } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { VoiceBars } from "@/components/assistant/visualizer";
 import { Section } from "@/components/settings-section";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api, type OpenAIKeyInfo } from "@/lib/api";
+import { watchStream } from "@/lib/assistant/levels";
+import { micDeviceId, micInputs, openMic, setMicDeviceId } from "@/lib/assistant/mic";
+import { useVoice } from "@/lib/assistant/voice";
 import { setVoiceEngine, type VoiceEngine, voiceEngine } from "@/lib/assistant/voice-engine";
 import { errorMessage } from "@/lib/utils";
 
@@ -22,6 +26,7 @@ function AssistantSettings() {
       </div>
       <OpenAIKey info={info} onInfo={setInfo} />
       <Voice live={info?.set ?? false} />
+      <Microphone />
     </div>
   );
 }
@@ -141,6 +146,104 @@ function Voice({ live }: { live: boolean }) {
             </span>
           </label>
         ))}
+      </div>
+    </Section>
+  );
+}
+
+/** Which mic the assistant listens to here, and a test of it. */
+function Microphone() {
+  const [inputs, setInputs] = useState<MediaDeviceInfo[]>([]);
+  const [chosen, setChosen] = useState(micDeviceId);
+  const [testing, setTesting] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const stream = useRef<MediaStream | null>(null);
+  const voiceOn = useVoice().state !== "off";
+
+  const refresh = useCallback(() => {
+    micInputs().then(setInputs, (e: unknown) => setError(errorMessage(e)));
+  }, []);
+
+  const stop = useCallback(() => {
+    if (!stream.current) return;
+    watchStream("mic", null);
+    for (const t of stream.current.getTracks()) t.stop();
+    stream.current = null;
+    setTesting(null);
+  }, []);
+
+  const start = async () => {
+    setError(null);
+    try {
+      const s = await openMic();
+      stream.current = s;
+      watchStream("mic", s);
+      setTesting(s.getAudioTracks()[0]?.label || "the default microphone");
+      // Names only show once the page may use the mic.
+      refresh();
+    } catch (e) {
+      setError(e instanceof DOMException && e.name === "NotAllowedError" ? "Microphone access was denied." : errorMessage(e));
+    }
+  };
+
+  useEffect(() => {
+    refresh();
+    navigator.mediaDevices.addEventListener("devicechange", refresh);
+    return () => {
+      navigator.mediaDevices.removeEventListener("devicechange", refresh);
+      stop();
+    };
+  }, [refresh, stop]);
+
+  const unnamed = inputs.some((d) => !d.label);
+  return (
+    <Section title="Microphone" description="In this browser. The desktop app has no picker of its own, and the system's default input isn't always the right one.">
+      <div className="grid gap-3">
+        <div className="flex gap-2 max-sm:flex-wrap">
+          <select
+            value={chosen}
+            onChange={(e) => {
+              setMicDeviceId(e.target.value);
+              setChosen(e.target.value);
+              // Test the one just picked.
+              if (stream.current) {
+                stop();
+                void start();
+              }
+            }}
+            aria-label="Microphone"
+            className="h-8 min-w-0 flex-1 rounded-md border border-input bg-transparent px-2 text-sm"
+          >
+            <option value="">System default</option>
+            {inputs
+              .filter((d) => d.deviceId && d.deviceId !== "default")
+              .map((d, i) => (
+                <option key={d.deviceId} value={d.deviceId}>
+                  {d.label || `Microphone ${i + 1}`}
+                </option>
+              ))}
+          </select>
+          <Button
+            type="button"
+            size="sm"
+            variant={testing ? "outline" : "default"}
+            disabled={voiceOn}
+            onClick={() => (testing ? stop() : void start())}
+            title={voiceOn ? "Stop talking to the assistant to test" : undefined}
+          >
+            {testing ? <SquareIcon /> : <MicIcon />}
+            {testing ? "Stop" : "Test"}
+          </Button>
+        </div>
+        {testing ? (
+          <div className="flex items-center gap-3">
+            <VoiceBars active className="h-6 w-24 shrink-0" />
+            <p className="min-w-0 truncate text-xs text-muted-foreground">Listening to {testing}. Say something: the bars should move.</p>
+          </div>
+        ) : (
+          unnamed && <p className="text-xs text-muted-foreground">Press Test once to see the microphones' names.</p>
+        )}
+        {error && <p className="text-destructive">{error}</p>}
       </div>
     </Section>
   );
