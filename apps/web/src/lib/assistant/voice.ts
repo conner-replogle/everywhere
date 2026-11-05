@@ -254,7 +254,8 @@ class FluxVoice {
   /** Queues each finished sentence of the streaming reply, and asks about approvals. */
   private onLive(live: AssistantLive | null): void {
     const text = live?.text ?? "";
-    if (!live || !text.startsWith(this.reply.slice(0, this.spoken))) {
+    // Ended (no live state, or the text cleared once it was logged) or a new reply began.
+    if (!live || text.length < this.reply.length || !text.startsWith(this.reply.slice(0, this.spoken))) {
       // The reply ended or a new one began: say the rest of the old one.
       this.say(this.reply.slice(this.spoken));
       this.reply = "";

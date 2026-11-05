@@ -87,6 +87,17 @@ export function screenCards(entries: AssistantEntry[]): ScreenCard[] {
 }
 
 /**
+ * The screen while a reply streams: the cards it's writing replace the ones
+ * with their ids, or come first; still at most MAX_CARDS. seq 0 marks them.
+ */
+export function withWriting(cards: ScreenCard[], writing: { id: string; markdown: string }[] | undefined): ScreenCard[] {
+  if (!writing?.length) return cards;
+  const ids = new Set(writing.map((w) => w.id));
+  const fresh = writing.map((w) => ({ id: w.id, markdown: w.markdown, seq: 0 })).reverse();
+  return [...fresh, ...cards.filter((c) => !ids.has(c.id))].slice(0, MAX_CARDS);
+}
+
+/**
  * The cards the model will still see on screen once the user's next message
  * starts a turn (those shown or updated in this one), for its context note.
  */

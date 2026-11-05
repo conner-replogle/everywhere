@@ -23,6 +23,8 @@ export interface AssistantLive {
   activity?: string;
   /** Actions waiting for the user's yes. */
   approvals: AssistantApproval[];
+  /** Cards the reply is writing (show_on_screen calls still streaming), so they fill in as it types. */
+  cards?: { id: string; markdown: string }[];
 }
 
 /** An action the assistant wants to take, shown to the user to allow or deny. */

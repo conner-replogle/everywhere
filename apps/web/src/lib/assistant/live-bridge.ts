@@ -15,6 +15,8 @@ const APPEND_CHARS = 1500;
 export const UTTERANCE_GAP_MS = 900;
 /** A hand-off can come before the transcript catches up; wait this long for it. */
 export const DELEGATION_SETTLE_MS = 700;
+/** Less when what's heard already ends a sentence: it's likely all there. */
+export const DELEGATION_SETTLE_SENTENCE_MS = 300;
 const DELEGATION_WAIT_MAX_MS = 3000;
 
 export interface LiveAgent {
@@ -121,8 +123,9 @@ export class LiveBridge {
     clearTimeout(this.settleTimer);
     const quietFor = this.now() - this.lastHeardAt;
     const waited = this.now() - since;
-    if (quietFor < DELEGATION_SETTLE_MS && waited < DELEGATION_WAIT_MAX_MS) {
-      this.settleTimer = setTimeout(() => this.settle(since), DELEGATION_SETTLE_MS - quietFor);
+    const settle = /[.?!]["')\]]?\s*$/.test(this.heard) ? DELEGATION_SETTLE_SENTENCE_MS : DELEGATION_SETTLE_MS;
+    if (quietFor < settle && waited < DELEGATION_WAIT_MAX_MS) {
+      this.settleTimer = setTimeout(() => this.settle(since), settle - quietFor);
       return;
     }
     const text = this.heard.trim();

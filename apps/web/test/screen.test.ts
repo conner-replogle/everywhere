@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AssistantEntry } from "@everywhere/protocol";
-import { cardId, screenCards, screenNote } from "../src/lib/assistant/screen";
+import { cardId, screenCards, screenNote, withWriting } from "../src/lib/assistant/screen";
 
 let seq = 0;
 const at = (message: unknown): AssistantEntry => ({ kind: "message", message, seq: ++seq, at: 0 });
@@ -62,4 +62,15 @@ test("the note names the cards shown this turn, which will still be up next turn
   expect(note).toContain("[decisions] The three decisions");
   expect(note).not.toContain("old");
   expect(screenNote([user("q")])).toBe("");
+});
+
+test("cards still being written replace theirs or come first", () => {
+  const cards = screenCards([user("q"), show("a", "A"), show("b", "B")]);
+  const live = withWriting(cards, [{ id: "a", markdown: "A, rewriting" }, { id: "new", markdown: "Ne" }]);
+  expect(live.map((c) => [c.id, c.markdown, c.seq === 0])).toEqual([
+    ["new", "Ne", true],
+    ["a", "A, rewriting", true],
+    ["b", "B", false],
+  ]);
+  expect(withWriting(cards, undefined)).toBe(cards);
 });

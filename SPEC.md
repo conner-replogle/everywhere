@@ -706,7 +706,30 @@ prompting threads, each time after the user allows it.
   (`prompt.ts`) asks for a card for three or more items, steps, checklists,
   tables or diagrams, card first (shown with what's known, then filled in
   under the same id), and in voice for the gist spoken and the details on
-  the card. Dismissing one hides it in that tab until it's shown again.
+  the card. Cards fill in as the reply writes them: the runner sends the
+  show_on_screen calls still streaming (pi parses partial arguments) as
+  `live.cards`. While the agent reads a thread and nothing is up, a
+  "Reading…" card holds the place. They fade in and out, flash briefly when
+  updated in place, draw mermaid blocks (loaded on first use; the code shows
+  until then or if it fails), and drop the bullets of checklists.
+  Dismissing one (× or a swipe) hides it in that tab until it's shown again.
+- **The UI** (`components/assistant`): on desktop, a feed on the right over
+  the page shows the newest three prompts and replies (no tool calls),
+  fading out going up; clicks pass between its bubbles. Hovering it for
+  150 ms, focusing it, or scrolling on it expands it (44% of the width, the
+  page's height, a composer at the bottom); it folds back 400 ms after the
+  pointer leaves, on Escape, and never expands by hover while a page field
+  has focus. Its "Hide chat" pill (and Ctrl+Shift+.) hides it, leaving a
+  "Chat" tab on the right edge with a dot for unread replies; hidden is
+  remembered per browser, and the mic and cards stay. Below it: the cards
+  (two at most), the voice bar, and in the corner the mic with a keyboard
+  button that opens the composer. The thread composer keeps clear of the
+  corner (`--assistant-dock`). On phones: the mic and a chat button, the
+  newest reply in a bubble above them for 6 s (tap or swipe up to open), a
+  full-screen frosted layer with the whole conversation and the composer,
+  and while talking the same layer as the voice screen (the large ring, the
+  live transcript, a card filling it when there is one). Cards otherwise take
+  the whole screen, swiped down to dismiss.
 - **Model**: Workers AI behind `POST /api/assistant/v1/chat/completions`,
   OpenAI-compatible so pi-ai's provider talks to it as is. The Worker allows
   a fixed list of models (`ASSISTANT_MODELS`), passes the fields Workers AI

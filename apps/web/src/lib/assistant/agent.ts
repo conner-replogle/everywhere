@@ -11,7 +11,7 @@ import { useSyncExternalStore } from "react";
 import { describeView, type FleetDevice, fleetDevices, fleetOverview, threadStatus } from "./fleet";
 import { contextFrom, convertToLlm, messageText, userMessage } from "./messages";
 import { assistantSystemPrompt, contextNote } from "./prompt";
-import { screenNote } from "./screen";
+import { cardId, MAX_CARD_MARKDOWN, SHOW_TOOL, screenNote } from "./screen";
 import { assistantSync } from "./sync";
 import { assistantTools } from "./tools";
 
@@ -116,7 +116,8 @@ class AssistantRunner {
       initialState: { systemPrompt: "", model: model(), thinkingLevel: "low", tools: [] },
       convertToLlm,
       getApiKey: () => "session",
-      toolExecution: "sequential",
+      // Several reads at once (a rundown) run together; approvals still wait one by one.
+      toolExecution: "parallel",
     });
     this.agent.state.tools = assistantTools({
       approve: (title, detail) => this.requestApproval(title, detail),
@@ -248,14 +249,18 @@ class AssistantRunner {
         }
         return;
       case "message_update":
-        this.live = { ...this.live, text: messageText(e.message) };
+        this.live = { ...this.live, text: messageText(e.message), cards: writingCards(e.message as Message) };
         this.publish();
         return;
       case "message_end": {
         const m = e.message as Message;
         this.saving.push(assistantSync.append([{ kind: "message", message: m }]).catch((err: unknown) => console.warn(err)));
         if (m.role === "assistant") {
+          // The whole reply once (the voice speaks what's left of it), then it's the log's to show,
+          // its cards too.
           this.live = { ...this.live, text: messageText(m) };
+          this.publish(true);
+          this.live = { ...this.live, text: "", cards: undefined };
           this.publish(true);
           if (!this.attended && messageText(m).trim()) this.update({ unread: this.snap.unread + 1 });
         }
@@ -337,6 +342,18 @@ class AssistantRunner {
       ? "It's waiting on the user right now."
       : "You'll be told when it stops working.";
   }
+}
+
+/** The cards a streaming reply is writing: its show_on_screen calls so far, as far as they've come. */
+function writingCards(m: Message): { id: string; markdown: string }[] | undefined {
+  if (m.role !== "assistant") return undefined;
+  const cards = m.content.flatMap((b) => {
+    if (b.type !== "toolCall" || b.name !== SHOW_TOOL) return [];
+    const a = (b.arguments ?? {}) as { id?: unknown; markdown?: unknown };
+    const markdown = typeof a.markdown === "string" ? a.markdown.slice(0, MAX_CARD_MARKDOWN) : "";
+    return markdown.trim() ? [{ id: cardId(a.id), markdown }] : [];
+  });
+  return cards.length ? cards : undefined;
 }
 
 /** One model call that writes the summary a compaction keeps. */

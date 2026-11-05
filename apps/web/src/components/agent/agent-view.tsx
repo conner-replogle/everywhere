@@ -328,8 +328,9 @@ export function AgentView({
         }}
       />
 
-      {/* The composer sits a little above the bottom edge, where it's easier to see. */}
-      <div className="shrink-0 bg-background">
+      {/* The composer sits a little above the bottom edge, where it's easier to see. On the right it
+          keeps clear of the assistant's mic (--assistant-dock) when the pane leaves too little margin. */}
+      <div className="shrink-0 bg-background pr-[max(0px,calc(var(--assistant-dock,0px)-(100cqw-48rem)/2))]">
         {archived ? (
           <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-3 px-4 pt-1 pb-5 @min-[48rem]:pb-8">
             <p className="min-w-0 flex-1 text-[13px] text-muted-foreground">
