@@ -8,7 +8,7 @@ import { Agent, type AgentEvent, type AgentMessage } from "@mariozechner/pi-agen
 import type { Message, Model } from "@mariozechner/pi-ai";
 import type { AgentDaemonMsg, AgentEvent as ThreadEvent, AssistantEntry, AssistantLive } from "@everywhere/protocol";
 import { useSyncExternalStore } from "react";
-import { describeView, type FleetDevice, fleetDevices, fleetOverview, threadStatus } from "./fleet";
+import { describeView, type FleetDevice, fleetDevices, fleetOverview, threadName, threadStatus } from "./fleet";
 import { contextFrom, convertToLlm, messageText, userMessage } from "./messages";
 import { assistantSystemPrompt, contextNote } from "./prompt";
 import { assistantSync, tabId } from "./sync";
@@ -35,6 +35,11 @@ const WATCH_MS = 3 * 60 * 60 * 1000;
 export function modelId(): string {
   const id = localStorage.getItem(MODEL_KEY);
   return ASSISTANT_MODELS.some((m) => m.id === id) ? id! : ASSISTANT_MODELS[0].id;
+}
+
+/** The model's name, e.g. "GLM 5.3 Flash". */
+export function modelName(): string {
+  return (ASSISTANT_MODELS.find((m) => m.id === modelId()) ?? ASSISTANT_MODELS[0]).name;
 }
 
 export function setModelId(id: string): void {
@@ -102,6 +107,8 @@ class AssistantRunner {
   private liveTimer: ReturnType<typeof setTimeout> | undefined;
   private saving: Promise<unknown>[] = [];
   private watches = new Map<string, Watch>();
+  /** The tools running now (several at once when it reads in parallel), by call id. */
+  private tools = new Map<string, string>();
   /** The tab whose message the turn is answering; its voice speaks the reply. */
   private asker: string = tabId;
   /** Shows a thread; set by the app's bridge. */
@@ -179,6 +186,7 @@ class AssistantRunner {
       this.update({ error: e instanceof Error ? e.message : String(e) });
     } finally {
       this.saving = [];
+      this.tools.clear();
       this.live = { text: "" };
       assistantSync.setLive(null);
       assistantSync.release();
@@ -213,16 +221,26 @@ class AssistantRunner {
 
   private onEvent(e: AgentEvent): void {
     switch (e.type) {
+      case "turn_start":
+        // A request is out to the model; nothing back yet.
+        this.live = { ...this.live, phase: "waiting", thinking: undefined, model: modelName() };
+        this.publish(true);
+        return;
       case "message_start":
         if ((e.message as Message).role === "assistant") {
           this.live = { ...this.live, text: "" };
           this.publish(true);
         }
         return;
-      case "message_update":
-        this.live = { ...this.live, text: messageText(e.message) };
-        this.publish();
+      case "message_update": {
+        const ev = e.assistantMessageEvent;
+        const phase = ev.type.startsWith("thinking") ? "thinking" : ev.type === "start" ? this.live.phase : "writing";
+        const thinking = phase === "thinking" ? thinkingTail(e.message as Message) : this.live.thinking;
+        const changed = phase !== this.live.phase;
+        this.live = { ...this.live, text: messageText(e.message), phase, thinking };
+        this.publish(changed);
         return;
+      }
       case "message_end": {
         const m = e.message as Message;
         this.saving.push(assistantSync.append([{ kind: "message", message: m }]).catch((err: unknown) => console.warn(err)));
@@ -238,13 +256,15 @@ class AssistantRunner {
       }
       case "tool_execution_start": {
         const t = this.agent.state.tools.find((x) => x.name === e.toolName);
-        const about = typeof e.args?.thread === "string" ? ` ${e.args.thread}` : "";
-        this.live = { ...this.live, activity: `${t?.label ?? e.toolName}${about}` };
+        const about = typeof e.args?.thread === "string" ? ` ${threadName(e.args.thread)}` : "";
+        this.tools.set(e.toolCallId, `${t?.label ?? e.toolName}${about}`);
+        this.live = { ...this.live, phase: "tool", activity: toolsActivity(this.tools) };
         this.publish(true);
         return;
       }
       case "tool_execution_end":
-        this.live = { ...this.live, activity: undefined };
+        this.tools.delete(e.toolCallId);
+        this.live = { ...this.live, activity: toolsActivity(this.tools) };
         this.publish(true);
         return;
       default:
@@ -313,6 +333,20 @@ class AssistantRunner {
       ? "It's waiting on the user right now."
       : "You'll be told when it stops working.";
   }
+}
+
+/** The end of what the model is reasoning, as it streams. */
+function thinkingTail(m: Message): string | undefined {
+  if (m.role !== "assistant") return undefined;
+  const all = m.content.map((b) => (b.type === "thinking" ? b.thinking : "")).join("").trim();
+  return all ? all.slice(-240).replace(/\s+/g, " ") : undefined;
+}
+
+/** What the running tools are doing: the first, and how many more. */
+function toolsActivity(tools: Map<string, string>): string | undefined {
+  const all = [...tools.values()];
+  if (!all.length) return undefined;
+  return all.length === 1 ? all[0] : `${all[0]} (+${all.length - 1} more)`;
 }
 
 /** One model call that writes the summary a compaction keeps. */

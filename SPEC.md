@@ -698,8 +698,16 @@ prompting threads, each time after the user says yes to the drafted prompt.
   runner gets an `[Update]` message and tells the user. Watches live in the
   runner tab.
 - **The UI** (`components/assistant`): on desktop, a feed on the right over
-  the page shows the newest three prompts and replies (no tool calls),
-  fading out going up; clicks pass between its bubbles. Hovering it for
+  the page shows the newest three prompts and replies, with a line for
+  each step between them ("Read fix flaky test", "Sent to api migration";
+  a send shows its text when tapped; a spinner until its result, marked
+  if it failed; `steps.ts`). Under them, the turn's status: where it is
+  and for how long ("Waiting on GLM 5.3 Flash… · 4s" from the request
+  until the first token, then "Thinking…" with the end of its reasoning,
+  then the tool it's running; "Still waiting on … (Workers AI)" past
+  15 s). The runner sends that as `live.phase`, `live.thinking` and
+  `live.model`, and each tab times it on its own clock.
+  The feed fades out going up; clicks pass between its bubbles. Hovering it for
   150 ms, focusing it, or scrolling on it expands it (44% of the width, the
   page's height, a composer at the bottom); it folds back 400 ms after the
   pointer leaves, on Escape, and never expands by hover while a page field
@@ -748,10 +756,22 @@ prompting threads, each time after the user says yes to the drafted prompt.
     offer to `/v1/live/sessions` with the key and returns the answer
     (`openai-live.ts`: `gpt-live-1`, the voice's instructions, and the newest
     16 prompts and replies as seed history). Events come on the
-    `oai-events` channel. GPT-Live hands work off without saying what it is,
-    so the bridge takes what the user said since the last hand-off from
-    `session.input_transcript.delta` (waiting 700 ms for the transcript to
-    settle) and prompts the agent with it. Each reply the agent logs goes
+    `oai-events` channel. GPT-Live marks no turns: transcripts come in
+    pieces placed on the session's timeline (`start_ms`, `end_ms`), and a
+    hand-off carries only its `offset_ms`, not the task. So the bridge keeps
+    both sides' speech as spans on that timeline (pieces closer than 700 ms
+    are one utterance):
+    - A hand-off takes the user's words up to it that came since GPT-Live
+      last answered them, after waiting up to 700 ms for the transcript to
+      settle, and prompts the agent with them.
+    - Words GPT-Live answered itself (it spoke after them, and no hand-off
+      came within 4 s, since it may say "let me check" first) are logged in
+      the conversation with its reply (`voiceExchange`, marked
+      `origin: "gpt-live"`). The chat labels that reply "Answered by
+      GPT-Live", and the agent sees the exchange next turn.
+    - What GPT-Live didn't hear (text typed in any tab, replies to it,
+      updates for other tabs) goes to it as `session.thinking.append` with
+      `delegation_id: null`: it knows, without saying it. Each reply the agent logs goes
     back as `session.commentary.append` (1500 characters at a time) with the
     hand-off's id, until the turn ends; later ones (a watched thread
     finishing) go without one. A hand-off with nothing heard gets a quiet

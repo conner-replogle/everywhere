@@ -9,8 +9,10 @@ import type { Message } from "@mariozechner/pi-ai";
 import type { AssistantEntry } from "@everywhere/protocol";
 import { useNavigate } from "@tanstack/react-router";
 import {
+  CheckIcon,
   ChevronDownIcon,
   ChevronUpIcon,
+  CircleXIcon,
   KeyboardIcon,
   LoaderCircleIcon,
   MessageSquareTextIcon,
@@ -47,7 +49,9 @@ import {
   useAssistantRunner,
 } from "@/lib/assistant/agent";
 import { setFleet } from "@/lib/assistant/fleet";
-import { messageText, spokenPart } from "@/lib/assistant/messages";
+import { threadName } from "@/lib/assistant/fleet";
+import { fromVoice, messageText, spokenPart } from "@/lib/assistant/messages";
+import { stepDetail, stepText, turnStatus } from "@/lib/assistant/steps";
 import { assistantSync, useAssistantSync } from "@/lib/assistant/sync";
 import { useVoice, voice } from "@/lib/assistant/voice";
 import { cn } from "@/lib/utils";
@@ -161,19 +165,10 @@ function VoiceBar({ className, statusOnly }: { className?: string; statusOnly?: 
   const { error, dismiss } = useVoiceError();
   if (v.state === "off" && !error) return null;
   const live = sync.live;
+  const { status } = useTurnStatus();
   // statusOnly: what's being said shows in the conversation instead.
   const heard = statusOnly ? "" : v.heard;
-  const line = error
-    ? error
-    : heard
-      ? heard
-      : live?.activity
-        ? `${live.activity}…`
-        : v.state === "speaking"
-          ? "Speaking…"
-          : sync.runner
-            ? "Thinking…"
-            : "Listening…";
+  const line = error ? error : heard ? heard : v.state === "speaking" ? "Speaking…" : (status?.label ?? (sync.runner ? "Writing…" : "Listening…"));
   return (
     <div className={cn("pointer-events-auto rounded-xl border border-border bg-background/90 p-3 text-sm shadow-xl backdrop-blur-md", className)}>
       <div className="flex items-start gap-2">
@@ -195,12 +190,26 @@ function VoiceBar({ className, statusOnly }: { className?: string; statusOnly?: 
 /** What the feed lists: prompts, replies, thread updates, summaries; no tool calls. */
 type FeedItem =
   | { key: string; kind: "user"; text: string }
-  | { key: string; kind: "assistant"; text: string; error?: string }
+  | { key: string; kind: "assistant"; text: string; error?: string; /** GPT-Live answered it, not the agent. */ voice?: boolean }
   | { key: string; kind: "update"; text: string }
-  | { key: string; kind: "summary"; text: string };
+  | { key: string; kind: "summary"; text: string }
+  /** Something the agent did (a tool call): pending until its result is in. */
+  | { key: string; kind: "step"; text: string; detail?: string; state: "pending" | "done" | "failed" };
+
+/** Old calls that put cards on screen, which the chat doesn't show. */
+const HIDDEN_TOOLS = new Set(["show_on_screen", "clear_screen"]);
 
 function feedItems(entries: AssistantEntry[]): FeedItem[] {
   const out: FeedItem[] = [];
+  // How each tool call came out.
+  const results = new Map<string, boolean>();
+  // A call with no result from before the newest user message was stopped.
+  let lastUser = -1;
+  for (const e of entries) {
+    const m = e.kind === "message" ? (e.message as Message) : null;
+    if (m?.role === "toolResult") results.set(m.toolCallId, !!m.isError);
+    if (m?.role === "user") lastUser = e.seq;
+  }
   for (const e of entries) {
     if (e.kind === "compaction") {
       out.push({ key: `c${e.seq}`, kind: "summary", text: e.summary });
@@ -214,7 +223,19 @@ function feedItems(entries: AssistantEntry[]): FeedItem[] {
     } else if (m.role === "assistant") {
       const text = messageText(m).trim();
       const error = m.stopReason === "error" ? m.errorMessage : undefined;
-      if (text || error) out.push({ key: `${e.seq}`, kind: "assistant", text, error });
+      if (text || error) out.push({ key: `${e.seq}`, kind: "assistant", text, error, voice: fromVoice(m) });
+      for (const b of m.content) {
+        if (b.type !== "toolCall" || HIDDEN_TOOLS.has(b.name)) continue;
+        const args = (b.arguments ?? {}) as Record<string, unknown>;
+        const failed = results.get(b.id);
+        out.push({
+          key: `${e.seq}:${b.id}`,
+          kind: "step",
+          text: stepText(b.name, args, threadName),
+          detail: stepDetail(b.name, args),
+          state: failed === undefined ? (e.seq < lastUser ? "failed" : "pending") : failed ? "failed" : "done",
+        });
+      }
     }
   }
   return out;
@@ -233,8 +254,11 @@ function Bubble({ item }: { item: FeedItem }) {
         <div className="pointer-events-auto mr-6 self-start rounded-2xl rounded-bl-md border border-border bg-background/85 px-3 py-2 shadow-lg backdrop-blur-md">
           {item.text && <Markdown text={item.text} />}
           {item.error && <p className="text-xs text-destructive">{item.error}</p>}
+          {item.voice && <p className="mt-1 text-[11px] text-muted-foreground">Answered by GPT-Live</p>}
         </div>
       );
+    case "step":
+      return <StepLine item={item} />;
     case "update":
       return (
         <p className="pointer-events-auto self-start rounded-full border border-border bg-background/80 px-3 py-1 text-xs text-muted-foreground backdrop-blur-md">
@@ -251,7 +275,92 @@ function Bubble({ item }: { item: FeedItem }) {
   }
 }
 
-/** The turn in progress: the reply streaming and what it's doing. */
+function StepLine({ item }: { item: FeedItem & { kind: "step" } }) {
+  const Icon = item.state === "pending" ? LoaderCircleIcon : item.state === "failed" ? CircleXIcon : CheckIcon;
+  const line = (
+    <span className="inline-flex items-center gap-1.5">
+      <Icon
+        className={cn(
+          "size-3 shrink-0",
+          item.state === "pending" && "animate-spin",
+          item.state === "failed" ? "text-destructive" : "text-muted-foreground",
+        )}
+      />
+      {item.text}
+      {item.state === "failed" && " (failed)"}
+    </span>
+  );
+  return (
+    <div className="pointer-events-auto self-start px-1 text-xs text-muted-foreground">
+      {item.detail ? (
+        <details>
+          <summary className="cursor-pointer list-none">{line}</summary>
+          <p className="mt-1 max-h-48 overflow-y-auto whitespace-pre-wrap rounded-lg border border-border bg-background/85 p-2 text-foreground/90">
+            {item.detail}
+          </p>
+        </details>
+      ) : (
+        line
+      )}
+    </div>
+  );
+}
+
+/** The newest n prompts and replies, with the steps between them. */
+function restingItems(items: FeedItem[], n: number): FeedItem[] {
+  let seen = 0;
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i]!.kind !== "step" && ++seen === n) return items.slice(i);
+  }
+  return items;
+}
+
+/** Seconds since key last changed, ticking while active. */
+function useSeconds(key: string, active: boolean): number {
+  const [since, setSince] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    setSince(Date.now());
+    setNow(Date.now());
+  }, [key]);
+  useEffect(() => {
+    if (!active) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [active]);
+  return Math.max(0, Math.floor((now - since) / 1000));
+}
+
+/** Where the running turn is (waiting on the model, thinking, a tool), with how long it's been. */
+function useTurnStatus() {
+  const sync = useAssistantSync();
+  const runner = useAssistantRunner();
+  const live = sync.live;
+  const running = runner.busy || !!sync.runner;
+  const seconds = useSeconds(`${live?.phase}|${live?.activity}`, running);
+  return { status: turnStatus(live, running, seconds), thinking: live?.phase === "thinking" ? live.thinking : undefined };
+}
+
+function TurnStatus() {
+  const { status, thinking } = useTurnStatus();
+  if (!status) return null;
+  return (
+    <div className="pointer-events-auto flex max-w-full flex-col gap-1 self-start">
+      <p
+        className={cn(
+          "flex items-center gap-1.5 self-start rounded-full border bg-background/80 px-3 py-1 text-xs backdrop-blur-md",
+          status.slow ? "border-warn/50 text-warn" : "border-border text-muted-foreground",
+        )}
+      >
+        <LoaderCircleIcon className="size-3 animate-spin" />
+        {status.label}
+      </p>
+      {thinking && <p className="line-clamp-2 px-3 text-xs italic text-muted-foreground/80">{thinking}</p>}
+    </div>
+  );
+}
+
+/** The turn in progress: the reply streaming and where it is. */
 function LiveItems() {
   const sync = useAssistantSync();
   const runner = useAssistantRunner();
@@ -263,12 +372,7 @@ function LiveItems() {
           <Markdown text={live.text} />
         </div>
       )}
-      {live?.activity && (
-        <p className="pointer-events-auto flex items-center gap-1.5 self-start rounded-full border border-border bg-background/80 px-3 py-1 text-xs text-muted-foreground backdrop-blur-md">
-          <LoaderCircleIcon className="size-3 animate-spin" />
-          {live.activity}…
-        </p>
-      )}
+      <TurnStatus />
       {runner.error && (
         <p className="pointer-events-auto self-start rounded-xl border border-destructive/40 bg-background/90 px-3 py-2 text-xs text-destructive backdrop-blur-md">
           {runner.error}
@@ -457,7 +561,7 @@ function DesktopAssistant() {
     if (el && (!expanded || el.scrollHeight - el.scrollTop - el.clientHeight < 120)) el.scrollTop = el.scrollHeight;
   }, [expanded, items.length, sync.live?.text]);
 
-  const shown = expanded ? items : items.slice(-REST_ITEMS);
+  const shown = expanded ? items : restingItems(items, REST_ITEMS);
   const open = expanded || typing;
   return (
     <>
@@ -665,7 +769,7 @@ function VoiceConversation({ items }: { items: FeedItem[] }) {
     const el = list.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [open, items.length, sync.live?.text, v.heard]);
-  const shown = open ? items : items.slice(-2);
+  const shown = open ? items : restingItems(items, 2);
   return (
     <section aria-label="The conversation" className="shrink-0 px-3 pb-2">
       <div className="rounded-2xl border border-border bg-background/60 backdrop-blur-md">

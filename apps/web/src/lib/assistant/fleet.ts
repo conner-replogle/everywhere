@@ -82,6 +82,15 @@ export function findThread(threadRef: string, deviceRef?: string): { device: Fle
   );
 }
 
+/** A thread's name from what the agent called it (its id or its name); the reference itself if it's unknown. */
+export function threadName(ref: string): string {
+  for (const d of fleetDevices()) {
+    const t = d.threads.find((x) => x.id === ref) ?? d.threads.find((x) => x.name.toLowerCase() === ref.toLowerCase());
+    if (t) return t.name;
+  }
+  return ref;
+}
+
 export function findProject(projectRef: string, deviceRef: string): { device: FleetDevice; project: Project } {
   const device = findDevice(deviceRef);
   const q = norm(projectRef);

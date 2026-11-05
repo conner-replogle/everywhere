@@ -28,6 +28,33 @@ export function userMessage(text: string): UserMessage {
   return { role: "user", content: text, timestamp: Date.now() };
 }
 
+/** Marks messages GPT-Live handled on its own (logged by the voice, not the agent). */
+export const VOICE_ORIGIN = "gpt-live";
+
+/** Whether a logged message is one GPT-Live handled on its own. */
+export function fromVoice(m: unknown): boolean {
+  return (m as { origin?: unknown } | null)?.origin === VOICE_ORIGIN;
+}
+
+/** Something GPT-Live answered itself, as a prompt and reply for the log. said: as composed (with its context note). */
+export function voiceExchange(said: string, reply: string, at = Date.now()): [UserMessage, AssistantMessage] {
+  const origin = { origin: VOICE_ORIGIN };
+  return [
+    { role: "user", content: said, timestamp: at, ...origin },
+    {
+      role: "assistant",
+      content: [{ type: "text", text: reply }],
+      api: "openai-completions",
+      provider: "openai",
+      model: "gpt-live-1",
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "stop",
+      timestamp: at,
+      ...origin,
+    },
+  ];
+}
+
 /** The model's context from the log: the latest summary, then what it doesn't cover. */
 export function contextFrom(entries: AssistantEntry[]): AgentMessage[] {
   let compaction: (AssistantEntry & { kind: "compaction" }) | undefined;

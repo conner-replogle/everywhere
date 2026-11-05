@@ -21,6 +21,16 @@ export interface AssistantLive {
   text: string;
   /** What it's doing, e.g. "Reading fix flaky test". */
   activity?: string;
+  /**
+   * Where the turn is: waiting for the model's first words (the request is
+   * out to Workers AI), reasoning, writing its reply (or a tool call), or
+   * running a tool (activity says which).
+   */
+  phase?: "waiting" | "thinking" | "writing" | "tool";
+  /** The end of the model's reasoning so far, for a glimpse of what it's thinking. */
+  thinking?: string;
+  /** The model it's waiting on, e.g. "GLM 5.3 Flash". */
+  model?: string;
   /** The tab whose message this turn answers (its tab id): only that tab's voice speaks it. */
   for?: string;
 }

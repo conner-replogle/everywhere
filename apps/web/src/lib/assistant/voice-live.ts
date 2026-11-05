@@ -12,7 +12,7 @@ import { audioContext, closeAudio, isMobile } from "./audio";
 import { watchStream } from "./levels";
 import { type MicInfo, micInfo, openMic } from "./mic";
 import { LiveBridge, type LiveEvent } from "./live-bridge";
-import { messageText, spokenPart } from "./messages";
+import { fromVoice, messageText, spokenPart, voiceExchange } from "./messages";
 import { assistantSync, tabId } from "./sync";
 import type { VoiceSnapshot } from "./voice";
 
@@ -83,6 +83,8 @@ export class LiveVoice {
   private stream: MediaStream | null = null;
   private audio: HTMLAudioElement | null = null;
   private bridge: LiveBridge | null = null;
+  /** Prompts this voice gave the agent, so they aren't told back to GPT-Live as news. */
+  private asked = new Set<string>();
   private unsubscribe: (() => void) | null = null;
   private speakingTimer: ReturnType<typeof setTimeout> | undefined;
   private idleTimer: ReturnType<typeof setInterval> | undefined;
@@ -180,7 +182,13 @@ export class LiveVoice {
       const dc = pc.createDataChannel("oai-events");
       this.dc = dc;
       this.bridge = new LiveBridge(
-        { ask: (text) => void assistantRunner.prompt(composePrompt(text, { voice: true })) },
+        {
+          ask: (text) => {
+            const prompt = composePrompt(text, { voice: true });
+            this.asked.add(prompt.trim());
+            void assistantRunner.prompt(prompt);
+          },
+        },
         {
           send: (e) => {
             if (dc.readyState === "open") dc.send(JSON.stringify(e));
@@ -193,6 +201,12 @@ export class LiveVoice {
           onSaid: () => {
             this.lastActivity = Date.now();
             this.speaking();
+          },
+          // What it answered itself goes in the conversation too, so the chat has the whole call.
+          onAnswered: (said, reply) => {
+            void assistantSync
+              .append(voiceExchange(composePrompt(said, { voice: true }), reply).map((message) => ({ kind: "message" as const, message })))
+              .catch((e: unknown) => console.warn("logging GPT-Live's answer:", e));
           },
           onClosed: (reason) => {
             this.dbg.closeReason = reason;
@@ -241,9 +255,18 @@ export class LiveVoice {
       for (const e of s.entries) {
         if (e.seq <= lastSeq) continue;
         lastSeq = e.seq;
-        if (!mine || e.kind !== "message" || (e.message as Message).role !== "assistant") continue;
-        const text = messageText(e.message as Message);
-        if (text.trim()) this.bridge?.assistantSaid(text);
+        if (e.kind !== "message" || fromVoice(e.message)) continue;
+        const m = e.message as Message;
+        const text = messageText(m).trim();
+        if (!text) continue;
+        if (m.role === "assistant") {
+          // A reply to what was said here is said; one to something typed elsewhere, it just knows.
+          if (mine) this.bridge?.assistantSaid(text);
+          else this.bridge?.note(`Meanwhile the assistant replied in the chat: ${text}`);
+        } else if (m.role === "user" && !this.asked.delete(text)) {
+          const said = spokenPart(text);
+          this.bridge?.note(said.startsWith("[Update]") ? said : `Meanwhile the user typed in the chat: ${said}`);
+        }
       }
       if (running && !s.runner) this.bridge?.turnEnded();
       running = !!s.runner;
