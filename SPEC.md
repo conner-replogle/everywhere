@@ -734,8 +734,17 @@ prompting threads, each time after the user says yes to the drafted prompt.
   newest reply in a bubble above them for 6 s (tap to open, swipe away), a
   frosted sheet from the bottom (78% of the height, swipe its top down to
   close) with the whole conversation and the composer (full width, the mic
-  above it), and while talking the full-screen voice screen (the large
-  ring, the live transcript, a card filling it when there is one). Only the
+  above it), and while talking the full-screen voice screen. Top to
+  bottom, the voice screen has:
+  - an inbox of the thread alerts (one row per thread: finished, has a
+    question…; tap to open the thread with the voice still on, swipe away).
+    While it's up, the alert toasts hold and don't time out, and the thread
+    under it doesn't count as viewed;
+  - the card, taking the space left;
+  - the conversation's newest two lines, plus what's being heard, fading
+    upward (tap to open it all and scroll back);
+  - the status line;
+  - the large mic. Only the
   voice screen covers the whole screen. Otherwise a card is a normal card,
   at the top of the page or above the composer, at most 45% of the screen's
   height. Cards, the reply bubble and the reading placeholder all swipe

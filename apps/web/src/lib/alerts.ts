@@ -17,6 +17,8 @@ let alerts: readonly Alert[] = [];
 const listeners = new Set<() => void>();
 let nextId = 0;
 let enabled = readEnabled();
+/** Something else shows the alerts (the voice screen): no toasts, and nothing times out meanwhile. */
+let held = false;
 
 function readEnabled(): boolean {
   try {
@@ -81,4 +83,18 @@ export function useAlerts(): readonly Alert[] {
 
 export function useAlertsEnabled(): boolean {
   return useSyncExternalStore(subscribe, () => enabled);
+}
+
+export function alertsHeld(): boolean {
+  return held;
+}
+
+export function holdAlerts(on: boolean): void {
+  if (held === on) return;
+  held = on;
+  for (const fn of listeners) fn();
+}
+
+export function useAlertsHeld(): boolean {
+  return useSyncExternalStore(subscribe, () => held);
 }

@@ -16,13 +16,13 @@ import {
 import { useEffect, useRef } from "react";
 import { useFleet } from "@/components/fleet";
 import { Button } from "@/components/ui/button";
-import { type Alert, alertThread, dismissAlert, useAlerts } from "@/lib/alerts";
+import { type Alert, alertThread, dismissAlert, useAlerts, useAlertsHeld } from "@/lib/alerts";
 import { cn } from "@/lib/utils";
 
 /** How long a "finished" or "error" alert stays up while the page is visible. */
 const DONE_TIMEOUT_MS = 8_000;
 
-const KIND_ICON: Record<NotifyKind, LucideIcon> = {
+export const KIND_ICON: Record<NotifyKind, LucideIcon> = {
   permission: ShieldIcon,
   question: MessageCircleQuestionIcon,
   plan: ClipboardListIcon,
@@ -33,7 +33,9 @@ const KIND_ICON: Record<NotifyKind, LucideIcon> = {
 
 export function Alerts() {
   const alerts = useAlerts();
-  if (alerts.length === 0) return null;
+  // The voice screen shows them itself, as an inbox.
+  const held = useAlertsHeld();
+  if (alerts.length === 0 || held) return null;
   return (
     <div
       aria-live="polite"

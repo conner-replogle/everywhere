@@ -11,6 +11,7 @@ import type { AssistantEntry } from "@everywhere/protocol";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ChevronDownIcon,
+  ChevronUpIcon,
   KeyboardIcon,
   LoaderCircleIcon,
   MessageSquareTextIcon,
@@ -51,7 +52,9 @@ import { messageText, spokenPart } from "@/lib/assistant/messages";
 import { assistantSync, useAssistantSync } from "@/lib/assistant/sync";
 import { useVoice, voice } from "@/lib/assistant/voice";
 import { cn } from "@/lib/utils";
+import { holdAlerts } from "@/lib/alerts";
 import { CardStack, useScreenCards } from "./cards";
+import { VoiceInbox } from "./voice-inbox";
 import { useSwipeAway } from "./swipe";
 import { VoiceBars, VoiceRing } from "./visualizer";
 
@@ -154,16 +157,18 @@ function MicButton({ size = "md", className }: { size?: "md" | "lg"; className?:
 }
 
 /** While talking: what it heard and what it's doing; after, why it stopped. */
-function VoiceBar({ className }: { className?: string }) {
+function VoiceBar({ className, statusOnly }: { className?: string; statusOnly?: boolean }) {
   const v = useVoice();
   const sync = useAssistantSync();
   const { error, dismiss } = useVoiceError();
   if (v.state === "off" && !error) return null;
   const live = sync.live;
+  // statusOnly: what's being said shows in the conversation instead.
+  const heard = statusOnly ? "" : v.heard;
   const line = error
     ? error
-    : v.heard
-      ? v.heard
+    : heard
+      ? heard
       : live?.activity
         ? `${live.activity}…`
         : v.state === "speaking"
@@ -175,7 +180,7 @@ function VoiceBar({ className }: { className?: string }) {
     <div className={cn("pointer-events-auto rounded-xl border border-border bg-background/90 p-3 text-sm shadow-xl backdrop-blur-md", className)}>
       <div className="flex items-start gap-2">
         {!error && <VoiceBars active={v.state === "listening" || v.state === "speaking"} className="mt-0.5 h-4 w-12 shrink-0" />}
-        <p className={cn("line-clamp-3 flex-1", v.heard ? "text-foreground" : "text-muted-foreground", error && "text-destructive")}>
+        <p className={cn("line-clamp-3 flex-1", heard ? "text-foreground" : "text-muted-foreground", error && "text-destructive")}>
           {line}
         </p>
         {error && (
@@ -653,6 +658,63 @@ function PhoneAssistant() {
 }
 
 /**
+ * The conversation on the voice screen: the newest couple of lines, fading
+ * out upward, with what you're saying as it's heard. Tap to open it all and
+ * scroll back; tap the header to fold it again.
+ */
+function VoiceConversation({ items }: { items: FeedItem[] }) {
+  const sync = useAssistantSync();
+  const v = useVoice();
+  const [open, setOpen] = useState(false);
+  const list = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = list.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [open, items.length, sync.live?.text, v.heard]);
+  const shown = open ? items : items.slice(-2);
+  return (
+    <section aria-label="The conversation" className="shrink-0 px-3 pb-2">
+      <div className="rounded-2xl border border-border bg-background/60 backdrop-blur-md">
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          aria-expanded={open}
+          className="flex w-full items-center gap-1 px-3 pt-2 pb-1 text-xs text-muted-foreground"
+        >
+          <span className="flex-1 text-left">Conversation</span>
+          {open ? <ChevronDownIcon className="size-4" /> : <ChevronUpIcon className="size-4" />}
+        </button>
+        <div
+          ref={list}
+          onClick={() => !open && setOpen(true)}
+          className={cn(
+            "flex flex-col gap-2 px-3 pb-3 text-sm",
+            open
+              ? "max-h-[55dvh] overflow-y-auto overscroll-contain"
+              : "max-h-32 overflow-hidden [mask-image:linear-gradient(to_bottom,transparent,black_2.5rem)]",
+          )}
+        >
+          {open && sync.hasEarlier && (
+            <button type="button" className="text-xs text-muted-foreground" onClick={() => assistantSync.loadEarlier()}>
+              Load earlier
+            </button>
+          )}
+          {shown.map((it) => (
+            <Bubble key={it.key} item={it} />
+          ))}
+          {v.heard && (
+            <div className="ml-10 self-end rounded-2xl rounded-br-md border border-dashed border-primary/30 bg-primary/10 px-3 py-2 whitespace-pre-wrap text-foreground/80">
+              {v.heard}
+            </div>
+          )}
+          <LiveItems />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/**
  * The card on a phone. voice: the voice screen's, taking the space it has.
  * float: over the page at the top, its own size. chat: above the message box.
  */
@@ -709,8 +771,12 @@ function PhoneLayer({ voiceMode, onClose, onMinimize }: { voiceMode: boolean; on
     const el = list.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [items.length, sync.live?.text]);
-  const said = items.at(-1);
   const swipe = useSwipeAway(onMinimize, ["down"]);
+  // The voice screen shows the thread alerts itself, as an inbox.
+  useEffect(() => {
+    holdAlerts(voiceMode);
+    return () => holdAlerts(false);
+  }, [voiceMode]);
   return (
     <div
       style={voiceMode ? undefined : swipe.style}
@@ -734,18 +800,13 @@ function PhoneLayer({ voiceMode, onClose, onMinimize }: { voiceMode: boolean; on
       </header>
       {voiceMode ? (
         <>
-          {cards.length > 0 ? (
-            <PhoneCards mode="voice" />
-          ) : (
-            <div className="flex min-h-0 flex-1 flex-col justify-end gap-4 overflow-hidden px-6 pb-6">
-              {said?.kind === "assistant" && <p className="line-clamp-6 text-lg text-muted-foreground">{said.text}</p>}
-              <p className="text-2xl leading-snug">
-                {v.heard || sync.live?.text || (sync.live?.activity ? `${sync.live.activity}…` : v.state === "speaking" ? "" : "Listening…")}
-              </p>
-            </div>
-          )}
-          <VoiceBar className="mx-3 mb-2" />
-          <div className="flex shrink-0 justify-center pt-10 pb-14">
+          {/* Top to bottom: what's happening in the threads, the card (a diagram, a list), a few
+              lines of the conversation (tap for all of it), the status, the mic. */}
+          <VoiceInbox onOpen={onMinimize} className="max-h-[30dvh] shrink-0 overflow-y-auto overscroll-contain px-3 pb-2" />
+          {cards.length > 0 ? <PhoneCards mode="voice" /> : <div className="min-h-0 flex-1" />}
+          <VoiceConversation items={items} />
+          <VoiceBar statusOnly className="mx-3 mb-2" />
+          <div className="flex shrink-0 justify-center pt-4 pb-10">
             <MicButton size="lg" />
           </div>
         </>

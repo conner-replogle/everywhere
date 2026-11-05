@@ -9,7 +9,7 @@ import {
   type SignalData,
 } from "@everywhere/protocol";
 import { useSyncExternalStore } from "react";
-import { alertsEnabled, alertThread, dismissThreadAlerts, pushAlert, subscribe as onAlertsChange } from "./alerts";
+import { alertsEnabled, alertsHeld, alertThread, dismissThreadAlerts, pushAlert, subscribe as onAlertsChange } from "./alerts";
 import { api } from "./api";
 
 export type HubStatus = "idle" | "connecting" | "open" | "closed";
@@ -100,7 +100,8 @@ class Hub {
 
   private syncViewing(): void {
     const seen = document.visibilityState === "visible" && document.hasFocus();
-    const t = seen ? this.thread : null;
+    // The voice screen covers the page: the thread under it isn't being seen.
+    const t = seen && !alertsHeld() ? this.thread : null;
     const active = seen && alertsEnabled() && Date.now() - this.lastInput < IDLE_MS;
     const key = `${t ? `${t.deviceId}/${t.threadId}` : ""}${active ? "+" : ""}`;
     if (key === this.sentViewing) return;
