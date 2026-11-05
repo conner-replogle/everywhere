@@ -9,7 +9,9 @@ import type { Message, Model } from "@mariozechner/pi-ai";
 import type { AgentDaemonMsg, AgentEvent as ThreadEvent, AssistantApproval, AssistantEntry, AssistantLive } from "@everywhere/protocol";
 import { useSyncExternalStore } from "react";
 import { describeView, type FleetDevice, fleetDevices, fleetOverview, threadStatus } from "./fleet";
-import { CONTEXT_CLOSE, CONTEXT_OPEN, contextFrom, convertToLlm, messageText, userMessage } from "./messages";
+import { contextFrom, convertToLlm, messageText, userMessage } from "./messages";
+import { assistantSystemPrompt, contextNote } from "./prompt";
+import { screenNote } from "./screen";
 import { assistantSync } from "./sync";
 import { assistantTools } from "./tools";
 
@@ -65,34 +67,19 @@ function model(): Model<"openai-completions"> {
 }
 
 function systemPrompt(): string {
-  const now = new Date();
-  return `You are the user's assistant in Everywhere, an app that runs terminals and Claude Code threads on all of their machines. You aren't on any machine and can't read files or run commands. You see their devices, projects and threads through your tools, and you get work done by prompting threads (send_to_thread) or starting them (start_thread), each only after the user allows it.
-
-You're one long conversation that the user returns to from any device, by voice or text. Earlier parts may be summarized.
-
-How to work:
-- Each user message ends with a <context> note saying what the user is looking at. That's where they are, not necessarily what they mean: they often ask about other projects or everything at once. Go by what they say; ask when it's unclear which thread or project they mean before doing anything.
-- Answer status questions from the overview below and read_thread; don't guess what a thread did, read it.
-- When the user wants something done in a project, write the prompt for the thread yourself: complete and specific, in the user's voice, with what you know that it needs. Then send it; the user sees the exact text and allows or denies it.
-- After sending or starting, you're told when the thread stops working; then tell the user what happened, briefly.
-- Messages that start with [Update] come from a thread you're watching, not from the user.
-- Never say something was done unless a tool said so.
-- Don't narrate your plan or reasoning in your reply ("We need to…", "I'll call…"): call the tools, then answer.
-- When the user is speaking (the context note says so), reply in short, plain spoken sentences: no markdown, lists, code or ids. Otherwise markdown is fine; keep it short.
-
-Now: ${now.toLocaleString(undefined, { dateStyle: "full", timeStyle: "short" })}.
-
-# The user's devices, projects and recent threads
-${fleetOverview()}`;
+  return assistantSystemPrompt(fleetOverview());
 }
 
 /** The user's words plus where they were, as the model sees them. */
 export function composePrompt(text: string, opts: { voice?: boolean } = {}): string {
   const selection = (window.getSelection?.()?.toString() ?? "").trim().slice(0, 1000);
-  const parts = [`The user is looking at ${describeView(location.pathname, location.search)}.`];
-  if (selection) parts.push(`They have this text selected: "${selection}".`);
-  if (opts.voice) parts.push("They said this out loud: answer in one to three short spoken sentences, with no lists, markdown or ids.");
-  return `${text.trim()}\n\n${CONTEXT_OPEN}${parts.join(" ")}${CONTEXT_CLOSE}`;
+  const note = contextNote({
+    view: describeView(location.pathname, location.search),
+    selection,
+    voice: opts.voice,
+    screen: screenNote(assistantSync.getSnapshot().entries),
+  });
+  return `${text.trim()}\n\n${note}`;
 }
 
 const estimateTokens = (messages: AgentMessage[]) => Math.ceil(JSON.stringify(messages).length / 4);

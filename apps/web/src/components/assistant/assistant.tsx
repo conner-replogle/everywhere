@@ -23,6 +23,7 @@ import { setFleet } from "@/lib/assistant/fleet";
 import { messageText, spokenPart } from "@/lib/assistant/messages";
 import { assistantSync, useAssistantSync } from "@/lib/assistant/sync";
 import { useVoice, voice } from "@/lib/assistant/voice";
+import { ScreenCards } from "./screen-cards";
 import { VoiceBars, VoiceRing } from "./visualizer";
 import { cn } from "@/lib/utils";
 
@@ -63,6 +64,10 @@ export function Assistant() {
     <>
       <AssistantBridge />
       {open && <AssistantPanel onClose={() => setOpen(false)} />}
+      {/* Above the mic stack (chat button, gap, mic: 108px over its bottom offset). */}
+      {!open && (
+        <ScreenCards className="pointer-events-auto fixed right-6 bottom-[228px] z-40 w-[min(22rem,calc(100vw-3rem))] md:bottom-[212px]" />
+      )}
       {/* The panel has its own mic. */}
       {!open && (
         // right-6 and gap-6: room for the voice ring (it reaches 48px from the mic's center).
@@ -273,6 +278,7 @@ function AssistantPanel({ onClose }: { onClose: () => void }) {
         ))}
         {runner.error && <p className="text-destructive">{runner.error}</p>}
       </div>
+      <ScreenCards className="border-t border-border p-2" />
       <footer className="border-t border-border p-2">
         {v.state !== "off" && (
           <div className="flex items-center gap-2 px-1 pb-1">

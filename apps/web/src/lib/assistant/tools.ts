@@ -7,6 +7,7 @@ import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import { type Static, type TSchema, Type } from "@mariozechner/pi-ai";
 import type { AgentEvent, AgentState, PermissionMode } from "@everywhere/protocol";
 import { readAgent } from "@/lib/agent-read";
+import { CLEAR_TOOL, cardId, MAX_CARD_MARKDOWN, SHOW_TOOL } from "./screen";
 import {
   ago,
   type FleetDevice,
@@ -307,6 +308,30 @@ export function assistantTools(host: ToolHost): AgentTool<TSchema>[] {
         host.open(device.id, thread.id);
         return `Opened "${thread.name}".`;
       },
+    ),
+    tool(
+      SHOW_TOOL,
+      "Showing on screen",
+      `Put a compact markdown card on the user's screen next to the conversation, or update the one with this id. For three or more items, steps, a checklist, a small table, a mermaid diagram, or anything to keep in view while you talk. At most ${MAX_CARD_MARKDOWN} characters.`,
+      Type.Object({
+        id: Type.String({ description: 'A short id saying what it is, like "decisions". Showing the same id again updates that card.' }),
+        markdown: Type.String({ description: "The card: a short heading, then bullets, checkboxes, a small table or a ```mermaid diagram." }),
+      }),
+      async (a) => {
+        const md = a.markdown.trim();
+        if (!md) throw new Error("The card is empty.");
+        if (md.length > MAX_CARD_MARKDOWN) {
+          throw new Error(`The card is ${md.length} characters; keep it under ${MAX_CARD_MARKDOWN}. Shorten it and show it again.`);
+        }
+        return `On screen as "${cardId(a.id)}".`;
+      },
+    ),
+    tool(
+      CLEAR_TOOL,
+      "Clearing the screen",
+      "Take a card off the user's screen when the conversation has moved on from it; without an id, all of them.",
+      Type.Object({ id: Type.Optional(Type.String({ description: "The card's id; leave it out to clear every card." })) }),
+      async (a) => (a.id ? `Cleared "${cardId(a.id)}".` : "Cleared the screen."),
     ),
     tool(
       "watch_thread",

@@ -693,6 +693,20 @@ prompting threads, each time after the user allows it.
   the assistant prompts or starts is watched: when it stops working, the
   runner gets an `[Update]` message and tells the user. Watches live in the
   runner tab.
+- **On-screen cards**: `show_on_screen {id, markdown}` puts a compact
+  markdown card (at most 1200 characters; headings, lists, checkboxes, small
+  tables, mermaid) up beside the conversation, or updates the card with that
+  id in place; `clear_screen {id?}` takes one or all down. They run in the
+  tab and need no approval. What's on screen is worked out from the log
+  (`screen.ts`), so every tab shows the same cards and a reload keeps them:
+  a card shown or updated in a turn lasts through the next turn and is gone
+  once a turn after that starts without it; at most three; a call that
+  failed (too long) shows nothing; clearing the conversation clears them.
+  The context note says what will still be on screen. The prompt
+  (`prompt.ts`) asks for a card for three or more items, steps, checklists,
+  tables or diagrams, card first (shown with what's known, then filled in
+  under the same id), and in voice for the gist spoken and the details on
+  the card. Dismissing one hides it in that tab until it's shown again.
 - **Model**: Workers AI behind `POST /api/assistant/v1/chat/completions`,
   OpenAI-compatible so pi-ai's provider talks to it as is. The Worker allows
   a fixed list of models (`ASSISTANT_MODELS`), passes the fields Workers AI
