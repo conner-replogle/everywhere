@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"github.com/conner-replogle/everywhere/daemon/internal/config"
 	"github.com/conner-replogle/everywhere/daemon/internal/hub"
 	"github.com/conner-replogle/everywhere/daemon/internal/ice"
+	"github.com/conner-replogle/everywhere/daemon/internal/logring"
 	"github.com/conner-replogle/everywhere/daemon/internal/peer"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugin/external"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugins/builtin"
@@ -139,7 +141,8 @@ func daemon(args []string) error {
 	if *verbose {
 		level = slog.LevelDebug
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+	// Also kept in memory for the app's bug reports (debug.logs).
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.MultiWriter(os.Stderr, logring.Default), &slog.HandlerOptions{Level: level})))
 
 	cfg, credential, err := config.Load()
 	if err != nil {

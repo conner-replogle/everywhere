@@ -924,6 +924,8 @@ export interface RpcMethods {
   "agent.loginCode": [{ code: string }, ClaudeAuth];
   "agent.loginCancel": [Record<string, never>, Record<string, never>];
   "debug.peer": [Record<string, never>, PeerDebug];
+  /** The daemon's newest log lines, oldest first (lines: how many; all it keeps, 2000, by default). Older daemons don't have it. */
+  "debug.logs": [{ lines?: number }, string[]];
   "desktop.info": [Record<string, never>, DesktopInfo];
   /**
    * Starts a remote desktop session on its own PeerConnection: sdp is its

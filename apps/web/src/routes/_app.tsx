@@ -1,6 +1,7 @@
 import { createFileRoute, Outlet, redirect, useNavigate } from "@tanstack/react-router";
 import { lazy, Suspense, useEffect } from "react";
 import { Alerts } from "@/components/alerts";
+import { BugReport } from "@/components/bug-report";
 import { FleetProvider } from "@/components/fleet";
 import { auth } from "@/lib/auth";
 import { hub } from "@/lib/hub";
@@ -44,6 +45,7 @@ function AppLayout() {
       <FleetProvider>
         <Outlet />
         <Alerts />
+        <BugReport />
         <Suspense fallback={null}>
           <Assistant />
         </Suspense>

@@ -15,6 +15,7 @@ import (
 	"github.com/pion/webrtc/v4"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/favicon"
+	"github.com/conner-replogle/everywhere/daemon/internal/logring"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugin"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 	"github.com/conner-replogle/everywhere/daemon/internal/store"
@@ -77,6 +78,8 @@ type coreParams struct {
 	Force    bool   `json:"force"`
 	// A new claude thread or tab's starting permission mode.
 	PermissionMode string `json:"permissionMode"`
+	// debug.logs: how many of the newest lines (all that are kept if 0).
+	Lines int `json:"lines"`
 }
 
 // registerCore registers the core's own methods.
@@ -95,6 +98,7 @@ func (s *Server) registerCore(h plugin.Host) {
 		}
 		return p.debug(), nil
 	})
+	rpc("debug.logs", func(_ plugin.RPCContext, p coreParams) (any, error) { return logring.Default.Tail(p.Lines), nil })
 
 	rpc("projects.list", func(plugin.RPCContext, coreParams) (any, error) { return s.store.ListProjects() })
 	rpc("projects.create", func(_ plugin.RPCContext, p coreParams) (any, error) {

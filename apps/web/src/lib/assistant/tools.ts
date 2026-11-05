@@ -5,8 +5,8 @@
 
 import type { AgentTool, AgentToolResult } from "@mariozechner/pi-agent-core";
 import { type Static, type TSchema, Type } from "@mariozechner/pi-ai";
-import type { AgentDaemonMsg, AgentEvent, AgentState, PermissionMode } from "@everywhere/protocol";
-import type { DevicePeer } from "@/lib/peer";
+import type { AgentEvent, AgentState, PermissionMode } from "@everywhere/protocol";
+import { readAgent } from "@/lib/agent-read";
 import {
   ago,
   type FleetDevice,
@@ -32,7 +32,6 @@ export interface ToolHost {
 export const PAGE_CHARS = 30_000;
 /** How far back read_thread reads, in events (tool calls count). */
 const THREAD_EVENTS = 3000;
-const READ_TIMEOUT_MS = 15_000;
 
 function text(s: string): AgentToolResult<undefined> {
   return { content: [{ type: "text", text: s }], details: undefined };
@@ -61,47 +60,6 @@ function inputSummary(input: unknown): string {
     if (typeof o[k] === "string") return clip(o[k] as string, 140).replace(/\s+/g, " ");
   }
   return "";
-}
-
-/** Opens a thread's agent channel, replays its newest events, and closes it. */
-function readAgent(
-  peer: DevicePeer,
-  threadId: string,
-  limit: number,
-  then?: (send: (msg: object) => void) => Promise<void>,
-): Promise<{ events: AgentEvent[]; state: AgentState | null; truncated: boolean }> {
-  return new Promise((resolve, reject) => {
-    const events: AgentEvent[] = [];
-    let state: AgentState | null = null;
-    let truncated = false;
-    let done = false;
-    const finish = (err?: Error) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      ch.close();
-      if (err) reject(err);
-      else resolve({ events, state, truncated });
-    };
-    const timer = setTimeout(() => finish(new Error("the device didn't answer in time")), READ_TIMEOUT_MS);
-    const ch = peer.openAgent(threadId, {
-      onOpen: () => ch.send({ t: "attach", limit }),
-      onMessage: (m: AgentDaemonMsg) => {
-        if (m.t === "event") events.push(m.event);
-        else if (m.t === "state") state = m.state;
-        else if (m.t === "error") finish(new Error(m.message));
-        else if (m.t === "synced") {
-          truncated = m.truncated;
-          if (!then) return finish();
-          then((msg) => ch.send(msg as never)).then(
-            () => finish(),
-            (e: unknown) => finish(e instanceof Error ? e : new Error(String(e))),
-          );
-        }
-      },
-      onClose: () => finish(done ? undefined : new Error("the thread's channel closed")),
-    });
-  });
 }
 
 /**

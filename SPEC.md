@@ -709,6 +709,30 @@ prompting threads, each time after the user allows it.
 - **Limits**: `ASSISTANT_LIMITER`, 300 requests a minute per user across
   the model and speech routes.
 
+## Bug reports
+
+A bug button sits in the top-right corner of every page
+(`components/bug-report.tsx`). It collects one JSON file
+(`lib/bug-report.ts`) with a note from the user and, if they ask for one, a
+screenshot of the tab (`getDisplayMedia`, preferring the current tab):
+
+- the page: URL, build (the main script's hashed name), desktop app version,
+  browser, viewport, online and visibility;
+- the hub socket and presence;
+- each device: registry entry, connection state, `device.info`, the browser's
+  peer debug info and log, WebRTC stats, the daemon's `debug.peer`, its newest
+  1000 log lines (`debug.logs`: the daemon tees its log into a 2000-line ring,
+  `internal/logring`; older daemons answer with an error, which the report
+  keeps), and its projects and threads (ids, names, statuses only);
+- the open thread, if any: its row, state and processes, and unless the user
+  unticks it, its newest 200 events (text cut at 3000 characters);
+- the assistant's connection, runner and voice state;
+- this page's console from load on, uncaught errors included
+  (`lib/console-log.ts`, imported first in `main.tsx`; the newest 1000).
+
+Nothing is sent anywhere: the user downloads it, copies it, or attaches it to
+the open thread's composer.
+
 ## Hub RPC
 
 The Worker sends a daemon requests of its own as `rpc` messages on the

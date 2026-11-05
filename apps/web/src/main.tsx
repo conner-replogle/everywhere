@@ -1,3 +1,5 @@
+// First, so bug reports have the console from page load on.
+import "@/lib/console-log";
 import { createRouter, RouterProvider } from "@tanstack/react-router";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
