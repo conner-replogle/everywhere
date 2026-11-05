@@ -9,6 +9,7 @@ import (
 	"runtime"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/config"
+	"github.com/conner-replogle/everywhere/daemon/internal/desktop"
 	"github.com/conner-replogle/everywhere/daemon/internal/update"
 	"github.com/conner-replogle/everywhere/daemon/internal/version"
 )
@@ -16,6 +17,10 @@ import (
 // desktopCmd turns remote desktop on or off. It only works on the device
 // itself, so neither a stolen web session nor the server can switch it on.
 func desktopCmd(args []string) error {
+	if len(args) > 1 && args[0] == desktop.ElevateArg && runtime.GOOS == "windows" {
+		// SetupElevated and RemoveElevated run this as administrator.
+		return desktop.ElevateMain(args[1:])
+	}
 	if len(args) != 1 {
 		return errors.New("usage: everywhere desktop enable|disable|status")
 	}
@@ -35,6 +40,11 @@ func desktopCmd(args []string) error {
 				return err
 			}
 		}
+		if runtime.GOOS == "windows" {
+			if err := windowsElevated(); err != nil {
+				return err
+			}
+		}
 		fmt.Println("Remote desktop is on. Open this device in the web app and choose Remote desktop.")
 		fmt.Println("Anyone signed in to your account can then see and control this screen.")
 	case "disable":
@@ -45,6 +55,9 @@ func desktopCmd(args []string) error {
 	case "status":
 		if config.DesktopEnabled() {
 			fmt.Println("Remote desktop: on")
+			if st := desktop.ElevatedStatus(); st != "" {
+				fmt.Println("Admin windows:", st)
+			}
 		} else {
 			fmt.Println("Remote desktop: off (turn it on with `everywhere desktop enable`)")
 		}
@@ -70,6 +83,28 @@ func ensureWorker() error {
 	}
 	if installed {
 		fmt.Printf("Installed %s %s.\n", update.WorkerName, version.Version)
+	}
+	return nil
+}
+
+// windowsElevated sets up the elevated worker, whose input reaches games and
+// programs running as administrator, after a UAC prompt. Declining it isn't
+// an error: remote desktop works without it.
+func windowsElevated() error {
+	exe, err := executable()
+	if err != nil {
+		return err
+	}
+	fmt.Println("Windows asks for administrator rights next, so the mouse and keyboard also reach games")
+	fmt.Println("and programs running as administrator.")
+	switch err := desktop.SetupElevated(exe); {
+	case errors.Is(err, desktop.ErrDeclined):
+		fmt.Println("Skipped: the mouse and keyboard won't reach programs running as administrator.")
+		fmt.Println("Run `everywhere desktop enable` again to set it up.")
+	case err != nil:
+		return fmt.Errorf("setting up input for programs running as administrator: %w", err)
+	default:
+		fmt.Println("The mouse and keyboard reach programs running as administrator too.")
 	}
 	return nil
 }

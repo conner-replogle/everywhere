@@ -109,7 +109,9 @@ func startWorker(cfg ipc.Config, env []string) (*worker, error) {
 		return nil, err
 	}
 	cfgJSON, _ := json.Marshal(cfg)
-	proc, stdin, stdout, err := launchWorker(exe, cfgJSON, env)
+	// Only a person's session gets an elevated worker (Windows): an agent's
+	// input stays out of programs running as administrator.
+	proc, stdin, stdout, err := launchWorker(exe, cfgJSON, env, !cfg.Agent)
 	if err != nil {
 		return nil, err
 	}
@@ -131,6 +133,10 @@ func startWorker(cfg ipc.Config, env []string) (*worker, error) {
 	r := bufio.NewReaderSize(stdout, 1<<20)
 
 	typ, payload, err := ipc.ReadMsg(r)
+	for err == nil && typ == ipc.MsgLog {
+		workerLog(payload)
+		typ, payload, err = ipc.ReadMsg(r)
+	}
 	switch {
 	case err != nil:
 		w.kill()
@@ -181,6 +187,8 @@ func (w *worker) read(r *bufio.Reader) {
 			}
 		case ipc.MsgCursor:
 			w.setCursor(payload)
+		case ipc.MsgLog:
+			workerLog(payload)
 		case ipc.MsgStill, ipc.MsgTyped:
 			select {
 			case w.replies <- reply{typ, payload}:
@@ -193,6 +201,9 @@ func (w *worker) read(r *bufio.Reader) {
 		}
 	}
 }
+
+// workerLog logs a line from a worker that has no stderr of its own.
+func workerLog(line []byte) { slog.Info("desktop worker: " + string(line)) }
 
 func (w *worker) setCursor(p []byte) {
 	if len(p) < ipc.CursorHeaderLen {

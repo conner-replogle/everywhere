@@ -10,9 +10,9 @@ import (
 	"github.com/conner-replogle/everywhere/daemon/internal/desktop/ipc"
 )
 
-// launchWorker starts everywhere-desktop as a child process, with its config
+// launchChild starts everywhere-desktop as a child process, with its config
 // in argv and the protocol on stdin and stdout.
-func launchWorker(exe string, cfgJSON []byte, env []string) (workerProcess, io.WriteCloser, io.ReadCloser, error) {
+func launchChild(exe string, cfgJSON []byte, env []string) (workerProcess, io.WriteCloser, io.ReadCloser, error) {
 	cmd := exec.Command(exe, ipc.WorkerArg, string(cfgJSON))
 	cmd.Env = env
 	cmd.Stderr = os.Stderr

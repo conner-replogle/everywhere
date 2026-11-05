@@ -6,6 +6,11 @@
 // The worker gets its Config as JSON in argv[2]. It writes framed messages to
 // stdout: a type byte, a little-endian u32 length and the payload. It reads
 // commands from stdin: a command byte and a fixed-size payload.
+//
+// An elevated worker on Windows (ElevatedArg) is started by Task Scheduler,
+// which passes neither arguments nor pipes: it connects to ElevatedSocket
+// instead, reads its Config there (WriteConfig), and speaks the same protocol
+// over the connection.
 package ipc
 
 import (
@@ -25,6 +30,11 @@ const WorkerArg = "worker"
 // {"event": "clipboard"} when the clipboard changes. Its Hello comes first.
 const HostArg = "host"
 
+// ElevatedArg starts a Windows worker elevated, from the scheduled task that
+// `everywhere desktop enable` installs, so its input reaches programs running
+// as administrator.
+const ElevatedArg = "elevated"
+
 // Version is this protocol's revision. The worker reports it in Hello; a
 // daemon refuses a worker from another revision (they ship together, so a
 // mismatch means a half-finished install).
@@ -36,6 +46,7 @@ const (
 	MsgFrame  = 'F' // u64 capture µs (CLOCK_MONOTONIC), u8 keyframe, encoded access unit
 	MsgCursor = 'C' // see CursorHeaderLen
 	MsgError  = 'E' // UTF-8 message; the worker exits after it
+	MsgLog    = 'L' // UTF-8 log line, from a worker with no stderr of its own (elevated); may come before Hello
 	// Replies to an agent worker's requests, in order.
 	MsgStill = 'I' // u8 ok; then u32 width, u32 height, RGBA pixels, or a UTF-8 error
 	MsgTyped = 'T' // u8: 0 typed, 1 no key on the layout types it
@@ -127,12 +138,41 @@ type Hello struct {
 	Output        string
 	// InputError says why input isn't available; the session is view-only.
 	InputError string `json:",omitempty"`
+	// Elevated is set by a Windows worker running as administrator, whose
+	// input reaches elevated programs too.
+	Elevated bool `json:",omitempty"`
 }
 
 var LE = binary.LittleEndian
 
 // MaxMessage bounds a message; encoded frames are far smaller.
 const MaxMessage = 64 << 20
+
+// WriteConfig sends an elevated worker its Config: a u32 length and JSON.
+func WriteConfig(w io.Writer, cfgJSON []byte) error {
+	var hdr [4]byte
+	LE.PutUint32(hdr[:], uint32(len(cfgJSON)))
+	if _, err := w.Write(hdr[:]); err != nil {
+		return err
+	}
+	_, err := w.Write(cfgJSON)
+	return err
+}
+
+// ReadConfig reads what WriteConfig sent.
+func ReadConfig(r io.Reader) ([]byte, error) {
+	var hdr [4]byte
+	if _, err := io.ReadFull(r, hdr[:]); err != nil {
+		return nil, err
+	}
+	n := LE.Uint32(hdr[:])
+	if n > 1<<20 {
+		return nil, fmt.Errorf("config too large (%d bytes)", n)
+	}
+	b := make([]byte, n)
+	_, err := io.ReadFull(r, b)
+	return b, err
+}
 
 func ReadMsg(r *bufio.Reader) (byte, []byte, error) {
 	var hdr [5]byte

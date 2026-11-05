@@ -3,12 +3,14 @@
 // Command everywhere-desktop is the daemon's remote desktop worker: it
 // captures and encodes one display (a Hyprland output, or a Windows display)
 // and injects the viewer's input. The
-// daemon starts it per capture and talks to it over stdin/stdout (see
+// daemon starts it per capture and talks to it over stdin/stdout, or over a
+// socket when Task Scheduler starts it elevated on Windows (see
 // internal/desktop/ipc); it is never run by hand.
 package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,42 +30,53 @@ import (
 var le = ipc.LE
 
 func main() {
-	if len(os.Args) < 2 || os.Args[1] != ipc.WorkerArg {
-		if len(os.Args) > 1 && os.Args[1] == "version" {
-			fmt.Println(version.Version)
-			return
-		}
+	switch {
+	case len(os.Args) > 1 && os.Args[1] == "version":
+		fmt.Println(version.Version)
+	case len(os.Args) > 2 && os.Args[1] == ipc.WorkerArg:
+		os.Exit(serve([]byte(os.Args[2]), os.Stdin, os.Stdout, false))
+	case len(os.Args) > 1 && os.Args[1] == ipc.ElevatedArg:
+		os.Exit(serveElevated())
+	default:
 		fmt.Fprintln(os.Stderr, "everywhere-desktop is started by the everywhere daemon for remote desktop sessions.")
 		os.Exit(2)
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)).With("worker", os.Getpid()))
+}
 
-	out := bufio.NewWriterSize(os.Stdout, 1<<20)
+// serve runs one worker: it reads commands from cmds and writes messages to
+// out. Without a stderr of its own (viaSocket), it logs to the daemon too.
+func serve(cfgJSON []byte, cmds io.Reader, out io.Writer, viaSocket bool) int {
+	bw := bufio.NewWriterSize(out, 1<<20)
 	var outMu sync.Mutex
 	write := func(typ byte, parts ...[]byte) error {
 		outMu.Lock()
 		defer outMu.Unlock()
-		if err := ipc.WriteMsg(out, typ, parts...); err != nil {
+		if err := ipc.WriteMsg(bw, typ, parts...); err != nil {
 			return err
 		}
-		return out.Flush()
+		return bw.Flush()
 	}
+	var logs io.Writer = os.Stderr
+	if viaSocket {
+		logs = logWriter(write)
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(logs, nil)).With("worker", os.Getpid()))
 
 	var cfg ipc.Config
-	if len(os.Args) < 3 || json.Unmarshal([]byte(os.Args[2]), &cfg) != nil {
+	if json.Unmarshal(cfgJSON, &cfg) != nil {
 		_ = write(ipc.MsgError, []byte("desktop worker: bad config"))
-		os.Exit(2)
+		return 2
 	}
 	if cfg.Agent {
-		os.Exit(runAgent(cfg, write))
+		return runAgent(cfg, cmds, write)
 	}
 	c, err := capture.Start(cfg)
 	if err != nil {
 		_ = write(ipc.MsgError, []byte(err.Error()))
-		os.Exit(1)
+		return 1
 	}
 	w, h := c.Size()
-	hello := ipc.Hello{Version: ipc.Version, Width: w, Height: h, Output: c.OutputName()}
+	hello := ipc.Hello{Version: ipc.Version, Width: w, Height: h, Output: c.OutputName(), Elevated: elevated()}
 
 	in := &injector{}
 	if cfg.Input {
@@ -79,7 +92,7 @@ func main() {
 	_ = write(ipc.MsgHello, helloJSON)
 
 	go func() {
-		r := bufio.NewReader(os.Stdin)
+		r := bufio.NewReader(cmds)
 		for {
 			cmd, err := r.ReadByte()
 			if err != nil || cmd == ipc.CmdQuit {
@@ -165,13 +178,13 @@ func main() {
 	wg.Wait()
 	in.close()
 	c.Free()
-	os.Exit(code)
+	return code
 }
 
 // runAgent serves an agent's tools: screenshots when asked, and input. There
 // is no stream, so it needs no GPU encoder; each screenshot is its own copy.
-func runAgent(cfg ipc.Config, write func(byte, ...[]byte) error) int {
-	hello := ipc.Hello{Version: ipc.Version, Output: cfg.Output}
+func runAgent(cfg ipc.Config, cmds io.Reader, write func(byte, ...[]byte) error) int {
+	hello := ipc.Hello{Version: ipc.Version, Output: cfg.Output, Elevated: elevated()}
 	in := &injector{}
 	if cfg.Input {
 		dev, err := input.Open(cfg.Output, cfg.Keymap)
@@ -187,7 +200,7 @@ func runAgent(cfg ipc.Config, write func(byte, ...[]byte) error) int {
 	if write(ipc.MsgHello, helloJSON) != nil {
 		return 1
 	}
-	r := bufio.NewReader(os.Stdin)
+	r := bufio.NewReader(cmds)
 	for {
 		cmd, err := r.ReadByte()
 		if err != nil || cmd == ipc.CmdQuit {
@@ -229,6 +242,16 @@ func still(cfg ipc.Config, write func(byte, ...[]byte) error) error {
 	le.PutUint32(hdr[1:], uint32(img.Rect.Dx()))
 	le.PutUint32(hdr[5:], uint32(img.Rect.Dy()))
 	return write(ipc.MsgStill, hdr[:], img.Pix)
+}
+
+// logWriter sends each log line to the daemon as a message.
+type logWriter func(byte, ...[]byte) error
+
+func (w logWriter) Write(p []byte) (int, error) {
+	if err := w(ipc.MsgLog, bytes.TrimRight(p, "\n")); err != nil {
+		return 0, err
+	}
+	return len(p), nil
 }
 
 // injector applies input commands to the virtual devices. After an injection

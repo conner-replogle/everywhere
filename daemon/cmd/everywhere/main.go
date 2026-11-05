@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/config"
+	"github.com/conner-replogle/everywhere/daemon/internal/desktop"
 	"github.com/conner-replogle/everywhere/daemon/internal/hub"
 	"github.com/conner-replogle/everywhere/daemon/internal/ice"
 	"github.com/conner-replogle/everywhere/daemon/internal/logring"
@@ -299,6 +300,14 @@ func selfUpdate() error {
 	if err := update.Latest(exe); err != nil {
 		return err
 	}
+	if desktop.ElevatedInstalled() {
+		// Only an administrator can update the elevated remote desktop worker
+		// (Windows); until then the daemon uses the plain one.
+		fmt.Println("Updating the elevated remote desktop worker; Windows asks for administrator rights...")
+		if err := desktop.SetupElevated(exe); err != nil {
+			fmt.Printf("Not updated (%v): input won't reach programs running as administrator until `everywhere desktop enable` runs.\n", err)
+		}
+	}
 	fmt.Println("Updated. Restarting service...")
 	return service.Restart()
 }
@@ -311,14 +320,18 @@ func uninstall(args []string) error {
 	if err := service.Uninstall(); err != nil {
 		return err
 	}
+	exe, err := executable()
+	if err != nil {
+		return err
+	}
+	// The elevated remote desktop worker (Windows) needs a UAC prompt to remove.
+	if err := desktop.RemoveElevated(exe); err != nil {
+		fmt.Printf("The elevated remote desktop worker is still installed (%v); run `everywhere uninstall` again to remove it.\n", err)
+	}
 	if *purge {
 		if err := purgeData(*purgeScratch); err != nil {
 			return err
 		}
-	}
-	exe, err := executable()
-	if err != nil {
-		return err
 	}
 	if err := removeSelf(exe); err != nil {
 		return err
