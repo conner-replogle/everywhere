@@ -8,6 +8,7 @@ import type { AssistantEntry } from "@everywhere/protocol";
 import type { Message } from "@mariozechner/pi-ai";
 import { api } from "@/lib/api";
 import { assistantRunner, composePrompt } from "./agent";
+import { audioContext, closeAudio, isMobile } from "./audio";
 import { watchStream } from "./levels";
 import { type MicInfo, micInfo, openMic } from "./mic";
 import { LiveBridge, type LiveEvent } from "./live-bridge";
@@ -154,6 +155,8 @@ export class LiveVoice {
     try {
       this.stream = await openMic();
       this.lastMic = micInfo(this.stream);
+      // The visualizer's context, made now that the mic is open.
+      audioContext(true);
       watchStream("mic", this.stream);
       const pc = new RTCPeerConnection();
       this.pc = pc;
@@ -165,7 +168,9 @@ export class LiveVoice {
       pc.ontrack = (e) => {
         const stream = e.streams[0] ?? new MediaStream([e.track]);
         audio.srcObject = stream;
-        watchStream("out", stream);
+        // Feeding the call's audio into Web Audio crackles on phones (and can move it to the earpiece):
+        // there the visualizer shows only the mic.
+        if (!isMobile()) watchStream("out", stream);
         void audio.play().catch(() => {});
       };
       pc.onconnectionstatechange = () => {
@@ -293,6 +298,7 @@ export class LiveVoice {
     this.pc = null;
     watchStream("mic", null);
     watchStream("out", null);
+    closeAudio();
     for (const t of this.stream?.getTracks() ?? []) t.stop();
     this.stream = null;
     if (this.audio) this.audio.srcObject = null;

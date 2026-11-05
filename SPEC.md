@@ -777,6 +777,14 @@ prompting threads, each time after the user allows it.
     (`POST /api/assistant/speak`, Aura 2, MP3, played through Web Audio since
     the CSP has no blob: media). Talking over a reply stops it. Used when
     GPT-Live isn't set up, saying so in the voice bar.
+- **Audio** (`audio.ts`): a voice uses one Web Audio context for
+  everything (Flux's capture, Aura's playback, the visualizer), made after
+  the mic opens and closed when the voice stops. On iOS, opening the mic
+  switches to call audio at another sample rate, and a context made before
+  it, or several at once, crackles. Phones ask for "balanced" latency (a
+  little more buffer, no delay you'd notice), and there GPT-Live's incoming
+  audio isn't fed to Web Audio, so the visualizer shows only the mic. Bug
+  reports include the context's sample rate, latencies and state.
 - **The microphone** is picked per browser in Settings → Assistant
   (`mic.ts`): the desktop app has no picker of its own, and the system's
   default input is often the wrong one (a Bluetooth headset's, a monitor).

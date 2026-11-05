@@ -6,6 +6,7 @@ import { Section } from "@/components/settings-section";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { api, type OpenAIKeyInfo } from "@/lib/api";
+import { audioContext, closeAudio } from "@/lib/assistant/audio";
 import { watchStream } from "@/lib/assistant/levels";
 import { micDeviceId, micInputs, openMic, setMicDeviceId } from "@/lib/assistant/mic";
 import { useVoice } from "@/lib/assistant/voice";
@@ -167,6 +168,7 @@ function Microphone() {
   const stop = useCallback(() => {
     if (!stream.current) return;
     watchStream("mic", null);
+    closeAudio();
     for (const t of stream.current.getTracks()) t.stop();
     stream.current = null;
     setTesting(null);
@@ -177,6 +179,7 @@ function Microphone() {
     try {
       const s = await openMic();
       stream.current = s;
+      audioContext(true);
       watchStream("mic", s);
       setTesting(s.getAudioTracks()[0]?.label || "the default microphone");
       // Names only show once the page may use the mic.

@@ -7,7 +7,8 @@ import type { AssistantListenMsg, AssistantLive } from "@everywhere/protocol";
 import { useSyncExternalStore } from "react";
 import { assistantRunner, composePrompt } from "./agent";
 import { NO, speakable, YES } from "./messages";
-import { outputAnalyser, watchStream } from "./levels";
+import { audioContext, audioInfo, closeAudio, isMobile } from "./audio";
+import { clearOutput, outputAnalyser, watchStream } from "./levels";
 import { type MicInfo, micDeviceId, micInfo, openMic } from "./mic";
 import { voiceEngine } from "./voice-engine";
 import { assistantSync, tabId } from "./sync";
@@ -36,14 +37,11 @@ class Speaker {
   private loop: Promise<void> | null = null;
   onActive: ((speaking: boolean) => void) | null = null;
 
-  /** Must be called from a user gesture on iOS. */
-  unlock(): void {
-    this.ctx ??= new AudioContext();
-    if (!this.out) {
-      this.out = outputAnalyser(this.ctx);
-      this.out.connect(this.ctx.destination);
-    }
-    void this.ctx.resume();
+  /** Plays through the voice's context (audio.ts), given once the mic is open. */
+  attach(ctx: AudioContext): void {
+    this.ctx = ctx;
+    this.out = outputAnalyser(ctx);
+    this.out.connect(ctx.destination);
   }
 
   say(text: string): void {
@@ -105,9 +103,14 @@ class Speaker {
     }
   }
 
-  close(): void {
+  /** Lets go of the context; the voice closes it. */
+  detach(): void {
     this.stop();
-    void this.ctx?.close();
+    if (this.out) {
+      this.out.disconnect();
+      clearOutput(this.out);
+    }
+    this.out = null;
     this.ctx = null;
   }
 }
@@ -162,12 +165,13 @@ class FluxVoice {
   async start(): Promise<void> {
     if (this.on) return;
     this.update({ state: "starting", heard: "", error: null });
-    this.speaker.unlock();
     try {
       this.stream = await openMic();
       this.lastMic = micInfo(this.stream);
+      // One context for capture, speech and the visualizer, made now that the mic is open.
+      this.ctx = audioContext(true);
+      this.speaker.attach(this.ctx);
       watchStream("mic", this.stream);
-      this.ctx = new AudioContext();
       await this.ctx.audioWorklet.addModule("/pcm-worklet.js");
       const source = this.ctx.createMediaStreamSource(this.stream);
       const pcm = new AudioWorkletNode(this.ctx, "pcm");
@@ -292,9 +296,9 @@ class FluxVoice {
     ws?.close();
     for (const t of this.stream?.getTracks() ?? []) t.stop();
     this.stream = null;
-    void this.ctx?.close();
+    this.speaker.detach();
     this.ctx = null;
-    this.speaker.stop();
+    closeAudio();
     this.reply = "";
     this.spoken = 0;
     this.update({ state: "off", heard: "" });
@@ -382,13 +386,14 @@ class Voice {
   }
 
   /** For bug reports: which voice ran last, and GPT-Live's session if it did. */
-  debug(): { engine: "live" | "flux"; chosenMic: string; mic: MicInfo | null; live: unknown } {
+  debug(): { engine: "live" | "flux"; chosenMic: string; mic: MicInfo | null; audio: unknown; live: unknown } {
     const live = this.live as (Engine & { debug?: () => unknown }) | null;
     return {
       engine: this.engine === this.flux ? "flux" : "live",
       // "" is the system default.
       chosenMic: micDeviceId(),
       mic: this.engine.mic(),
+      audio: { mobile: isMobile(), context: audioInfo() },
       live: live?.debug?.() ?? null,
     };
   }

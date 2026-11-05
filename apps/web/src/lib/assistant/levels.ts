@@ -1,14 +1,14 @@
 // How loud the mic and the assistant's voice are right now, for the voice
 // visualizer. Whichever voice is running hands its streams here; the
-// visualizer reads them every frame.
+// visualizer reads them every frame. It measures in the voice's audio
+// context (audio.ts), never a context of its own.
 
-let ctx: AudioContext | null = null;
+import { audioContext } from "./audio";
+
 const analysers: { mic: AnalyserNode | null; out: AnalyserNode | null } = { mic: null, out: null };
 const sources: { mic: AudioNode | null; out: AudioNode | null } = { mic: null, out: null };
 
-function analyser(): AnalyserNode {
-  ctx ??= new AudioContext();
-  void ctx.resume();
+function analyser(ctx: AudioContext): AnalyserNode {
   const a = ctx.createAnalyser();
   a.fftSize = 256;
   a.smoothingTimeConstant = 0.72;
@@ -21,8 +21,9 @@ export function watchStream(which: "mic" | "out", stream: MediaStream | null): v
   sources[which] = null;
   analysers[which] = null;
   if (!stream?.getAudioTracks().length) return;
-  const a = analyser();
-  const src = ctx!.createMediaStreamSource(stream);
+  const ctx = audioContext();
+  const a = analyser(ctx);
+  const src = ctx.createMediaStreamSource(stream);
   src.connect(a);
   sources[which] = src;
   analysers[which] = a;
