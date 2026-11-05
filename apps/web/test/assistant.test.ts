@@ -73,21 +73,35 @@ test("speakable reads markdown as plain speech", () => {
   );
 });
 
-test("transcript keeps short messages whole and names the id of a cut one", async () => {
-  const { transcript } = await import("../src/lib/assistant/tools");
-  const long = `${"plan ".repeat(1500)}THE END`;
-  const out = transcript([
-    { type: "user", id: "u1", text: "make a plan" },
-    { type: "tool", id: "t1", name: "Read", input: { file_path: "/src/app.ts" } },
-    { type: "toolResult", id: "t1", output: "secret file contents" },
-    { type: "turn", status: "completed" },
-    { type: "assistant", id: "a1", text: long },
-  ]);
-  expect(out).not.toContain("app.ts");
-  expect(out).not.toContain("secret");
-  expect(out).not.toContain("turn");
-  expect(out).toContain("USER: make a plan");
-  expect(out).toContain("CLAUDE [message a1]:");
-  expect(out).toContain(`of ${long.length} characters; read_message`);
-  expect(out).not.toContain("THE END");
+describe("transcriptPages", () => {
+  const ev = (type: "user" | "assistant", id: string, text: string) => ({ type, id, text });
+
+  test("has only prompts and replies, whole, newest page first", async () => {
+    const { transcriptPages } = await import("../src/lib/assistant/tools");
+    const pages = transcriptPages(
+      [
+        ev("user", "u1", "first question"),
+        { type: "tool", id: "t1", name: "Read", input: { file_path: "/src/app.ts" } },
+        { type: "toolResult", id: "t1", output: "secret file contents" },
+        ev("assistant", "a1", "a".repeat(60)),
+        { type: "turn", status: "completed" },
+        ev("user", "u2", "second question"),
+        ev("assistant", "a2", "b".repeat(60)),
+      ],
+      120,
+    );
+    expect(pages).toEqual([`USER: second question\n\nCLAUDE: ${"b".repeat(60)}`, `USER: first question\n\nCLAUDE: ${"a".repeat(60)}`]);
+  });
+
+  test("splits a reply too long for a page into parts, losing nothing", async () => {
+    const { transcriptPages } = await import("../src/lib/assistant/tools");
+    const long = `${"x".repeat(250)}THE END`;
+    const pages = transcriptPages([ev("user", "u1", "plan it"), ev("assistant", "a1", long)], 140);
+    for (const p of pages) expect(p.length).toBeLessThanOrEqual(140);
+    expect(pages[0]).toContain("of 3): ");
+    expect(pages[0]).toContain("THE END");
+    expect(pages.at(-1)).toStartWith("USER: plan it");
+    const text = [...pages].reverse().join("").replace(/USER: plan it\n\n|CLAUDE \(part \d of \d\): /g, "");
+    expect(text).toBe(long);
+  });
 });

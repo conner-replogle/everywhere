@@ -6,12 +6,12 @@
 
 import { Agent, type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
 import type { Message, Model } from "@mariozechner/pi-ai";
-import type { AgentDaemonMsg, AssistantApproval, AssistantEntry, AssistantLive } from "@everywhere/protocol";
+import type { AgentDaemonMsg, AgentEvent as ThreadEvent, AssistantApproval, AssistantEntry, AssistantLive } from "@everywhere/protocol";
 import { useSyncExternalStore } from "react";
 import { describeView, type FleetDevice, fleetDevices, fleetOverview, threadStatus } from "./fleet";
 import { CONTEXT_CLOSE, CONTEXT_OPEN, contextFrom, convertToLlm, messageText, userMessage } from "./messages";
 import { assistantSync } from "./sync";
-import { assistantTools, transcript } from "./tools";
+import { assistantTools } from "./tools";
 
 export const ASSISTANT_MODELS = [
   { id: "@cf/zai-org/glm-5.3-flash", name: "GLM 5.3 Flash", contextWindow: 1_000_000 },
@@ -307,7 +307,7 @@ class AssistantRunner {
     if (!peer) return "Its device is offline, so it can't be watched.";
     let lastStatus = "";
     let sawWork = false;
-    const events: Parameters<typeof transcript>[0] = [];
+    const events: ThreadEvent[] = [];
     const ch = peer.openAgent(threadId, {
       onOpen: () => ch.send({ t: "attach", limit: 1 }),
       onMessage: (m: AgentDaemonMsg) => {

@@ -28,13 +28,10 @@ export interface ToolHost {
   watch(device: FleetDevice, threadId: string): string;
 }
 
-/** A long message is cut here in read_thread; read_message has all of it. */
-const MESSAGE_CHARS = 6000;
-const TRANSCRIPT_CHARS = 30_000;
-/** read_message returns this much at a time. */
-const MESSAGE_PAGE = 40_000;
-/** How far back read_message looks for a message. */
-const MESSAGE_LOOKBACK = 2000;
+/** read_thread returns the conversation this much at a time. */
+export const PAGE_CHARS = 30_000;
+/** How far back read_thread reads, in events (tool calls count). */
+const THREAD_EVENTS = 3000;
 const READ_TIMEOUT_MS = 15_000;
 
 function text(s: string): AgentToolResult<undefined> {
@@ -72,10 +69,11 @@ function readAgent(
   threadId: string,
   limit: number,
   then?: (send: (msg: object) => void) => Promise<void>,
-): Promise<{ events: AgentEvent[]; state: AgentState | null }> {
+): Promise<{ events: AgentEvent[]; state: AgentState | null; truncated: boolean }> {
   return new Promise((resolve, reject) => {
     const events: AgentEvent[] = [];
     let state: AgentState | null = null;
+    let truncated = false;
     let done = false;
     const finish = (err?: Error) => {
       if (done) return;
@@ -83,7 +81,7 @@ function readAgent(
       clearTimeout(timer);
       ch.close();
       if (err) reject(err);
-      else resolve({ events, state });
+      else resolve({ events, state, truncated });
     };
     const timer = setTimeout(() => finish(new Error("the device didn't answer in time")), READ_TIMEOUT_MS);
     const ch = peer.openAgent(threadId, {
@@ -93,6 +91,7 @@ function readAgent(
         else if (m.t === "state") state = m.state;
         else if (m.t === "error") finish(new Error(m.message));
         else if (m.t === "synced") {
+          truncated = m.truncated;
           if (!then) return finish();
           then((msg) => ch.send(msg as never)).then(
             () => finish(),
@@ -105,33 +104,42 @@ function readAgent(
   });
 }
 
-/** A prompt or reply; a long one is cut, naming its id for read_message. */
-function messageLine(who: string, id: string, text: string): string {
-  text = text.trim();
-  if (text.length <= MESSAGE_CHARS) return `${who}: ${text}`;
-  return `${who} [message ${id}]: ${text.slice(0, MESSAGE_CHARS)}… (cut at ${MESSAGE_CHARS} of ${text.length} characters; read_message with this id has the rest)`;
-}
-
-/** A thread's conversation as text: only the prompts and replies. */
-export function transcript(events: AgentEvent[], max = TRANSCRIPT_CHARS): string {
-  const lines: string[] = [];
+/**
+ * A thread's conversation as pages of text, newest first: only the prompts
+ * and replies, each whole. One too long for a page is split into parts, so
+ * every page fits in pageChars and nothing is left out.
+ */
+export function transcriptPages(events: AgentEvent[], pageChars = PAGE_CHARS): string[] {
+  const units: string[] = [];
   for (const e of events) {
     if (e.parentId) continue; // subagents
-    if (e.type === "user" && e.text) lines.push(messageLine("USER", e.id, e.text));
-    else if (e.type === "assistant" && e.text.trim()) lines.push(messageLine("CLAUDE", e.id, e.text));
-  }
-  // Newest last; keep the newest that fit.
-  const out: string[] = [];
-  let total = 0;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    total += lines[i]!.length + 1;
-    if (total > max) {
-      out.unshift("(earlier messages left out)");
-      break;
+    if ((e.type !== "user" && e.type !== "assistant") || !e.text?.trim()) continue;
+    const who = e.type === "user" ? "USER" : "CLAUDE";
+    const text = e.text.trim();
+    const room = pageChars - 40; // for the part label
+    if (text.length + who.length + 2 <= pageChars) {
+      units.push(`${who}: ${text}`);
+      continue;
     }
-    out.unshift(lines[i]!);
+    const parts = Math.ceil(text.length / room);
+    for (let i = 0; i < parts; i++) units.push(`${who} (part ${i + 1} of ${parts}): ${text.slice(i * room, (i + 1) * room)}`);
   }
-  return out.join("\n");
+  // Newest page first; messages in order within a page.
+  const pages: string[] = [];
+  let page: string[] = [];
+  let size = 0;
+  for (let i = units.length - 1; i >= 0; i--) {
+    const u = units[i]!;
+    if (page.length && size + u.length + 2 > pageChars) {
+      pages.push(page.join("\n\n"));
+      page = [];
+      size = 0;
+    }
+    page.unshift(u);
+    size += u.length + 2;
+  }
+  if (page.length) pages.push(page.join("\n\n"));
+  return pages;
 }
 
 /** What the thread is doing now, in a line (two if it's waiting on the user). */
@@ -181,48 +189,27 @@ export function assistantTools(host: ToolHost): AgentTool<TSchema>[] {
     tool(
       "read_thread",
       "Reading a thread",
-      "Read a claude thread's recent conversation, only the user's prompts and Claude's replies, and what it's doing or waiting on now. A very long message is cut and names its id: read it whole with read_message.",
+      "Read a claude thread's conversation (only the user's prompts and Claude's replies, in full) and what it's doing or waiting on now. It comes in pages, newest first: page 1 is the latest messages; pass page 2, 3… for older ones. A reply too long for one page is split into parts across pages.",
       Type.Object({
         thread: Type.String({ description: "Thread id, or its name." }),
         device: Type.Optional(Type.String({ description: "Device name or id, if the name is ambiguous." })),
-        events: Type.Optional(Type.Number({ description: "How far back to read, in events, tool calls included (default 600)." })),
+        page: Type.Optional(Type.Number({ description: "1 (the default) is the newest; higher is older." })),
       }),
       async (a) => {
         const { device, thread } = findThread(a.thread, a.device);
         const d = onlineDevice(device.id);
         if (thread.kind === "terminal") return `"${thread.name}" is a terminal; its output can't be read from here.`;
-        const { events, state } = await readAgent(d.peer, thread.id, Math.min(Math.max(a.events ?? 600, 20), 2000));
+        const { events, state, truncated } = await readAgent(d.peer, thread.id, THREAD_EVENTS);
+        const pages = transcriptPages(events);
+        const n = Math.max(1, Math.floor(a.page ?? 1));
         const head = `"${thread.name}" in ${projectName(device, thread.projectId)} on ${device.name}, last active ${ago(thread.lastOpenedAt)}.`;
-        return [head, stateSummary(state), "", transcript(events) || "(no messages yet)"].join("\n");
-      },
-    ),
-    tool(
-      "read_message",
-      "Reading a message",
-      "Read one prompt or reply of a claude thread in full, by the message id read_thread gives for a message it cut. Long ones come in pages: pass from to continue.",
-      Type.Object({
-        thread: Type.String({ description: "Thread id, or its name." }),
-        device: Type.Optional(Type.String()),
-        message: Type.String({ description: "The message id from read_thread." }),
-        from: Type.Optional(Type.Number({ description: "The character to start at (default 0)." })),
-      }),
-      async (a) => {
-        const { device, thread } = findThread(a.thread, a.device);
-        const d = onlineDevice(device.id);
-        const { events } = await readAgent(d.peer, thread.id, MESSAGE_LOOKBACK);
-        const e = events.find(
-          (x): x is Extract<AgentEvent, { type: "user" | "assistant" }> =>
-            (x.type === "user" || x.type === "assistant") && x.id === a.message,
-        );
-        if (!e) {
-          throw new Error(`No message ${a.message} among the thread's newest ${MESSAGE_LOOKBACK} events.`);
-        }
-        const all = e.text ?? "";
-        const from = Math.min(Math.max(0, Math.floor(a.from ?? 0)), all.length);
-        const page = all.slice(from, from + MESSAGE_PAGE);
-        const end = from + page.length;
-        const more = end < all.length ? `\n\n(characters ${from}-${end} of ${all.length}; pass from ${end} for the rest)` : "";
-        return `${e.type === "user" ? "USER" : "CLAUDE"}: ${page}${more}`;
+        if (!pages.length) return [head, stateSummary(state), "", "(no messages yet)"].join("\n");
+        if (n > pages.length) return `${head}\nThere are only ${pages.length} page${pages.length === 1 ? "" : "s"}.`;
+        const older =
+          n < pages.length
+            ? `Page ${n} of ${pages.length}. Older messages: page ${n + 1}.`
+            : `Page ${n} of ${pages.length}, the oldest${truncated ? ` read (the thread has more before its newest ${THREAD_EVENTS} events)` : ""}.`;
+        return [head, stateSummary(state), older, "", pages[n - 1]].join("\n");
       },
     ),
     tool(
