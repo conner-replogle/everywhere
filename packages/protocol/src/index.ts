@@ -828,7 +828,7 @@ export interface RpcMethods {
    */
   "threads.delete": [{ id: string; keepWorktree?: boolean; removeScratch?: boolean }, Record<string, never>];
   "threads.workdir": [{ id: string }, Workdir];
-  /** scratch: threads whose name or claude prompts and replies contain query, newest match first. */
+  /** scratch: threads whose name, or one of whose claude prompts or replies, contains every word of query, newest match first. */
   "threads.search": [{ query: string; limit?: number }, SearchHit[]];
   /**
    * scratch: makes a Scratch thread's folder a project (named name, else the

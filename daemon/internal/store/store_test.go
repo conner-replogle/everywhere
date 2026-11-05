@@ -303,6 +303,13 @@ func TestSearchAgentEvents(t *testing.T) {
 	if hits[0].Snippet != "The frobnicator takes 100%_ of CPU" {
 		t.Errorf("snippet = %q (want the newest match)", hits[0].Snippet)
 	}
+	// Every word, in any order, within one message.
+	if hits, _ := s.SearchAgentEvents("cpu FROBNICATOR takes", 10); len(hits) != 1 || hits[0].ThreadID != b.ID {
+		t.Errorf("words in any order = %+v", hits)
+	}
+	if hits, _ := s.SearchAgentEvents("slow cpu", 10); len(hits) != 0 {
+		t.Errorf("words from two messages matched: %+v", hits)
+	}
 	if hits, _ := s.SearchAgentEvents("deploy", 10); len(hits) != 1 || hits[0].ThreadID != a.ID || hits[0].Snippet != "" {
 		t.Errorf("name search = %+v", hits)
 	}

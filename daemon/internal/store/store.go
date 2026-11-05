@@ -834,28 +834,36 @@ type SearchHit struct {
 	At      int64  `json:"at"`
 }
 
-// SearchAgentEvents finds up to limit threads whose name or prompts and
-// replies (in the thread or its claude tabs) contain query
-// (case-insensitive), most recently matched first. Tabs aren't hits of
-// their own.
+// SearchAgentEvents finds up to limit threads whose name, or one of whose
+// prompts or replies (in the thread or its claude tabs), contains every word
+// of query (case-insensitive, in any order), most recently matched first.
+// Tabs aren't hits of their own.
 func (s *Store) SearchAgentEvents(query string, limit int) ([]SearchHit, error) {
-	query = strings.TrimSpace(query)
-	if query == "" {
+	words := strings.Fields(query)
+	if len(words) == 0 {
 		return []SearchHit{}, nil
 	}
-	like := "%" + strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`).Replace(query) + "%"
+	words = words[:min(len(words), 16)]
+	escape := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`)
+	var args []any
+	var name, text []string
+	for i, w := range words {
+		args = append(args, "%"+escape.Replace(w)+"%")
+		name = append(name, fmt.Sprintf(`name LIKE ?%d ESCAPE '\'`, i+1))
+		text = append(text, fmt.Sprintf(`json_extract(e.event, '$.text') LIKE ?%d ESCAPE '\'`, i+1))
+	}
 	rows, err := s.db.Query(`
 SELECT thread_id, at, text FROM (
   SELECT id AS thread_id, COALESCE(last_opened_at, created_at) AS at, 0 AS seq, '' AS text
-  FROM threads WHERE parent_id IS NULL AND name LIKE ?1 ESCAPE '\'
+  FROM threads WHERE parent_id IS NULL AND `+strings.Join(name, " AND ")+`
   UNION ALL
   -- A claude tab's messages count as its thread's.
   SELECT COALESCE(t.parent_id, t.id), e.at, e.seq, json_extract(e.event, '$.text')
   FROM agent_events e JOIN threads t ON t.id = e.thread_id
   WHERE json_extract(e.event, '$.type') IN ('user', 'assistant')
-    AND json_extract(e.event, '$.text') LIKE ?1 ESCAPE '\'
+    AND `+strings.Join(text, " AND ")+`
 )
-ORDER BY at DESC, seq DESC LIMIT 1000`, like)
+ORDER BY at DESC, seq DESC LIMIT 1000`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -882,9 +890,16 @@ ORDER BY at DESC, seq DESC LIMIT 1000`, like)
 }
 
 // snippet is up to about 200 characters of text around query's first match.
+// snippet is the text around the query, or else around its first word.
 func snippet(text, query string) string {
 	r := []rune(text)
-	i := strings.Index(strings.ToLower(text), strings.ToLower(query))
+	lower := strings.ToLower(text)
+	i := strings.Index(lower, strings.ToLower(strings.TrimSpace(query)))
+	if i < 0 {
+		if w := strings.Fields(query); len(w) > 0 {
+			i = strings.Index(lower, strings.ToLower(w[0]))
+		}
+	}
 	if i < 0 {
 		i = 0
 	}

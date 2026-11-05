@@ -28,8 +28,13 @@ export interface ToolHost {
   watch(device: FleetDevice, threadId: string): string;
 }
 
-const MESSAGE_CHARS = 1500;
-const TRANSCRIPT_CHARS = 14_000;
+/** A long message is cut here in read_thread; read_message has all of it. */
+const MESSAGE_CHARS = 6000;
+const TRANSCRIPT_CHARS = 30_000;
+/** read_message returns this much at a time. */
+const MESSAGE_PAGE = 40_000;
+/** How far back read_message looks for a message. */
+const MESSAGE_LOOKBACK = 2000;
 const READ_TIMEOUT_MS = 15_000;
 
 function text(s: string): AgentToolResult<undefined> {
@@ -100,13 +105,20 @@ function readAgent(
   });
 }
 
+/** A prompt or reply; a long one is cut, naming its id for read_message. */
+function messageLine(who: string, id: string, text: string): string {
+  text = text.trim();
+  if (text.length <= MESSAGE_CHARS) return `${who}: ${text}`;
+  return `${who} [message ${id}]: ${text.slice(0, MESSAGE_CHARS)}… (cut at ${MESSAGE_CHARS} of ${text.length} characters; read_message with this id has the rest)`;
+}
+
 /** A thread's conversation as text: prompts and replies, tool calls as one line each. */
 export function transcript(events: AgentEvent[], max = TRANSCRIPT_CHARS): string {
   const lines: string[] = [];
   for (const e of events) {
     if (e.parentId) continue; // subagents
-    if (e.type === "user" && e.text) lines.push(`USER: ${clip(e.text, MESSAGE_CHARS)}`);
-    else if (e.type === "assistant" && e.text.trim()) lines.push(`CLAUDE: ${clip(e.text, MESSAGE_CHARS)}`);
+    if (e.type === "user" && e.text) lines.push(messageLine("USER", e.id, e.text));
+    else if (e.type === "assistant" && e.text.trim()) lines.push(messageLine("CLAUDE", e.id, e.text));
     else if (e.type === "tool") lines.push(`  · ${e.name} ${inputSummary(e.input)}`.trimEnd());
     else if (e.type === "request") lines.push(`  · asked the user (${e.kind}, ${e.toolName}): ${e.decision}`);
     else if (e.type === "turn" && e.status !== "started") lines.push(`  — turn ${e.status}`);
@@ -174,7 +186,7 @@ export function assistantTools(host: ToolHost): AgentTool<TSchema>[] {
     tool(
       "read_thread",
       "Reading a thread",
-      "Read a claude thread's recent conversation: the user's prompts, Claude's replies, one line per tool call, and what it's doing or waiting on now. Tool output and file contents aren't included.",
+      "Read a claude thread's recent conversation: the user's prompts, Claude's replies, one line per tool call, and what it's doing or waiting on now. Tool output and file contents aren't included. A very long message is cut and names its id: read it whole with read_message.",
       Type.Object({
         thread: Type.String({ description: "Thread id, or its name." }),
         device: Type.Optional(Type.String({ description: "Device name or id, if the name is ambiguous." })),
@@ -187,6 +199,35 @@ export function assistantTools(host: ToolHost): AgentTool<TSchema>[] {
         const { events, state } = await readAgent(d.peer, thread.id, Math.min(Math.max(a.events ?? 300, 20), 1500));
         const head = `Thread "${thread.name}" [id ${thread.id}] in ${projectName(device, thread.projectId)} on ${device.name}, last active ${ago(thread.lastOpenedAt)}.`;
         return [head, stateSummary(state), "", transcript(events) || "(no messages yet)"].join("\n");
+      },
+    ),
+    tool(
+      "read_message",
+      "Reading a message",
+      "Read one prompt or reply of a claude thread in full, by the message id read_thread gives for a message it cut. Long ones come in pages: pass from to continue.",
+      Type.Object({
+        thread: Type.String({ description: "Thread id, or its name." }),
+        device: Type.Optional(Type.String()),
+        message: Type.String({ description: "The message id from read_thread." }),
+        from: Type.Optional(Type.Number({ description: "The character to start at (default 0)." })),
+      }),
+      async (a) => {
+        const { device, thread } = findThread(a.thread, a.device);
+        const d = onlineDevice(device.id);
+        const { events } = await readAgent(d.peer, thread.id, MESSAGE_LOOKBACK);
+        const e = events.find(
+          (x): x is Extract<AgentEvent, { type: "user" | "assistant" }> =>
+            (x.type === "user" || x.type === "assistant") && x.id === a.message,
+        );
+        if (!e) {
+          throw new Error(`No message ${a.message} among the thread's newest ${MESSAGE_LOOKBACK} events.`);
+        }
+        const all = e.text ?? "";
+        const from = Math.min(Math.max(0, Math.floor(a.from ?? 0)), all.length);
+        const page = all.slice(from, from + MESSAGE_PAGE);
+        const end = from + page.length;
+        const more = end < all.length ? `\n\n(characters ${from}-${end} of ${all.length}; pass from ${end} for the rest)` : "";
+        return `${e.type === "user" ? "USER" : "CLAUDE"}: ${page}${more}`;
       },
     ),
     tool(

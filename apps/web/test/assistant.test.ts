@@ -72,3 +72,16 @@ test("speakable reads markdown as plain speech", () => {
     "Two threads: see the api and web. Done.",
   );
 });
+
+test("transcript keeps short messages whole and names the id of a cut one", async () => {
+  const { transcript } = await import("../src/lib/assistant/tools");
+  const long = `${"plan ".repeat(1500)}THE END`;
+  const out = transcript([
+    { type: "user", id: "u1", text: "make a plan" },
+    { type: "assistant", id: "a1", text: long },
+  ]);
+  expect(out).toContain("USER: make a plan");
+  expect(out).toContain("CLAUDE [message a1]:");
+  expect(out).toContain(`of ${long.length} characters; read_message`);
+  expect(out).not.toContain("THE END");
+});

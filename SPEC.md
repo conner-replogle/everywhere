@@ -684,7 +684,9 @@ prompting threads, each time after the user allows it.
   context is built.
 - **Tools** (`tools.ts`): `list_threads`, `read_thread` (attaches the
   thread's `agent:` channel and reads prompts, replies and one line per tool
-  call; no tool output), `search_threads` (every online device),
+  call; no tool output; a message over 6000 characters is cut and names its
+  id), `read_message` (one prompt or reply in full, in 40 000-character
+  pages), `search_threads` (every online device),
   `thread_processes` (and a process's output), `git_status`, `open_thread`,
   `watch_thread`, and, after the user allows the exact action,
   `send_to_thread` and `start_thread` (never `bypassPermissions`). A thread
