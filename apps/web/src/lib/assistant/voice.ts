@@ -10,7 +10,7 @@ import { NO, speakable, YES } from "./messages";
 import { outputAnalyser, watchStream } from "./levels";
 import { type MicInfo, micDeviceId, micInfo, openMic } from "./mic";
 import { voiceEngine } from "./voice-engine";
-import { assistantSync } from "./sync";
+import { assistantSync, tabId } from "./sync";
 
 export type VoiceState = "off" | "starting" | "listening" | "speaking";
 
@@ -179,10 +179,10 @@ class FluxVoice {
       this.update({ error: denied ? "Microphone access was denied." : e instanceof Error ? e.message : String(e) });
       return;
     }
-    // Speak replies as they stream, whichever tab runs the turn.
-    this.reply = assistantSync.getSnapshot().live?.text ?? "";
+    // Speak replies to what was said here as they stream, whichever tab runs the turn.
+    this.reply = ours(assistantSync.getSnapshot().live)?.text ?? "";
     this.spoken = this.reply.length;
-    this.unsubscribeLive = assistantSync.subscribe(() => this.onLive(assistantSync.getSnapshot().live));
+    this.unsubscribeLive = assistantSync.subscribe(() => this.onLive(ours(assistantSync.getSnapshot().live)));
     this.update({ state: "listening" });
   }
 
@@ -242,7 +242,7 @@ class FluxVoice {
   }
 
   private onUtterance(text: string): void {
-    const pending = assistantSync.getSnapshot().live?.approvals[0];
+    const pending = ours(assistantSync.getSnapshot().live)?.approvals[0];
     if (pending) {
       if (YES.test(text)) return assistantRunner.answer(pending.id, true);
       assistantRunner.answer(pending.id, false);
@@ -301,6 +301,11 @@ class FluxVoice {
   }
 }
 
+/** The running turn's live state if it answers this tab; replies to other tabs aren't spoken here. */
+export function ours(live: AssistantLive | null): AssistantLive | null {
+  return live?.for === tabId ? live : null;
+}
+
 interface Engine {
   /** The mic it's using, or used last. */
   mic(): MicInfo | null;
@@ -322,6 +327,18 @@ class Voice {
   private listeners = new Set<() => void>();
   /** Shown when GPT-Live was wanted but Workers AI is used. */
   private notice: string | null = null;
+  /** Why it stopped, when another tab's mic took over. */
+  private movedAway: string | null = null;
+
+  constructor() {
+    // One mic at a time: turning it on in another tab or device turns it off here.
+    assistantSync.onVoiceElsewhere = () => {
+      if (!this.on) return;
+      this.engine.stop();
+      this.movedAway = "Voice moved to another window or device.";
+      this.emit();
+    };
+  }
   private snap: VoiceSnapshot = this.flux.getSnapshot();
 
   getSnapshot = (): VoiceSnapshot => this.snap;
@@ -342,6 +359,7 @@ class Voice {
   async start(): Promise<void> {
     if (this.on) return;
     this.notice = null;
+    this.movedAway = null;
     let engine: Engine = this.flux;
     if (voiceEngine() === "live") {
       const available = await fetch("/api/assistant/live")
@@ -356,6 +374,7 @@ class Voice {
     }
     this.use(engine);
     await engine.start();
+    if (this.on) assistantSync.voiceOn();
   }
 
   stop(): void {
@@ -377,13 +396,14 @@ class Voice {
   private use(engine: Engine): void {
     this.off?.();
     this.engine = engine;
-    const sync = () => {
-      const s = engine.getSnapshot();
-      this.snap = { ...s, notice: s.state !== "off" ? this.notice : null };
-      for (const fn of this.listeners) fn();
-    };
-    this.off = engine.subscribe(sync);
-    sync();
+    this.off = engine.subscribe(() => this.emit());
+    this.emit();
+  }
+
+  private emit(): void {
+    const s = this.engine.getSnapshot();
+    this.snap = { ...s, error: s.error ?? (s.state === "off" ? this.movedAway : null), notice: s.state !== "off" ? this.notice : null };
+    for (const fn of this.listeners) fn();
   }
 }
 

@@ -105,10 +105,12 @@ export class Assistant extends DurableObject<Env> {
         const runner = this.runner();
         const target = runner ? this.socket(runner) : undefined;
         if (!target || runner === me.id) return send(ws, { t: "noRunner", text: m.t === "steer" ? m.text : undefined });
-        return send(target, m.t === "steer" ? { t: "steer", text: m.text } : { t: "approve", id: m.id, allow: m.allow });
+        return send(target, m.t === "steer" ? { t: "steer", text: m.text, from: m.from } : { t: "approve", id: m.id, allow: m.allow });
       }
       case "clear":
         return this.clear(ws);
+      case "voice":
+        return this.broadcast({ t: "voice", tab: String(m.tab) }, ws);
       default:
         return send(ws, { t: "error", message: "unknown message" });
     }

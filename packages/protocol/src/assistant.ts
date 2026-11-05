@@ -25,6 +25,8 @@ export interface AssistantLive {
   approvals: AssistantApproval[];
   /** Cards the reply is writing (show_on_screen calls still streaming), so they fill in as it types. */
   cards?: { id: string; markdown: string }[];
+  /** The tab whose message this turn answers (its tab id): only that tab's voice speaks it. */
+  for?: string;
 }
 
 /** An action the assistant wants to take, shown to the user to allow or deny. */
@@ -48,12 +50,14 @@ export type AssistantClientMsg =
   | { t: "release" }
   /** From the tab running the turn; null when it's over. */
   | { t: "live"; live: AssistantLive | null }
-  /** A prompt for the tab running the turn (sent when another tab holds it). */
-  | { t: "steer"; text: string }
+  /** A prompt for the tab running the turn (sent when another tab holds it); from: the sending tab's id. */
+  | { t: "steer"; text: string; from?: string }
   /** An answer to an approval, for the tab running the turn. */
   | { t: "approve"; id: string; allow: boolean }
   /** Deletes the whole conversation; answered with cleared (to every tab), or an error while a turn runs. */
-  | { t: "clear" };
+  | { t: "clear" }
+  /** This tab's mic is on: the others turn theirs off (one voice at a time). */
+  | { t: "voice"; tab: string };
 
 export type AssistantServerMsg =
   /**
@@ -69,8 +73,10 @@ export type AssistantServerMsg =
   | { t: "appended"; ref: string; seqs: number[] }
   | { t: "runner"; runner: string | null }
   | { t: "live"; live: AssistantLive | null }
-  | { t: "steer"; text: string }
+  | { t: "steer"; text: string; from?: string }
   | { t: "approve"; id: string; allow: boolean }
+  /** Another tab turned its mic on. */
+  | { t: "voice"; tab: string }
   /** The conversation was cleared, through seq. */
   | { t: "cleared"; throughSeq: number }
   /** steer or approve with no tab running a turn. */

@@ -12,7 +12,7 @@ import { describeView, type FleetDevice, fleetDevices, fleetOverview, threadStat
 import { contextFrom, convertToLlm, messageText, userMessage } from "./messages";
 import { assistantSystemPrompt, contextNote } from "./prompt";
 import { cardId, MAX_CARD_MARKDOWN, SHOW_TOOL, screenNote } from "./screen";
-import { assistantSync } from "./sync";
+import { assistantSync, tabId } from "./sync";
 import { assistantTools } from "./tools";
 
 export const ASSISTANT_MODELS = [
@@ -106,6 +106,8 @@ class AssistantRunner {
   private saving: Promise<unknown>[] = [];
   private watches = new Map<string, Watch>();
   private nextApproval = 1;
+  /** The tab whose message the turn is answering; its voice speaks the reply. */
+  private asker: string = tabId;
   /** Shows a thread; set by the app's bridge. */
   navigate: ((deviceId: string, threadId: string) => void) | null = null;
   /** Whether someone is looking at the conversation (the panel or voice). */
@@ -125,7 +127,7 @@ class AssistantRunner {
       watch: (device, threadId) => this.watch(device, threadId),
     });
     this.agent.subscribe((e) => this.onEvent(e));
-    assistantSync.onSteer = (text) => void this.run(text);
+    assistantSync.onSteer = (text, from) => void this.run(text, from);
     assistantSync.onApprove = (id, allow) => this.answer(id, allow);
     assistantSync.onNoRunner = (text) => {
       if (text) void this.run(text);
@@ -158,9 +160,11 @@ class AssistantRunner {
   }
 
   /** Runs a turn here, or adds to the one running. */
-  private async run(text: string): Promise<void> {
+  private async run(text: string, from: string = tabId): Promise<void> {
     const msg = userMessage(text);
+    this.asker = from;
     if (this.snap.busy) {
+      this.publish(true);
       this.agent.steer(msg);
       return;
     }
@@ -231,12 +235,12 @@ class AssistantRunner {
     if (now) {
       clearTimeout(this.liveTimer);
       this.liveTimer = undefined;
-      assistantSync.setLive(this.live);
+      assistantSync.setLive({ ...this.live, for: this.asker });
       return;
     }
     this.liveTimer ??= setTimeout(() => {
       this.liveTimer = undefined;
-      assistantSync.setLive(this.live);
+      assistantSync.setLive({ ...this.live, for: this.asker });
     }, LIVE_THROTTLE_MS);
   }
 
@@ -305,6 +309,7 @@ class AssistantRunner {
     if (this.watches.has(key)) return "You'll be told when it stops working.";
     const peer = device.peer;
     if (!peer) return "Its device is offline, so it can't be watched.";
+    const asker = this.asker;
     let lastStatus = "";
     let sawWork = false;
     const events: ThreadEvent[] = [];
@@ -326,7 +331,7 @@ class AssistantRunner {
         const lastReply = [...events].reverse().find((x) => x.type === "assistant" && !x.parentId);
         const reply = lastReply?.type === "assistant" ? `\nIts last reply: ${lastReply.text.slice(0, 1500)}` : "";
         stop();
-        void this.run(`[Update] The thread "${name}" on ${device.name} ${what}.${reply}`);
+        void this.run(`[Update] The thread "${name}" on ${device.name} ${what}.${reply}`, asker);
       },
       onClose: () => stop(),
     });

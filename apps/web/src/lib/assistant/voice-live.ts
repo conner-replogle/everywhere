@@ -12,7 +12,7 @@ import { watchStream } from "./levels";
 import { type MicInfo, micInfo, openMic } from "./mic";
 import { LiveBridge, type LiveEvent } from "./live-bridge";
 import { messageText, spokenPart } from "./messages";
-import { assistantSync } from "./sync";
+import { assistantSync, tabId } from "./sync";
 import type { VoiceSnapshot } from "./voice";
 
 /** Seed history: the newest this many prompts and replies, each cut to this length. */
@@ -177,7 +177,10 @@ export class LiveVoice {
       this.bridge = new LiveBridge(
         {
           ask: (text) => void assistantRunner.prompt(composePrompt(text, { voice: true })),
-          approvals: () => assistantSync.getSnapshot().live?.approvals ?? [],
+          approvals: () => {
+            const live = assistantSync.getSnapshot().live;
+            return live?.for === tabId ? live.approvals : [];
+          },
           answer: (id, allow) => assistantRunner.answer(id, allow),
         },
         {
@@ -233,17 +236,20 @@ export class LiveVoice {
     let lastSeq = s0.entries.at(-1)?.seq ?? 0;
     const asked = new Set(s0.live?.approvals.map((a) => a.id));
     let running = !!s0.runner;
+    // Whether the turn answers this tab: only those replies are said here.
+    let mine = s0.live?.for === tabId;
     this.unsubscribe = assistantSync.subscribe(() => {
       const s = assistantSync.getSnapshot();
+      if (s.live) mine = s.live.for === tabId;
       for (const e of s.entries) {
         if (e.seq <= lastSeq) continue;
         lastSeq = e.seq;
-        if (e.kind !== "message" || (e.message as Message).role !== "assistant") continue;
+        if (!mine || e.kind !== "message" || (e.message as Message).role !== "assistant") continue;
         const text = messageText(e.message as Message);
         if (text.trim()) this.bridge?.assistantSaid(text);
       }
       for (const a of s.live?.approvals ?? []) {
-        if (asked.has(a.id)) continue;
+        if (asked.has(a.id) || !mine) continue;
         asked.add(a.id);
         this.bridge?.approvalAdded(a);
       }

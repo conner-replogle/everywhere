@@ -34,6 +34,9 @@ const BACKOFF_MIN_MS = 500;
 const BACKOFF_MAX_MS = 15_000;
 const REPLY_TIMEOUT_MS = 15_000;
 
+/** This tab, for as long as it's open (connection ids change when it reconnects). */
+export const tabId = crypto.randomUUID();
+
 class AssistantSync {
   private ws: WebSocket | null = null;
   private running = false;
@@ -60,12 +63,14 @@ class AssistantSync {
   private clearedThrough = 0;
 
   /** Messages for the runner: prompts and approvals from other tabs. */
-  onSteer: ((text: string) => void) | null = null;
+  onSteer: ((text: string, from: string | undefined) => void) | null = null;
   onApprove: ((id: string, allow: boolean) => void) | null = null;
   /** A steer or approval found no runner; it's this tab's to handle. */
   onNoRunner: ((text?: string) => void) | null = null;
   /** The conversation was cleared, from this tab or another. */
   onCleared: (() => void) | null = null;
+  /** Another tab turned its mic on. */
+  onVoiceElsewhere: (() => void) | null = null;
 
   getSnapshot = (): AssistantSnapshot => this.snap;
 
@@ -127,7 +132,12 @@ class AssistantSync {
 
   /** Sends a prompt to the tab running a turn. */
   steer(text: string): boolean {
-    return this.send({ t: "steer", text });
+    return this.send({ t: "steer", text, from: tabId });
+  }
+
+  /** This tab's mic is on: the others turn theirs off. */
+  voiceOn(): void {
+    this.send({ t: "voice", tab: tabId });
   }
 
   approve(id: string, allow: boolean): boolean {
@@ -288,9 +298,12 @@ class AssistantSync {
         if (!this.isRunner) this.update({ live: m.live });
         return;
       case "steer":
-        return this.onSteer?.(m.text);
+        return this.onSteer?.(m.text, m.from);
       case "approve":
         return this.onApprove?.(m.id, m.allow);
+      case "voice":
+        if (m.tab !== tabId) this.onVoiceElsewhere?.();
+        return;
       case "noRunner":
         return this.onNoRunner?.(m.text);
       case "error":

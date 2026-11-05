@@ -739,7 +739,14 @@ prompting threads, each time after the user allows it.
   in Settings → Assistant (`voice-engine.ts`); either way the agent above does
   the work, and what's said is in the conversation. In both, while an
   approval waits, "yes" (and the like) allows it and "no" denies it; anything
-  else denies it and is taken as the next prompt.
+  else denies it and is taken as the next prompt. One mic at a time across
+  the account: turning it on sends `voice` to the Assistant DO, which tells
+  the other tabs, and any that had theirs on turn it off ("Voice moved to
+  another window or device"). A voice speaks, and answers approvals for,
+  only the turns that answer its own tab: each tab has a `tabId`, steers
+  carry `from`, and the runner puts the asking tab in `live.for` (a watched
+  thread's update goes to the tab that asked for the watch). Replies to
+  text typed in another tab aren't spoken.
   - **GPT-Live** (the default, when the account has an OpenAI API key):
     OpenAI's full-duplex voice model, with client delegation
     (`voice-live.ts`, `live-bridge.ts`). The tab's mic and GPT-Live's voice
