@@ -667,7 +667,7 @@ prompting threads, each time after the user says yes to the drafted prompt.
   replays from the latest compaction on; `history` pages back. One tab at a
   time is the **runner** (`claim` / `release`; it lapses when its socket
   closes): it runs turns, appends what they produce, and sends its `live`
-  state (the reply streaming, what it's doing, cards being written) for the
+  state (the reply streaming, what it's doing) for the
   other tabs to show. A prompt from another tab goes to the runner (`steer`;
   `noRunner` if there is none, and the sender runs it). Each turn starts from
   the synced log, so the conversation carries on from any device. The DO
@@ -691,32 +691,12 @@ prompting threads, each time after the user says yes to the drafted prompt.
   `watch_thread`, `send_to_thread` and `start_thread` (never
   `bypassPermissions`). There are no approval cards: prompts are drafted in
   the conversation, and asking is the agent's own rule (its system prompt).
-  It writes the draft in its reply (a quote block; on a card with id
-  "draft" when the user is speaking), works in what the user adds, asks
+  It writes the draft in its reply as a quote block (by voice too), works in
+  what the user adds, asks
   "Ready to send it?", and sends it on the user's yes, never before. A thread
   the assistant prompts or starts is watched: when it stops working, the
   runner gets an `[Update]` message and tells the user. Watches live in the
   runner tab.
-- **On-screen cards**: `show_on_screen {id, markdown}` puts a compact
-  markdown card (at most 1200 characters; headings, lists, checkboxes, small
-  tables, mermaid) up beside the conversation, or updates the card with that
-  id in place; `clear_screen {id?}` takes one or all down. They run in the
-  tab. What's on screen is worked out from the log
-  (`screen.ts`), so every tab shows the same cards and a reload keeps them:
-  a card shown or updated in a turn lasts through the next turn and is gone
-  once a turn after that starts without it; at most three; a call that
-  failed (too long) shows nothing; clearing the conversation clears them.
-  The context note says what will still be on screen. The prompt
-  (`prompt.ts`) asks for a card for three or more items, steps, checklists,
-  tables or diagrams, card first (shown with what's known, then filled in
-  under the same id), and in voice for the gist spoken and the details on
-  the card. Cards fill in as the reply writes them: the runner sends the
-  show_on_screen calls still streaming (pi parses partial arguments) as
-  `live.cards`. While the agent reads a thread and nothing is up, a
-  "Reading…" card holds the place. They fade in and out, flash briefly when
-  updated in place, draw mermaid blocks (loaded on first use; the code shows
-  until then or if it fails), and drop the bullets of checklists.
-  Dismissing one (× or a swipe) hides it in that tab until it's shown again.
 - **The UI** (`components/assistant`): on desktop, a feed on the right over
   the page shows the newest three prompts and replies (no tool calls),
   fading out going up; clicks pass between its bubbles. Hovering it for
@@ -725,8 +705,7 @@ prompting threads, each time after the user says yes to the drafted prompt.
   pointer leaves, on Escape, and never expands by hover while a page field
   has focus. Its "Hide chat" pill (and Ctrl+Shift+.) hides it, leaving a
   "Chat" tab on the right edge with a dot for unread replies; hidden is
-  remembered per browser, and the mic and cards stay. Below it: the cards
-  (two at most), the voice bar, and in the corner the mic with a keyboard
+  remembered per browser, and the mic stays. Below it: the voice bar, and in the corner the mic with a keyboard
   button that opens the composer. The thread composer keeps clear of the
   corner (`--assistant-dock`, less whatever margin the pane already has
   beside the composer). On phones the thread composer is full width and the
@@ -740,15 +719,13 @@ prompting threads, each time after the user says yes to the drafted prompt.
     question…; tap to open the thread with the voice still on, swipe away).
     While it's up, the alert toasts hold and don't time out, and the thread
     under it doesn't count as viewed;
-  - the card, taking the space left;
   - the conversation's newest two lines, plus what's being heard, fading
     upward (tap to open it all and scroll back);
   - the status line;
-  - the large mic. Only the
-  voice screen covers the whole screen. Otherwise a card is a normal card,
-  at the top of the page or above the composer, at most 45% of the screen's
-  height. Cards, the reply bubble and the reading placeholder all swipe
-  away in any direction (`swipe.ts`); a card that scrolls swipes sideways.
+  - the large mic.
+
+  Only the voice screen covers the whole screen. The reply bubble swipes
+  away in any direction (`swipe.ts`).
 - **Model**: Workers AI behind `POST /api/assistant/v1/chat/completions`,
   OpenAI-compatible so pi-ai's provider talks to it as is. The Worker allows
   a fixed list of models (`ASSISTANT_MODELS`), passes the fields Workers AI

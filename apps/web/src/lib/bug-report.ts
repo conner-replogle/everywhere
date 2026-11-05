@@ -8,7 +8,6 @@ import type { Device } from "@/lib/api";
 import { readAgent } from "./agent-read";
 import { assistantSync } from "./assistant/sync";
 import { micInputs } from "./assistant/mic";
-import { screenCards } from "./assistant/screen";
 import { consoleEntries } from "./console-log";
 import { desktop } from "./desktop";
 import { hub } from "./hub";
@@ -123,9 +122,6 @@ async function assistantReport() {
     entries: s.entries.length,
     lastSeq: s.entries.at(-1)?.seq ?? null,
     live: s.live ? { activity: s.live.activity, textChars: s.live.text.length } : null,
-    // What's on screen: ids and sizes, not the cards' content.
-    screen: screenCards(s.entries).map((c) => ({ id: c.id, chars: c.markdown.length, seq: c.seq })),
-    writing: s.live?.cards?.map((c) => c.id) ?? [],
     feedHidden: localStorage.getItem("ew.assistant.feedHidden") === "1",
     ...extra,
   };

@@ -1,10 +1,9 @@
 // The assistant's UI, the same conversation on every device.
 // Desktop: a feed on the right of the page, over it, showing the newest few
 // messages and fading out going up; it expands while you hover over it (or
-// focus it), and can be hidden. Cards the assistant puts up sit below it,
-// and the mic is in the corner. Phones: the mic, the newest reply in a
-// bubble above it, and a full-screen layer for the conversation and for
-// talking; cards take the whole screen.
+// focus it), and can be hidden; the mic is in the corner. Phones: the mic,
+// the newest reply in a bubble above it, a sheet for the conversation, and a
+// full-screen voice screen while talking.
 
 import type { Message } from "@mariozechner/pi-ai";
 import type { AssistantEntry } from "@everywhere/protocol";
@@ -53,7 +52,6 @@ import { assistantSync, useAssistantSync } from "@/lib/assistant/sync";
 import { useVoice, voice } from "@/lib/assistant/voice";
 import { cn } from "@/lib/utils";
 import { holdAlerts } from "@/lib/alerts";
-import { CardStack, useScreenCards } from "./cards";
 import { VoiceInbox } from "./voice-inbox";
 import { useSwipeAway } from "./swipe";
 import { VoiceBars, VoiceRing } from "./visualizer";
@@ -502,7 +500,7 @@ function DesktopAssistant() {
                     setHidden(true);
                     setExpanded(false);
                   }}
-                  title="The mic and on-screen cards stay. Ctrl+Shift+. brings it back."
+                  title="The mic stays. Ctrl+Shift+. brings it back."
                 >
                   <PanelRightCloseIcon /> Hide chat
                 </Button>
@@ -535,7 +533,6 @@ function DesktopAssistant() {
             {open && <Composer autoFocus={typing} onDone={() => setTyping(false)} className="mt-2 shrink-0" />}
           </div>
         )}
-        <CardStack className="pointer-events-auto w-[22rem] shrink-0" />
         <VoiceBar className="w-[22rem] shrink-0" />
         <div className="flex shrink-0 items-end gap-3">
           {!hidden && !open && (
@@ -585,7 +582,6 @@ function PhoneAssistant() {
   const [open, setOpen] = useState(false);
   // Talking opens the voice screen; minimized, it's just the mic (still listening).
   const [minimized, setMinimized] = useState(false);
-  const { cards } = useScreenCards();
   const items = useMemo(() => feedItems(sync.entries), [sync.entries]);
   const talking = v.state !== "off";
   const layer = open || (talking && !minimized);
@@ -651,8 +647,6 @@ function PhoneAssistant() {
           <MicButton />
         </div>
       )}
-      {/* A normal card at the top; only the voice screen gives cards the whole screen. */}
-      {cards.length > 0 && !layer && <PhoneCards mode="float" />}
     </>
   );
 }
@@ -714,10 +708,6 @@ function VoiceConversation({ items }: { items: FeedItem[] }) {
   );
 }
 
-/**
- * The card on a phone. voice: the voice screen's, taking the space it has.
- * float: over the page at the top, its own size. chat: above the message box.
- */
 /** The newest reply for a moment: tap for the conversation, swipe it away. */
 function ReplyToast({ text, onOpen, onDismiss }: { text: string; onOpen: () => void; onDismiss: () => void }) {
   const swipe = useSwipeAway(onDismiss, ["left", "right", "up", "down"]);
@@ -737,26 +727,6 @@ function ReplyToast({ text, onOpen, onDismiss }: { text: string; onOpen: () => v
   );
 }
 
-function PhoneCards({ mode }: { mode: "voice" | "float" | "chat" }) {
-  if (mode === "voice") {
-    return (
-      <div className="flex min-h-0 flex-1 flex-col px-3">
-        <CardStack max={1} fill className="min-h-0 flex-1" />
-      </div>
-    );
-  }
-  return (
-    <div
-      className={cn(
-        "pointer-events-none z-40",
-        mode === "float" ? "fixed inset-x-3 top-[max(0.75rem,env(safe-area-inset-top))]" : "shrink-0 px-3 pb-2",
-      )}
-    >
-      <CardStack max={1} className="pointer-events-auto [&>section]:max-h-[45vh]" />
-    </div>
-  );
-}
-
 /**
  * The conversation, as a sheet from the bottom with the page still showing
  * above it (swipe its top down to close); when talking, the full-screen voice screen.
@@ -764,7 +734,6 @@ function PhoneCards({ mode }: { mode: "voice" | "float" | "chat" }) {
 function PhoneLayer({ voiceMode, onClose, onMinimize }: { voiceMode: boolean; onClose: () => void; onMinimize: () => void }) {
   const sync = useAssistantSync();
   const v = useVoice();
-  const { cards } = useScreenCards();
   const items = useMemo(() => feedItems(sync.entries), [sync.entries]);
   const list = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -800,10 +769,10 @@ function PhoneLayer({ voiceMode, onClose, onMinimize }: { voiceMode: boolean; on
       </header>
       {voiceMode ? (
         <>
-          {/* Top to bottom: what's happening in the threads, the card (a diagram, a list), a few
-              lines of the conversation (tap for all of it), the status, the mic. */}
+          {/* Top to bottom: what's happening in the threads, a few lines of the conversation (tap for
+              all of it), the status, the mic. */}
           <VoiceInbox onOpen={onMinimize} className="max-h-[30dvh] shrink-0 overflow-y-auto overscroll-contain px-3 pb-2" />
-          {cards.length > 0 ? <PhoneCards mode="voice" /> : <div className="min-h-0 flex-1" />}
+          <div className="min-h-0 flex-1" />
           <VoiceConversation items={items} />
           <VoiceBar statusOnly className="mx-3 mb-2" />
           <div className="flex shrink-0 justify-center pt-4 pb-10">
@@ -826,7 +795,6 @@ function PhoneLayer({ voiceMode, onClose, onMinimize }: { voiceMode: boolean; on
             ))}
             <LiveItems />
           </div>
-          {cards.length > 0 && <PhoneCards mode="chat" />}
           {/* The mic above, so the message box has the full width. */}
           <div className="flex shrink-0 flex-col items-end gap-3 px-3 pb-3">
             <MicButton />

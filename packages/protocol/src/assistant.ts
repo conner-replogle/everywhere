@@ -21,8 +21,6 @@ export interface AssistantLive {
   text: string;
   /** What it's doing, e.g. "Reading fix flaky test". */
   activity?: string;
-  /** Cards the reply is writing (show_on_screen calls still streaming), so they fill in as it types. */
-  cards?: { id: string; markdown: string }[];
   /** The tab whose message this turn answers (its tab id): only that tab's voice speaks it. */
   for?: string;
 }
