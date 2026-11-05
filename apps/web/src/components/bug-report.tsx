@@ -2,12 +2,13 @@
 // lib/bug-report.ts) with a note and an optional screenshot, to download,
 // copy, or attach to the open thread's composer.
 
-import { BugIcon, CameraIcon, LoaderCircleIcon, XIcon } from "lucide-react";
+import { BugIcon, CameraIcon, LoaderCircleIcon, SquareTerminalIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 import { useFleet } from "@/components/fleet";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { sendToComposer } from "@/lib/composer-inbox";
+import { desktop } from "@/lib/desktop";
 import { errorMessage } from "@/lib/utils";
 
 /** The thread the page shows, if any. */
@@ -143,6 +144,12 @@ export function BugReport() {
                 <CameraIcon /> Add a screenshot
               </Button>
             )
+          )}
+          {desktop?.devTools && (
+            <Button variant="outline" size="sm" className="self-start" onClick={() => desktop?.devTools?.()}>
+              <SquareTerminalIcon /> Open developer tools
+              <span className="text-xs text-muted-foreground">F12</span>
+            </Button>
           )}
           {status && <p className="text-xs text-muted-foreground">{status}</p>}
           <DialogFooter>

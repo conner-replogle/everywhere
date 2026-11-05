@@ -19,6 +19,38 @@ const SEED_CHARS = 1500;
 const ICE_GATHER_MS = 2000;
 /** GPT-Live counts as speaking until this long after the last of its words. */
 const SPEAKING_MS = 900;
+/**
+ * A session is billed the whole time it's open, quiet or not, and OpenAI
+ * only closes it at its duration limit: close it after this long with
+ * nothing said and nothing running.
+ */
+export const LIVE_IDLE_MS = 2 * 60 * 1000;
+const IDLE_CHECK_MS = 10_000;
+/** Recent GPT-Live events kept for bug reports. */
+const DEBUG_EVENTS = 150;
+
+const CLOSE_REASONS: Record<string, string> = {
+  expired: "The voice session reached OpenAI's time limit. Tap the mic to start a new one.",
+  content: "OpenAI's safety filter ended the voice session.",
+  connection_lost: "The voice connection to OpenAI was lost.",
+  remote_hangup: "OpenAI ended the voice session.",
+};
+
+/** What a bug report says about the voice session. */
+export interface LiveDebug {
+  sessionId: string | null;
+  startedAt: number | null;
+  endedAt: number | null;
+  closeReason: string | null;
+  /** From session.usage.updated: seconds billed so far, and how full the context is. */
+  usageSeconds: number | null;
+  contextRatio: number | null;
+  connectionState: string | null;
+  iceConnectionState: string | null;
+  /** The newest events, oldest first; transcript deltas are only counted. */
+  events: { at: number; type: string; detail?: string }[];
+  transcriptDeltas: number;
+}
 
 export const LIVE_INSTRUCTIONS = `You are the voice of the user's assistant in Everywhere, an app that runs terminals and Claude Code threads on all of their machines.
 
@@ -50,6 +82,10 @@ export class LiveVoice {
   private bridge: LiveBridge | null = null;
   private unsubscribe: (() => void) | null = null;
   private speakingTimer: ReturnType<typeof setTimeout> | undefined;
+  private idleTimer: ReturnType<typeof setInterval> | undefined;
+  private lastActivity = 0;
+  private dbg: LiveDebug = emptyDebug();
+  private loggedTranscript = new Set<string>();
 
   getSnapshot = (): VoiceSnapshot => this.snap;
   subscribe = (fn: () => void): (() => void) => {
@@ -62,8 +98,50 @@ export class LiveVoice {
     for (const fn of this.listeners) fn();
   }
 
+  debug(): LiveDebug {
+    return {
+      ...this.dbg,
+      events: this.dbg.events.slice(),
+      connectionState: this.pc?.connectionState ?? this.dbg.connectionState,
+      iceConnectionState: this.pc?.iceConnectionState ?? this.dbg.iceConnectionState,
+    };
+  }
+
+  private record(e: LiveEvent): void {
+    if (e.type === "session.input_transcript.delta" || e.type === "session.output_transcript.delta") {
+      // Only the first of each, to show it's coming.
+      this.dbg.transcriptDeltas++;
+      if (!this.loggedTranscript.has(e.type)) {
+        this.loggedTranscript.add(e.type);
+        console.info("GPT-Live:", e.type === "session.input_transcript.delta" ? "hearing you" : "speaking");
+      }
+      return;
+    }
+    if (e.type === "session.usage.updated") {
+      const u = e as { usage?: { seconds?: number }; context_window?: { usage_ratio?: number } };
+      this.dbg.usageSeconds = u.usage?.seconds ?? this.dbg.usageSeconds;
+      this.dbg.contextRatio = u.context_window?.usage_ratio ?? this.dbg.contextRatio;
+    }
+    const detail =
+      e.type === "session.closed" || e.type === "error" ? JSON.stringify(e).slice(0, 500) : typeof e.reason === "string" ? e.reason : undefined;
+    this.dbg.events.push({ at: Date.now(), type: e.type, ...(detail ? { detail } : {}) });
+    if (e.type !== "session.usage.updated") console.info("GPT-Live:", e.type, detail ?? "");
+    if (this.dbg.events.length > DEBUG_EVENTS) this.dbg.events.splice(0, this.dbg.events.length - DEBUG_EVENTS);
+  }
+
+  /** Closes a session nobody is using. */
+  private checkIdle(): void {
+    const s = assistantSync.getSnapshot();
+    if (s.runner || s.live?.approvals.length) this.lastActivity = Date.now();
+    if (Date.now() - this.lastActivity < LIVE_IDLE_MS) return;
+    this.stop();
+    this.update({ error: "Voice turned off after two quiet minutes. Tap the mic to talk again." });
+  }
+
   async start(): Promise<void> {
     if (this.snap.state !== "off") return;
+    this.dbg = { ...emptyDebug(), startedAt: Date.now() };
+    this.loggedTranscript.clear();
     this.update({ state: "starting", heard: "", error: null });
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({
@@ -81,6 +159,7 @@ export class LiveVoice {
         void audio.play().catch(() => {});
       };
       pc.onconnectionstatechange = () => {
+        this.dbg.events.push({ at: Date.now(), type: "pc.connectionstate", detail: pc.connectionState });
         if (pc.connectionState === "failed") this.fail("The voice connection dropped.");
       };
       const dc = pc.createDataChannel("oai-events");
@@ -96,15 +175,27 @@ export class LiveVoice {
             if (dc.readyState === "open") dc.send(JSON.stringify(e));
           },
           onStarted: () => this.update({ state: "listening" }),
-          onHeard: (heard) => this.update({ heard }),
-          onSaid: () => this.speaking(),
-          onClosed: (reason) => (reason === "close_requested" ? this.stop() : this.fail(`The voice session ended (${reason}).`)),
+          onHeard: (heard) => {
+            this.lastActivity = Date.now();
+            this.update({ heard });
+          },
+          onSaid: () => {
+            this.lastActivity = Date.now();
+            this.speaking();
+          },
+          onClosed: (reason) => {
+            this.dbg.closeReason = reason;
+            if (reason === "close_requested") this.stop();
+            else this.fail(CLOSE_REASONS[reason] ?? `The voice session ended (${reason}).`);
+          },
         },
       );
       dc.onmessage = (ev) => {
         if (typeof ev.data !== "string") return;
         try {
-          this.bridge?.handle(JSON.parse(ev.data) as LiveEvent);
+          const e = JSON.parse(ev.data) as LiveEvent;
+          this.record(e);
+          this.bridge?.handle(e);
         } catch {}
       };
 
@@ -116,7 +207,10 @@ export class LiveVoice {
         input: seedHistory(assistantSync.getSnapshot().entries),
       });
       await pc.setRemoteDescription({ type: "answer", sdp: answer.sdp });
+      this.dbg.sessionId = answer.id;
       this.follow();
+      this.lastActivity = Date.now();
+      this.idleTimer = setInterval(() => this.checkIdle(), IDLE_CHECK_MS);
     } catch (e) {
       const denied = e instanceof DOMException && e.name === "NotAllowedError";
       this.fail(denied ? "Microphone access was denied." : e instanceof Error ? e.message : String(e));
@@ -164,6 +258,13 @@ export class LiveVoice {
 
   stop(): void {
     clearTimeout(this.speakingTimer);
+    clearInterval(this.idleTimer);
+    this.idleTimer = undefined;
+    if (this.pc) {
+      this.dbg.endedAt = Date.now();
+      this.dbg.connectionState = this.pc.connectionState;
+      this.dbg.iceConnectionState = this.pc.iceConnectionState;
+    }
     this.unsubscribe?.();
     this.unsubscribe = null;
     this.bridge?.close();
@@ -197,4 +298,19 @@ function gathered(pc: RTCPeerConnection): Promise<void> {
     const timer = setTimeout(done, ICE_GATHER_MS);
     pc.addEventListener("icegatheringstatechange", check);
   });
+}
+
+function emptyDebug(): LiveDebug {
+  return {
+    sessionId: null,
+    startedAt: null,
+    endedAt: null,
+    closeReason: null,
+    usageSeconds: null,
+    contextRatio: null,
+    connectionState: null,
+    iceConnectionState: null,
+    events: [],
+    transcriptDeltas: 0,
+  };
 }

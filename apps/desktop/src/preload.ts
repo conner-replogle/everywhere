@@ -27,6 +27,9 @@ const bridge: DesktopBridge = {
   openExternal(url) {
     ipcRenderer.send("ew:open-external", url);
   },
+  devTools() {
+    ipcRenderer.send("ew:devtools");
+  },
   favicon(url) {
     return ipcRenderer.invoke("ew:favicon", url) as Promise<string | null>;
   },

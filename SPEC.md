@@ -718,8 +718,14 @@ prompting threads, each time after the user allows it.
     hand-off's id, until the turn ends; later ones (a watched thread
     finishing) go without one. An approval is asked the same way; the
     hand-off after a yes or no gets a quiet `session.thinking.append`.
-    Stopping sends `session.close`. About $0.05 a minute on the user's
-    OpenAI account.
+    Stopping sends `session.close`. A session is billed while it's open,
+    quiet or not, and OpenAI only closes it at its duration limit
+    (`expired`), so the tab closes it after two minutes with nothing said by
+    either side and no turn or approval waiting. Why it stopped stays in the
+    voice bar until dismissed. About $0.05 a minute on the user's OpenAI
+    account. Bug reports include the session: its id, when it started and
+    ended, the close reason, seconds used, connection state and the newest
+    event types.
   - **Workers AI**: the mic goes to `GET /api/assistant/listen` as 16 kHz
     PCM (`public/pcm-worklet.js`, a file because the CSP blocks blob:
     scripts) and on to Deepgram Flux, which marks the end of each turn; each

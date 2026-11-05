@@ -49,6 +49,9 @@ export function Assistant() {
   const sync = useAssistantSync();
   const runner = useAssistantRunner();
   const working = runner.busy || !!sync.runner;
+  // Why the voice stopped stays up until it's dismissed or the voice starts again.
+  const [dismissed, setDismissed] = useState<string | null>(null);
+  const showError = v.state === "off" && !!v.error && v.error !== dismissed;
 
   useEffect(() => {
     assistantRunner.attended = open || v.state !== "off";
@@ -62,7 +65,7 @@ export function Assistant() {
       {/* The panel has its own mic. */}
       {!open && (
         <div className="pointer-events-none fixed right-4 bottom-24 z-40 flex items-end gap-2 md:bottom-20">
-          {v.state !== "off" && <VoiceBar />}
+          {(v.state !== "off" || showError) && <VoiceBar onDismiss={showError ? () => setDismissed(v.error) : undefined} />}
           <div className="pointer-events-auto flex flex-col items-center gap-2">
             <button
               type="button"
@@ -107,8 +110,8 @@ export function Assistant() {
   );
 }
 
-/** While talking: what it heard, what it's doing, and what it's asking. */
-function VoiceBar() {
+/** While talking: what it heard, what it's doing, and what it's asking; after, why it stopped. */
+function VoiceBar({ onDismiss }: { onDismiss?: () => void }) {
   const v = useVoice();
   const sync = useAssistantSync();
   const live = sync.live;
@@ -126,12 +129,19 @@ function VoiceBar() {
             : "Listening…";
   return (
     <div className="pointer-events-auto mb-1 w-[min(22rem,calc(100vw-6rem))] rounded-xl border border-border bg-background/95 p-3 text-sm shadow-xl backdrop-blur">
-      {approval ? (
+      {approval && !onDismiss ? (
         <ApprovalCard approval={approval} compact />
       ) : (
-        <p className={cn("line-clamp-3", v.heard ? "text-foreground" : "text-muted-foreground", v.error && "text-destructive")}>
-          {line}
-        </p>
+        <div className="flex items-start gap-2">
+          <p className={cn("line-clamp-3 flex-1", v.heard ? "text-foreground" : "text-muted-foreground", v.error && "text-destructive")}>
+            {line}
+          </p>
+          {onDismiss && (
+            <Button variant="ghost" size="icon-sm" onClick={onDismiss} aria-label="Dismiss the voice message">
+              <XIcon />
+            </Button>
+          )}
+        </div>
       )}
       {v.notice && <p className="mt-1.5 text-xs text-muted-foreground">{v.notice}</p>}
     </div>

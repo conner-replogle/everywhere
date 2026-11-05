@@ -56,6 +56,8 @@ export interface DesktopBridge {
     /** Hold (or resume) what the page sends: the channel's buffer is full. */
     pause(id: number, paused: boolean): void;
   };
+  /** Opens or closes the app window's developer tools. Missing in apps from before it. */
+  devTools?(): void;
   /** A page's favicon as a data: URL (fetched with the web tabs' cookies), or null. */
   favicon(url: string): Promise<string | null>;
   /** The app's own updates. Missing in apps from before it. */

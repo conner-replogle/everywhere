@@ -345,6 +345,12 @@ class Voice {
     this.engine.stop();
   }
 
+  /** For bug reports: which voice ran last, and GPT-Live's session if it did. */
+  debug(): { engine: "live" | "flux"; live: unknown } {
+    const live = this.live as (Engine & { debug?: () => unknown }) | null;
+    return { engine: this.engine === this.flux ? "flux" : "live", live: live?.debug?.() ?? null };
+  }
+
   private use(engine: Engine): void {
     this.off?.();
     this.engine = engine;

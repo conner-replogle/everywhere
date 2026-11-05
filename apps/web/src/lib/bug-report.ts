@@ -110,7 +110,8 @@ async function assistantReport() {
   const s = assistantSync.getSnapshot();
   const extra = await attempt(async () => {
     const [{ assistantRunner, modelId }, { voice }] = await Promise.all([import("./assistant/agent"), import("./assistant/voice")]);
-    return { model: modelId(), runner: assistantRunner.getSnapshot(), voice: voice.getSnapshot() };
+    // turn: this tab's agent (runner, above, is the connection running a turn).
+    return { model: modelId(), turn: assistantRunner.getSnapshot(), voice: { ...voice.getSnapshot(), ...voice.debug() } };
   });
   return {
     status: s.status,

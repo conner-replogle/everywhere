@@ -98,6 +98,16 @@ function createWindow() {
     },
   });
   win = w;
+  // The usual keys for the app's own developer tools (a web tab handles them for its page).
+  w.webContents.on("before-input-event", (e, input) => {
+    if (input.type !== "keyDown") return;
+    const mod = process.platform === "darwin" ? input.meta : input.control;
+    const key = input.key.toLowerCase();
+    if (key === "f12" || (mod && input.shift && !input.alt && key === "i")) {
+      e.preventDefault();
+      w.webContents.toggleDevTools();
+    }
+  });
   if (p.maximized) w.maximize();
   w.once("ready-to-show", () => w.show());
   w.on("close", () => savePlacement(w));
@@ -205,6 +215,7 @@ function setMenu() {
       submenu: [
         // Not Ctrl+R: in a web tab that reloads the page (the tab handles it).
         { label: "Reload app", accelerator: "CmdOrCtrl+Shift+Alt+R", click: () => win?.webContents.reload() },
+        // F12 and Ctrl+Shift+I work too (see createWindow); this one also works in a web tab.
         { label: "App developer tools", accelerator: "CmdOrCtrl+Shift+Alt+I", click: () => win?.webContents.toggleDevTools() },
         { type: "separator" },
         { role: "togglefullscreen" },
@@ -247,6 +258,7 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.on("ew:tunnel-pause", (e, id: number, paused: boolean) => fromApp(e) && tunnels.pause(id, !!paused));
   ipcMain.handle("ew:favicon", (e, url: unknown) => (fromApp(e) && typeof url === "string" ? favicon(url) : null));
   ipcMain.handle("ew:update-state", (e) => (fromApp(e) ? updateState() : null));
+  ipcMain.on("ew:devtools", (e) => fromApp(e) && win?.webContents.toggleDevTools());
   ipcMain.on("ew:update-check", (e) => fromApp(e) && checkNow());
   ipcMain.on("ew:update-install", (e) => fromApp(e) && installNow());
 
