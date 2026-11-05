@@ -647,6 +647,66 @@ machine, a quick task, some files. Feature `scratch`.
   panel points to Scratch on the devices that are online. No thread list is
   cached for offline devices.
 
+## Assistant
+
+One conversation per account, about every device, project and thread at
+once, by voice or text. It isn't on any device and can't read files or run
+commands: it sees the fleet through the app's own RPC and gets work done by
+prompting threads, each time after the user allows it.
+
+- **Where it runs**: the agent loop (pi's `@mariozechner/pi-agent-core`) runs
+  in a browser tab (`apps/web/src/lib/assistant`). Its tools run there too,
+  over the tab's WebRTC connections, so the Worker gains no way to reach a
+  device. Bundling pi-ai whole fails (it registers every provider), so
+  `vite.config.ts` aliases it to `lib/assistant/pi-ai.ts` (the loop's pieces
+  and the OpenAI-compatible provider) and leaves out its model catalog.
+- **The conversation** lives in the `Assistant` DO (one per account, SQLite
+  `entries (seq, at, kind, data)`), over `GET /api/assistant/ws`
+  (`AssistantClientMsg` / `AssistantServerMsg` in the protocol). An entry is
+  a pi-ai message (user, assistant, toolResult) or a compaction. `attach`
+  replays from the latest compaction on; `history` pages back. One tab at a
+  time is the **runner** (`claim` / `release`; it lapses when its socket
+  closes): it runs turns, appends what they produce, and sends its `live`
+  state (the reply streaming, what it's doing, approvals waiting) for the
+  other tabs to show. A prompt from another tab goes to the runner (`steer`;
+  `noRunner` if there is none, and the sender runs it). Each turn starts from
+  the synced log, so the conversation carries on from any device. The DO
+  stores it as plain text; revoking a session closes its sockets.
+- **Context**: a system prompt with the fleet overview (every device, its
+  projects, and threads working, waiting or touched in the last three days),
+  then the latest compaction's summary and the messages after it. Each user
+  message ends with a `<context>` note: what the user is looking at (from
+  the URL), any text selected, and whether it was spoken; the model is told
+  it's where they are, not necessarily what they mean. After a turn, past
+  ~48k tokens, everything but the last ~10 messages (cut at a user message)
+  is summarized by the model into a compaction entry. A tool call whose
+  result never arrived (a tab closed mid-turn) gets an error result when the
+  context is built.
+- **Tools** (`tools.ts`): `list_threads`, `read_thread` (attaches the
+  thread's `agent:` channel and reads prompts, replies and one line per tool
+  call; no tool output), `search_threads` (every online device),
+  `thread_processes` (and a process's output), `git_status`, `open_thread`,
+  `watch_thread`, and, after the user allows the exact action,
+  `send_to_thread` and `start_thread` (never `bypassPermissions`). A thread
+  the assistant prompts or starts is watched: when it stops working, the
+  runner gets an `[Update]` message and tells the user. Watches live in the
+  runner tab.
+- **Model**: Workers AI behind `POST /api/assistant/v1/chat/completions`,
+  OpenAI-compatible so pi-ai's provider talks to it as is. The Worker allows
+  a fixed list of models (`ASSISTANT_MODELS`), passes the fields Workers AI
+  takes, and flattens content to strings (`workers-ai.ts`). The model is
+  picked per browser; GLM 5.3 Flash by default.
+- **Voice**: one mic button on every page. The mic goes to
+  `GET /api/assistant/listen` as 16 kHz PCM (`public/pcm-worklet.js`, a file
+  because the CSP blocks blob: scripts) and on to Deepgram Flux, which marks
+  the end of each turn; each turn is a prompt. Replies are spoken a sentence
+  at a time as they stream (`POST /api/assistant/speak`, Aura 2, MP3, played
+  through Web Audio since the CSP has no blob: media). Talking over a reply
+  stops it. While an approval waits, "yes" (and the like) allows it and "no"
+  denies it; anything else denies it and is taken as the next prompt.
+- **Limits**: `ASSISTANT_LIMITER`, 300 requests a minute per user across
+  the model and speech routes.
+
 ## Hub RPC
 
 The Worker sends a daemon requests of its own as `rpc` messages on the

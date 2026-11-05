@@ -1,0 +1,74 @@
+// The assistant: one conversation per account that isn't on any device. Its
+// agent runs in a browser tab (apps/web/src/lib/assistant); the Worker's
+// Assistant DO keeps the conversation and relays live state between the
+// account's tabs over GET /api/assistant/ws. JSON text frames both ways.
+
+/**
+ * One entry in the conversation log. `message` is a pi-ai message (user,
+ * assistant or toolResult), kept as the agent produced it. A compaction
+ * stands in for every message up to `throughSeq` when building the model's
+ * context; the messages stay in the log.
+ */
+export type AssistantEntryData =
+  | { kind: "message"; message: unknown }
+  | { kind: "compaction"; summary: string; throughSeq: number };
+
+export type AssistantEntry = AssistantEntryData & { seq: number; at: number };
+
+/** What the running turn is doing, for tabs other than the one running it. */
+export interface AssistantLive {
+  /** The reply streamed so far, not yet logged. */
+  text: string;
+  /** What it's doing, e.g. "Reading fix flaky test". */
+  activity?: string;
+  /** Actions waiting for the user's yes. */
+  approvals: AssistantApproval[];
+}
+
+/** An action the assistant wants to take, shown to the user to allow or deny. */
+export interface AssistantApproval {
+  id: string;
+  /** e.g. "Send to fix flaky test on hetzner-1". */
+  title: string;
+  /** The exact text that will be sent, if any. */
+  detail?: string;
+}
+
+export type AssistantClientMsg =
+  /** Replays the log after afterSeq; without it, from the latest compaction on. */
+  | { t: "attach"; afterSeq?: number }
+  /** The page of entries before beforeSeq, newest last. */
+  | { t: "history"; beforeSeq: number; limit?: number }
+  /** Adds entries to the log; answered with appended (and entries to every tab). */
+  | { t: "append"; ref: string; entries: AssistantEntryData[] }
+  /** Asks to run turns. Granted when no other connected tab is running one. */
+  | { t: "claim" }
+  | { t: "release" }
+  /** From the tab running the turn; null when it's over. */
+  | { t: "live"; live: AssistantLive | null }
+  /** A prompt for the tab running the turn (sent when another tab holds it). */
+  | { t: "steer"; text: string }
+  /** An answer to an approval, for the tab running the turn. */
+  | { t: "approve"; id: string; allow: boolean };
+
+export type AssistantServerMsg =
+  /** runner: the connection running a turn, if any. */
+  | { t: "hello"; you: string; runner: string | null; live: AssistantLive | null }
+  /** initial: the attach replay; more frames may follow until synced. */
+  | { t: "entries"; entries: AssistantEntry[]; initial?: boolean }
+  | { t: "synced" }
+  | { t: "history"; entries: AssistantEntry[]; more: boolean }
+  | { t: "appended"; ref: string; seqs: number[] }
+  | { t: "runner"; runner: string | null }
+  | { t: "live"; live: AssistantLive | null }
+  | { t: "steer"; text: string }
+  | { t: "approve"; id: string; allow: boolean }
+  /** steer or approve with no tab running a turn. */
+  | { t: "noRunner"; text?: string }
+  | { t: "error"; message: string };
+
+/** Speech to text on GET /api/assistant/listen: sent to the browser as JSON. */
+export type AssistantListenMsg =
+  /** event: Flux's; transcript is the turn's text so far. */
+  | { t: "turn"; event: "Update" | "StartOfTurn" | "EagerEndOfTurn" | "TurnResumed" | "EndOfTurn"; transcript: string }
+  | { t: "error"; message: string };

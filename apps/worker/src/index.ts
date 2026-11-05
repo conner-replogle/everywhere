@@ -4,6 +4,7 @@ import { randomId, randomToken, sha256 } from "./crypto";
 import { HUB_ID_HEADER, HUB_KIND_HEADER, HUB_SESSION_HEADER } from "./hub";
 import { failingScript, type InstallPlatform, installScript } from "./install";
 import { WORKER_PLUGINS } from "./plugins";
+import { assistant } from "./routes/assistant";
 import { auth, requireUser } from "./routes/auth";
 import { prefs } from "./routes/prefs";
 import { iceServers, TURN_TTL_SECONDS } from "./turn";
@@ -11,6 +12,7 @@ import { apiGuard, clientIp, originAllowed, rateLimited, tooMany } from "./secur
 import type { App } from "./types";
 
 export { AccountHub } from "./hub";
+export { Assistant } from "./assistant";
 
 const ENROLL_TOKEN_TTL_MS = 15 * 60 * 1000;
 
@@ -19,6 +21,7 @@ const app = new Hono<App>();
 app.use("/api/*", apiGuard);
 app.route("/api/auth", auth);
 app.route("/api/prefs", prefs);
+app.route("/api/assistant", assistant);
 for (const p of WORKER_PLUGINS) {
   for (const r of p.routes ?? []) app.route(r.path, r.app);
 }

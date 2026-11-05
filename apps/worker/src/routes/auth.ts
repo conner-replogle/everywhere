@@ -93,7 +93,15 @@ async function newRecoveryCodes(env: Env, userId: string): Promise<string[]> {
 async function revokeSessions(env: Env, userId: string, sessionIds: string[]): Promise<void> {
   if (sessionIds.length === 0) return;
   await env.DB.batch(sessionIds.map((id) => env.DB.prepare("DELETE FROM sessions WHERE id_hash = ? AND user_id = ?").bind(id, userId)));
-  await env.HUB.get(env.HUB.idFromName(userId)).revokeSessions(sessionIds);
+  await closeSockets(env, userId, sessionIds);
+}
+
+/** Closes the hub and assistant sockets that sessions opened. */
+async function closeSockets(env: Env, userId: string, sessionIds: string[]): Promise<void> {
+  await Promise.all([
+    env.HUB.get(env.HUB.idFromName(userId)).revokeSessions(sessionIds),
+    env.ASSISTANT.get(env.ASSISTANT.idFromName(userId)).revokeSessions(sessionIds),
+  ]);
 }
 
 async function otherSessionIds(env: Env, userId: string, keep: string): Promise<string[]> {
@@ -195,7 +203,7 @@ auth.post("/login/mfa", async (c) => {
 auth.post("/logout", async (c) => {
   const s = await sessionUser(c);
   await destroySession(c);
-  if (s) await c.env.HUB.get(c.env.HUB.idFromName(s.user.id)).revokeSessions([s.sessionId]);
+  if (s) await closeSockets(c.env, s.user.id, [s.sessionId]);
   return c.json({});
 });
 

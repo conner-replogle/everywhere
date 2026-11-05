@@ -1,11 +1,14 @@
 import { createFileRoute, Outlet, redirect, useNavigate } from "@tanstack/react-router";
-import { useEffect } from "react";
+import { lazy, Suspense, useEffect } from "react";
 import { Alerts } from "@/components/alerts";
 import { FleetProvider } from "@/components/fleet";
 import { auth } from "@/lib/auth";
 import { hub } from "@/lib/hub";
 import { syncPushSubscription } from "@/lib/pwa";
 import { watchResume } from "@/lib/resume";
+
+// The assistant (its agent, model client and voice) loads on its own, after the app.
+const Assistant = lazy(() => import("@/components/assistant/assistant").then((m) => ({ default: m.Assistant })));
 
 export const Route = createFileRoute("/_app")({
   beforeLoad: async ({ location }) => {
@@ -41,6 +44,9 @@ function AppLayout() {
       <FleetProvider>
         <Outlet />
         <Alerts />
+        <Suspense fallback={null}>
+          <Assistant />
+        </Suspense>
       </FleetProvider>
     </main>
   );

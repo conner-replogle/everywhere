@@ -3,6 +3,7 @@
 // check the hub socket and every device connection instead of waiting for
 // pings and ICE timeouts to notice.
 
+import { assistantSync } from "./assistant/sync";
 import { hub } from "./hub";
 import { checkPeersAlive } from "./peer";
 
@@ -11,6 +12,7 @@ const AWAY_MS = 10_000;
 
 function check() {
   hub.checkAlive();
+  assistantSync.checkAlive();
   checkPeersAlive();
 }
 

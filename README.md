@@ -21,6 +21,8 @@ passing through the Worker.
 - **Claude Code threads** that keep running while you're away, with
   worktrees, attachments, permission prompts and push notifications.
 - **Scratch:** ask Claude to work on the machine itself, outside any project.
+- **Assistant:** one voice or text conversation about all your machines and
+  threads that can prompt and start threads for you (on Workers AI).
 - **Remote desktop** for Hyprland and Windows, low latency over WebRTC (opt-in on each machine).
 - **Agent browser:** each thread gets a Chromium page that you and Claude share.
 - **Processes and dashboards** for dev servers and long-running jobs.

@@ -1,9 +1,20 @@
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
-import { defaultAllowedOrigins, defineConfig } from "vite";
+import { defaultAllowedOrigins, defineConfig, type Plugin } from "vite";
 
 const worker = "http://localhost:8787";
+
+/** pi-ai's catalog of every provider's models (half a megabyte), which the assistant doesn't use. */
+function piAiWithoutModelCatalog(): Plugin {
+  const stub = new URL("./src/lib/assistant/pi-ai-models.ts", import.meta.url).pathname;
+  return {
+    name: "pi-ai-without-model-catalog",
+    enforce: "pre",
+    resolveId: (source, importer) =>
+      source === "./models.generated.js" && importer?.includes("/@mariozechner/pi-ai/") ? stub : null,
+  };
+}
 
 export default defineConfig({
   plugins: [
@@ -11,9 +22,14 @@ export default defineConfig({
     tanstackRouter({ target: "react", autoCodeSplitting: true }),
     react(),
     tailwindcss(),
+    piAiWithoutModelCatalog(),
   ],
   resolve: {
-    alias: { "@": new URL("./src", import.meta.url).pathname },
+    alias: [
+      { find: "@", replacement: new URL("./src", import.meta.url).pathname },
+      // Only the parts of pi-ai the assistant uses (see the file).
+      { find: /^@mariozechner\/pi-ai$/, replacement: new URL("./src/lib/assistant/pi-ai.ts", import.meta.url).pathname },
+    ],
   },
   server: {
     port: 5173,
