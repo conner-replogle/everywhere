@@ -99,6 +99,16 @@ export function speakable(text: string): string {
     .trim();
 }
 
-/** A spoken answer to a waiting approval. */
-export const YES = /^(yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|send it|send|start it|approve|allow|confirm|please do)\b/i;
-export const NO = /^(no|nope|nah|don'?t|do not|cancel|deny|never ?mind)\b/i;
+/** A spoken answer to a waiting approval (after any filler, see approvalAnswer). */
+export const YES =
+  /^(yes|yeah|yea|yep|yup|ya|sure|ok|okay|alright|all right|go ahead|go for it|do it|send it|send|start it|start|approve|approved|allow|allowed|confirm|confirmed|please do|yes please|absolutely|definitely|of course|sounds good|that's fine)\b/i;
+export const NO = /^(no|nope|nah|don'?t|do not|cancel|deny|denied|stop|wait|hold on|never ?mind)\b/i;
+const FILLER = /^((uh|um|uhm|er|oh|well|hmm|mm|so|and|hey|yes or no)[,.!]?\s+)+/i;
+
+/** Whether what was said answers a waiting approval: true for yes, false for no, null for neither. */
+export function approvalAnswer(text: string): boolean | null {
+  const t = text.trim().replace(/^["'“]/, "").replace(FILLER, "");
+  if (NO.test(t)) return false;
+  if (YES.test(t)) return true;
+  return null;
+}

@@ -7,7 +7,7 @@
 // controller (voice-live.ts) feeds it events and sends what it returns.
 
 import type { AssistantApproval } from "@everywhere/protocol";
-import { NO, YES } from "./messages";
+import { approvalAnswer } from "./messages";
 
 /** GPT-Live takes at most 500 tokens per append; this stays well under. */
 const APPEND_CHARS = 1500;
@@ -131,22 +131,33 @@ export class LiveBridge {
     const text = this.heard.trim();
     this.heard = "";
     clearTimeout(this.utteranceTimer);
-    if (this.answeredApproval || !text) {
-      // Nothing for the agent: tell GPT-Live quietly, so it doesn't wait on it.
-      this.answeredApproval = false;
-      this.h.send({
-        type: "session.thinking.append",
-        event_id: `ew_${this.nextEvent++}`,
-        delegation_id: this.delegation,
-        content: "The app already handled that; there's nothing more to report.",
-      });
-      this.delegation = null;
-      return;
-    }
-    // Something else while an approval waits: that's a no, and a new request.
+    if (this.answeredApproval || !text) return this.quiet();
     const pending = this.agent.approvals()[0];
-    if (pending) this.agent.answer(pending.id, false);
+    if (pending) {
+      // The hand-off often comes before the user's words count as finished: a yes or no
+      // answers the approval here, as a tap would.
+      const answer = approvalAnswer(text);
+      if (answer !== null) {
+        this.agent.answer(pending.id, answer);
+        this.quiet();
+        return;
+      }
+      // Something else while an approval waits: that's a no, and a new request.
+      this.agent.answer(pending.id, false);
+    }
     this.agent.ask(text);
+  }
+
+  /** Nothing for the agent: tell GPT-Live quietly, so it doesn't wait on it. */
+  private quiet(): void {
+    this.answeredApproval = false;
+    this.h.send({
+      type: "session.thinking.append",
+      event_id: `ew_${this.nextEvent++}`,
+      delegation_id: this.delegation,
+      content: "The app already handled that; there's nothing more to report.",
+    });
+    this.delegation = null;
   }
 
   /** The user stopped talking: a yes or no answers a waiting approval right away. */
@@ -154,8 +165,9 @@ export class LiveBridge {
     const pending = this.agent.approvals()[0];
     const text = this.heard.trim();
     if (!pending || !text) return;
-    if (YES.test(text) || NO.test(text)) {
-      this.agent.answer(pending.id, YES.test(text));
+    const answer = approvalAnswer(text);
+    if (answer !== null) {
+      this.agent.answer(pending.id, answer);
       this.heard = "";
       this.answeredApproval = true;
     }

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { AssistantApproval } from "@everywhere/protocol";
 import { LiveBridge, type LiveEvent } from "../src/lib/assistant/live-bridge";
+import { approvalAnswer } from "../src/lib/assistant/messages";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -63,6 +64,26 @@ describe("LiveBridge", () => {
     expect(t.asked).toEqual([]);
     expect(t.sent.at(-1)).toMatchObject({ type: "session.thinking.append", delegation_id: "item_2" });
     t.bridge.close();
+  });
+
+  test("a yes whose hand-off comes before the words count as finished still allows it", async () => {
+    const t = setup();
+    t.setApprovals([{ id: "a1", title: "Send to fix flaky test" }]);
+    t.hear("Uh, yes.");
+    t.delegate("item_4");
+    await wait(500);
+    expect(t.answers).toEqual([["a1", true]]);
+    expect(t.asked).toEqual([]);
+    expect(t.sent.at(-1)).toMatchObject({ type: "session.thinking.append", delegation_id: "item_4" });
+    await wait(1000);
+    expect(t.answers).toEqual([["a1", true]]);
+    t.bridge.close();
+  });
+
+  test("approval answers", () => {
+    for (const yes of ["Yes.", "yeah go ahead", "Allow it", "Okay, send it.", "Uh, yes please", "Sounds good", "go for it"]) expect(approvalAnswer(yes)).toBe(true);
+    for (const no of ["No.", "Nope", "Don't send that", "um, no", "Wait, hold on"]) expect(approvalAnswer(no)).toBe(false);
+    for (const other of ["Check the web thread first", "Please check the logs", "What would it send?"]) expect(approvalAnswer(other)).toBe(null);
   });
 
   test("anything else while an approval waits denies it and becomes the request", async () => {

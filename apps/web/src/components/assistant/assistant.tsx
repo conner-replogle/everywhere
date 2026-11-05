@@ -691,21 +691,32 @@ function PhoneAssistant() {
           <MicButton />
         </div>
       )}
-      {/* Cards take the whole screen; over the layer too. */}
-      {cards.length > 0 && !layer && <PhoneCards />}
+      {/* A normal card at the top; only the voice screen gives cards the whole screen. */}
+      {cards.length > 0 && !layer && <PhoneCards mode="float" />}
     </>
   );
 }
 
-function PhoneCards({ inLayer }: { inLayer?: boolean }) {
+/**
+ * The card on a phone. voice: the voice screen's, taking the space it has.
+ * float: over the page at the top, its own size. chat: above the message box.
+ */
+function PhoneCards({ mode }: { mode: "voice" | "float" | "chat" }) {
+  if (mode === "voice") {
+    return (
+      <div className="flex min-h-0 flex-1 flex-col px-3">
+        <CardStack max={1} fill className="min-h-0 flex-1" />
+      </div>
+    );
+  }
   return (
     <div
       className={cn(
-        "z-50 flex flex-col",
-        inLayer ? "min-h-0 flex-1 px-3" : "fixed inset-0 bg-background/70 p-3 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] backdrop-blur-sm",
+        "pointer-events-none z-40",
+        mode === "float" ? "fixed inset-x-3 top-[max(0.75rem,env(safe-area-inset-top))]" : "shrink-0 px-3 pb-2",
       )}
     >
-      <CardStack max={1} fill className="min-h-0 flex-1" />
+      <CardStack max={1} className="pointer-events-auto [&>section]:max-h-[45vh]" />
     </div>
   );
 }
@@ -737,7 +748,7 @@ function PhoneLayer({ voiceMode, onClose, onMinimize }: { voiceMode: boolean; on
       {voiceMode ? (
         <>
           {cards.length > 0 ? (
-            <PhoneCards inLayer />
+            <PhoneCards mode="voice" />
           ) : (
             <div className="flex min-h-0 flex-1 flex-col justify-end gap-4 overflow-hidden px-6 pb-6">
               {said?.kind === "assistant" && <p className="line-clamp-6 text-lg text-muted-foreground">{said.text}</p>}
@@ -767,10 +778,11 @@ function PhoneLayer({ voiceMode, onClose, onMinimize }: { voiceMode: boolean; on
             ))}
             <LiveItems />
           </div>
-          {cards.length > 0 && <PhoneCards />}
-          <div className="flex shrink-0 items-end gap-2 px-3 pb-3">
-            <Composer className="flex-1" />
+          {cards.length > 0 && <PhoneCards mode="chat" />}
+          {/* The mic above, so the message box has the full width. */}
+          <div className="flex shrink-0 flex-col items-end gap-3 px-3 pb-3">
             <MicButton />
+            <Composer className="w-full" />
           </div>
         </>
       )}

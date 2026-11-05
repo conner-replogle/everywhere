@@ -726,10 +726,12 @@ prompting threads, each time after the user allows it.
   button that opens the composer. The thread composer keeps clear of the
   corner (`--assistant-dock`). On phones: the mic and a chat button, the
   newest reply in a bubble above them for 6 s (tap or swipe up to open), a
-  full-screen frosted layer with the whole conversation and the composer,
-  and while talking the same layer as the voice screen (the large ring, the
-  live transcript, a card filling it when there is one). Cards otherwise take
-  the whole screen, swiped down to dismiss.
+  full-screen frosted layer with the whole conversation and the composer
+  (full width, the mic above it), and while talking the same layer as the
+  voice screen (the large ring, the live transcript, a card filling it when
+  there is one). Only the voice screen gives a card the whole screen;
+  otherwise it's a normal card, at the top of the page or above the
+  composer, at most 45% of the screen's height.
 - **Model**: Workers AI behind `POST /api/assistant/v1/chat/completions`,
   OpenAI-compatible so pi-ai's provider talks to it as is. The Worker allows
   a fixed list of models (`ASSISTANT_MODELS`), passes the fields Workers AI
@@ -738,8 +740,10 @@ prompting threads, each time after the user allows it.
 - **Voice**: one mic button on every page. Two voices, picked per browser
   in Settings → Assistant (`voice-engine.ts`); either way the agent above does
   the work, and what's said is in the conversation. In both, while an
-  approval waits, "yes" (and the like) allows it and "no" denies it; anything
-  else denies it and is taken as the next prompt. One mic at a time across
+  approval waits, "yes" (and the like, after fillers like "uh") allows it
+  and "no" denies it; anything else denies it and is taken as the next
+  prompt (`approvalAnswer`). With GPT-Live the hand-off for a yes usually
+  comes before the words count as finished; the bridge answers it there. One mic at a time across
   the account: turning it on sends `voice` to the Assistant DO, which tells
   the other tabs, and any that had theirs on turn it off ("Voice moved to
   another window or device"). A voice speaks, and answers approvals for,

@@ -6,7 +6,7 @@
 import type { AssistantListenMsg, AssistantLive } from "@everywhere/protocol";
 import { useSyncExternalStore } from "react";
 import { assistantRunner, composePrompt } from "./agent";
-import { NO, speakable, YES } from "./messages";
+import { approvalAnswer, speakable } from "./messages";
 import { audioContext, audioInfo, closeAudio, isMobile } from "./audio";
 import { clearOutput, outputAnalyser, watchStream } from "./levels";
 import { type MicInfo, micDeviceId, micInfo, openMic } from "./mic";
@@ -248,9 +248,9 @@ class FluxVoice {
   private onUtterance(text: string): void {
     const pending = ours(assistantSync.getSnapshot().live)?.approvals[0];
     if (pending) {
-      if (YES.test(text)) return assistantRunner.answer(pending.id, true);
-      assistantRunner.answer(pending.id, false);
-      if (NO.test(text)) return;
+      const answer = approvalAnswer(text);
+      assistantRunner.answer(pending.id, answer === true);
+      if (answer !== null) return;
     }
     void assistantRunner.prompt(composePrompt(text, { voice: true }));
   }
