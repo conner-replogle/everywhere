@@ -62,11 +62,10 @@ class AssistantSync {
   /** The last seq the latest clear deleted: nothing before it is left to load. */
   private clearedThrough = 0;
 
-  /** Messages for the runner: prompts and approvals from other tabs. */
+  /** For the runner: prompts from other tabs. */
   onSteer: ((text: string, from: string | undefined) => void) | null = null;
-  onApprove: ((id: string, allow: boolean) => void) | null = null;
-  /** A steer or approval found no runner; it's this tab's to handle. */
-  onNoRunner: ((text?: string) => void) | null = null;
+  /** A steer found no runner; it's this tab's to handle. */
+  onNoRunner: ((text: string) => void) | null = null;
   /** The conversation was cleared, from this tab or another. */
   onCleared: (() => void) | null = null;
   /** Another tab turned its mic on. */
@@ -138,10 +137,6 @@ class AssistantSync {
   /** This tab's mic is on: the others turn theirs off. */
   voiceOn(): void {
     this.send({ t: "voice", tab: tabId });
-  }
-
-  approve(id: string, allow: boolean): boolean {
-    return this.send({ t: "approve", id, allow });
   }
 
   /** Deletes the whole conversation, for every tab; fails while a turn runs. */
@@ -299,8 +294,6 @@ class AssistantSync {
         return;
       case "steer":
         return this.onSteer?.(m.text, m.from);
-      case "approve":
-        return this.onApprove?.(m.id, m.allow);
       case "voice":
         if (m.tab !== tabId) this.onVoiceElsewhere?.();
         return;

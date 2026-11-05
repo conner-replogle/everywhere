@@ -6,10 +6,10 @@
 
 import { Agent, type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
 import type { Message, Model } from "@mariozechner/pi-ai";
-import type { AgentDaemonMsg, AgentEvent as ThreadEvent, AssistantApproval, AssistantEntry, AssistantLive } from "@everywhere/protocol";
+import type { AgentDaemonMsg, AgentEvent as ThreadEvent, AssistantEntry, AssistantLive } from "@everywhere/protocol";
 import { useSyncExternalStore } from "react";
 import { describeView, type FleetDevice, fleetDevices, fleetOverview, threadStatus } from "./fleet";
-import { confirmedDraft, contextFrom, convertToLlm, messageText, userMessage } from "./messages";
+import { contextFrom, convertToLlm, messageText, userMessage } from "./messages";
 import { assistantSystemPrompt, contextNote } from "./prompt";
 import { cardId, MAX_CARD_MARKDOWN, SHOW_TOOL, screenNote } from "./screen";
 import { assistantSync, tabId } from "./sync";
@@ -100,12 +100,10 @@ class AssistantRunner {
   private agent: Agent;
   private snap: RunnerSnapshot = { busy: false, error: null, unread: 0 };
   private listeners = new Set<() => void>();
-  private live: AssistantLive = { text: "", approvals: [] };
+  private live: AssistantLive = { text: "" };
   private liveTimer: ReturnType<typeof setTimeout> | undefined;
-  private approvals = new Map<string, (allow: boolean) => void>();
   private saving: Promise<unknown>[] = [];
   private watches = new Map<string, Watch>();
-  private nextApproval = 1;
   /** The tab whose message the turn is answering; its voice speaks the reply. */
   private asker: string = tabId;
   /** Shows a thread; set by the app's bridge. */
@@ -118,20 +116,16 @@ class AssistantRunner {
       initialState: { systemPrompt: "", model: model(), thinkingLevel: "low", tools: [] },
       convertToLlm,
       getApiKey: () => "session",
-      // Several reads at once (a rundown) run together; approvals still wait one by one.
+      // Several reads at once (a rundown) run together.
       toolExecution: "parallel",
     });
     this.agent.state.tools = assistantTools({
-      approve: (title, detail) => this.requestApproval(title, detail),
       open: (deviceId, threadId) => this.navigate?.(deviceId, threadId),
       watch: (device, threadId) => this.watch(device, threadId),
     });
     this.agent.subscribe((e) => this.onEvent(e));
     assistantSync.onSteer = (text, from) => void this.run(text, from);
-    assistantSync.onApprove = (id, allow) => this.answer(id, allow);
-    assistantSync.onNoRunner = (text) => {
-      if (text) void this.run(text);
-    };
+    assistantSync.onNoRunner = (text) => void this.run(text);
     assistantSync.onCleared = () => this.cleared();
   }
 
@@ -187,9 +181,7 @@ class AssistantRunner {
       this.update({ error: e instanceof Error ? e.message : String(e) });
     } finally {
       this.saving = [];
-      for (const resolve of this.approvals.values()) resolve(false);
-      this.approvals.clear();
-      this.live = { text: "", approvals: [] };
+      this.live = { text: "" };
       assistantSync.setLive(null);
       assistantSync.release();
       this.update({ busy: false });
@@ -197,8 +189,6 @@ class AssistantRunner {
   }
 
   stop(): void {
-    for (const resolve of this.approvals.values()) resolve(false);
-    this.approvals.clear();
     this.agent.clearAllQueues();
     this.agent.abort();
   }
@@ -208,29 +198,6 @@ class AssistantRunner {
     for (const w of [...this.watches.values()]) w.close();
     this.agent.state.messages = [];
     this.update({ unread: 0, error: null });
-  }
-
-  answer(id: string, allow: boolean): void {
-    const resolve = this.approvals.get(id);
-    if (!resolve) {
-      // It's another tab's turn: pass it on.
-      if (!assistantSync.isRunner) assistantSync.approve(id, allow);
-      return;
-    }
-    this.approvals.delete(id);
-    this.live = { ...this.live, approvals: this.live.approvals.filter((a) => a.id !== id) };
-    this.publish(true);
-    resolve(allow);
-  }
-
-  private requestApproval(title: string, detail?: string): Promise<boolean> {
-    // The user said yes to this exact draft just now: that was the approval.
-    if (detail && confirmedDraft(this.agent.state.messages, detail)) return Promise.resolve(true);
-    const approval: AssistantApproval = { id: `a${this.nextApproval++}-${Date.now()}`, title, detail };
-    this.live = { ...this.live, approvals: [...this.live.approvals, approval], activity: undefined };
-    this.publish(true);
-    if (!this.attended) this.update({ unread: this.snap.unread + 1 });
-    return new Promise((resolve) => this.approvals.set(approval.id, resolve));
   }
 
   private publish(now = false): void {

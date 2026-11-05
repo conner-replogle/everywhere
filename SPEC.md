@@ -652,7 +652,7 @@ machine, a quick task, some files. Feature `scratch`.
 One conversation per account, about every device, project and thread at
 once, by voice or text. It isn't on any device and can't read files or run
 commands: it sees the fleet through the app's own RPC and gets work done by
-prompting threads, each time after the user says yes to the prompt.
+prompting threads, each time after the user says yes to the drafted prompt.
 
 - **Where it runs**: the agent loop (pi's `@mariozechner/pi-agent-core`) runs
   in a browser tab (`apps/web/src/lib/assistant`). Its tools run there too,
@@ -667,7 +667,7 @@ prompting threads, each time after the user says yes to the prompt.
   replays from the latest compaction on; `history` pages back. One tab at a
   time is the **runner** (`claim` / `release`; it lapses when its socket
   closes): it runs turns, appends what they produce, and sends its `live`
-  state (the reply streaming, what it's doing, approvals waiting) for the
+  state (the reply streaming, what it's doing, cards being written) for the
   other tabs to show. A prompt from another tab goes to the runner (`steer`;
   `noRunner` if there is none, and the sender runs it). Each turn starts from
   the synced log, so the conversation carries on from any device. The DO
@@ -688,15 +688,12 @@ prompting threads, each time after the user says yes to the prompt.
   long for a page is split into parts across pages), `search_threads`
   (every online device),
   `thread_processes` (and a process's output), `git_status`, `open_thread`,
-  `watch_thread`, and, after the user says yes to the exact text,
-  `send_to_thread` and `start_thread` (never `bypassPermissions`).
-  Prompts are drafted in the conversation: the agent writes the draft in
-  its reply (a quote block; on a card with id "draft" when the user is
-  speaking), works in what the user adds, asks "Ready to send it?", and on
-  yes sends it. That yes is the approval (`confirmedDraft`): the user's
-  last message is a yes and the reply before it showed the exact text being
-  sent. Anything else, such as changed text or no draft shown, gets the
-  approval card as before. A thread
+  `watch_thread`, `send_to_thread` and `start_thread` (never
+  `bypassPermissions`). There are no approval cards: prompts are drafted in
+  the conversation, and asking is the agent's own rule (its system prompt).
+  It writes the draft in its reply (a quote block; on a card with id
+  "draft" when the user is speaking), works in what the user adds, asks
+  "Ready to send it?", and sends it on the user's yes, never before. A thread
   the assistant prompts or starts is watched: when it stops working, the
   runner gets an `[Update]` message and tells the user. Watches live in the
   runner tab.
@@ -704,7 +701,7 @@ prompting threads, each time after the user says yes to the prompt.
   markdown card (at most 1200 characters; headings, lists, checkboxes, small
   tables, mermaid) up beside the conversation, or updates the card with that
   id in place; `clear_screen {id?}` takes one or all down. They run in the
-  tab and need no approval. What's on screen is worked out from the log
+  tab. What's on screen is worked out from the log
   (`screen.ts`), so every tab shows the same cards and a reload keeps them:
   a card shown or updated in a turn lasts through the next turn and is gone
   once a turn after that starts without it; at most three; a call that
@@ -748,15 +745,11 @@ prompting threads, each time after the user says yes to the prompt.
   picked per browser; GLM 5.3 Flash by default.
 - **Voice**: one mic button on every page. Two voices, picked per browser
   in Settings → Assistant (`voice-engine.ts`); either way the agent above does
-  the work, and what's said is in the conversation. In both, while an
-  approval waits, "yes" (and the like, after fillers like "uh") allows it
-  and "no" denies it; anything else denies it and is taken as the next
-  prompt (`approvalAnswer`). With GPT-Live the hand-off for a yes usually
-  comes before the words count as finished; the bridge answers it there. One mic at a time across
+  the work, and what's said is in the conversation; a spoken "yes" to a
+  draft is a prompt like any other. One mic at a time across
   the account: turning it on sends `voice` to the Assistant DO, which tells
   the other tabs, and any that had theirs on turn it off ("Voice moved to
-  another window or device"). A voice speaks, and answers approvals for,
-  only the turns that answer its own tab: each tab has a `tabId`, steers
+  another window or device"). A voice speaks only the turns that answer its own tab: each tab has a `tabId`, steers
   carry `from`, and the runner puts the asking tab in `live.for` (a watched
   thread's update goes to the tab that asked for the watch). Replies to
   text typed in another tab aren't spoken.
@@ -773,12 +766,12 @@ prompting threads, each time after the user says yes to the prompt.
     settle) and prompts the agent with it. Each reply the agent logs goes
     back as `session.commentary.append` (1500 characters at a time) with the
     hand-off's id, until the turn ends; later ones (a watched thread
-    finishing) go without one. An approval is asked the same way; the
-    hand-off after a yes or no gets a quiet `session.thinking.append`.
+    finishing) go without one. A hand-off with nothing heard gets a quiet
+    `session.thinking.append`.
     Stopping sends `session.close`. A session is billed while it's open,
     quiet or not, and OpenAI only closes it at its duration limit
     (`expired`), so the tab closes it after two minutes with nothing said by
-    either side and no turn or approval waiting. Why it stopped stays in the
+    either side and no turn running. Why it stopped stays in the
     voice bar until dismissed. About $0.05 a minute on the user's OpenAI
     account. Bug reports include the session: its id, when it started and
     ended, the close reason, seconds used, connection state and the newest

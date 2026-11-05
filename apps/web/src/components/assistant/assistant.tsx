@@ -7,7 +7,7 @@
 // talking; cards take the whole screen.
 
 import type { Message } from "@mariozechner/pi-ai";
-import type { AssistantApproval, AssistantEntry } from "@everywhere/protocol";
+import type { AssistantEntry } from "@everywhere/protocol";
 import { useNavigate } from "@tanstack/react-router";
 import {
   ChevronDownIcon,
@@ -153,14 +153,13 @@ function MicButton({ size = "md", className }: { size?: "md" | "lg"; className?:
   );
 }
 
-/** While talking: what it heard, what it's doing, and what it's asking; after, why it stopped. */
+/** While talking: what it heard and what it's doing; after, why it stopped. */
 function VoiceBar({ className }: { className?: string }) {
   const v = useVoice();
   const sync = useAssistantSync();
   const { error, dismiss } = useVoiceError();
   if (v.state === "off" && !error) return null;
   const live = sync.live;
-  const approval = live?.approvals[0];
   const line = error
     ? error
     : v.heard
@@ -174,49 +173,18 @@ function VoiceBar({ className }: { className?: string }) {
             : "Listening…";
   return (
     <div className={cn("pointer-events-auto rounded-xl border border-border bg-background/90 p-3 text-sm shadow-xl backdrop-blur-md", className)}>
-      {approval && !error ? (
-        <ApprovalCard approval={approval} compact />
-      ) : (
-        <div className="flex items-start gap-2">
-          {!error && <VoiceBars active={v.state === "listening" || v.state === "speaking"} className="mt-0.5 h-4 w-12 shrink-0" />}
-          <p className={cn("line-clamp-3 flex-1", v.heard ? "text-foreground" : "text-muted-foreground", error && "text-destructive")}>
-            {line}
-          </p>
-          {error && (
-            <Button variant="ghost" size="icon-sm" onClick={dismiss} aria-label="Dismiss the voice message">
-              <XIcon />
-            </Button>
-          )}
-        </div>
-      )}
-      {v.notice && <p className="mt-1.5 text-xs text-muted-foreground">{v.notice}</p>}
-    </div>
-  );
-}
-
-function ApprovalCard({ approval, compact }: { approval: AssistantApproval; compact?: boolean }) {
-  return (
-    <div className="flex flex-col gap-2">
-      <p className="font-medium">{approval.title}?</p>
-      {approval.detail && (
-        <p
-          className={cn(
-            "whitespace-pre-wrap rounded-md bg-muted/60 p-2 text-[13px] text-muted-foreground",
-            compact ? "line-clamp-6" : "max-h-72 overflow-y-auto",
-          )}
-        >
-          {approval.detail}
+      <div className="flex items-start gap-2">
+        {!error && <VoiceBars active={v.state === "listening" || v.state === "speaking"} className="mt-0.5 h-4 w-12 shrink-0" />}
+        <p className={cn("line-clamp-3 flex-1", v.heard ? "text-foreground" : "text-muted-foreground", error && "text-destructive")}>
+          {line}
         </p>
-      )}
-      <div className="flex gap-2">
-        <Button size="sm" onClick={() => assistantRunner.answer(approval.id, true)}>
-          Allow
-        </Button>
-        <Button size="sm" variant="outline" onClick={() => assistantRunner.answer(approval.id, false)}>
-          Deny
-        </Button>
-        {compact && <span className="self-center text-xs text-muted-foreground">or say yes / no</span>}
+        {error && (
+          <Button variant="ghost" size="icon-sm" onClick={dismiss} aria-label="Dismiss the voice message">
+            <XIcon />
+          </Button>
+        )}
       </div>
+      {v.notice && <p className="mt-1.5 text-xs text-muted-foreground">{v.notice}</p>}
     </div>
   );
 }
@@ -280,7 +248,7 @@ function Bubble({ item }: { item: FeedItem }) {
   }
 }
 
-/** The turn in progress: the reply streaming, what it's doing, approvals waiting. */
+/** The turn in progress: the reply streaming and what it's doing. */
 function LiveItems() {
   const sync = useAssistantSync();
   const runner = useAssistantRunner();
@@ -298,11 +266,6 @@ function LiveItems() {
           {live.activity}…
         </p>
       )}
-      {live?.approvals.map((a) => (
-        <div key={a.id} className="pointer-events-auto self-stretch rounded-2xl border border-primary/40 bg-background/90 p-3 shadow-lg backdrop-blur-md">
-          <ApprovalCard approval={a} />
-        </div>
-      ))}
       {runner.error && (
         <p className="pointer-events-auto self-start rounded-xl border border-destructive/40 bg-background/90 px-3 py-2 text-xs text-destructive backdrop-blur-md">
           {runner.error}
@@ -489,7 +452,7 @@ function DesktopAssistant() {
   useEffect(() => {
     const el = list.current;
     if (el && (!expanded || el.scrollHeight - el.scrollTop - el.clientHeight < 120)) el.scrollTop = el.scrollHeight;
-  }, [expanded, items.length, sync.live?.text, sync.live?.approvals.length]);
+  }, [expanded, items.length, sync.live?.text]);
 
   const shown = expanded ? items : items.slice(-REST_ITEMS);
   const open = expanded || typing;
@@ -744,7 +707,7 @@ function PhoneLayer({ voiceMode, onClose, onMinimize }: { voiceMode: boolean; on
   useEffect(() => {
     const el = list.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [items.length, sync.live?.text, sync.live?.approvals.length]);
+  }, [items.length, sync.live?.text]);
   const said = items.at(-1);
   const swipe = useSwipeAway(onMinimize, ["down"]);
   return (

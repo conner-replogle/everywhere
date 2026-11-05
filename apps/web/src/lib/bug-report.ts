@@ -122,7 +122,7 @@ async function assistantReport() {
     runner: s.runner,
     entries: s.entries.length,
     lastSeq: s.entries.at(-1)?.seq ?? null,
-    live: s.live ? { activity: s.live.activity, approvals: s.live.approvals.length, textChars: s.live.text.length } : null,
+    live: s.live ? { activity: s.live.activity, textChars: s.live.text.length } : null,
     // What's on screen: ids and sizes, not the cards' content.
     screen: screenCards(s.entries).map((c) => ({ id: c.id, chars: c.markdown.length, seq: c.seq })),
     writing: s.live?.cards?.map((c) => c.id) ?? [],

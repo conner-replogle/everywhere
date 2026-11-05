@@ -21,21 +21,10 @@ export interface AssistantLive {
   text: string;
   /** What it's doing, e.g. "Reading fix flaky test". */
   activity?: string;
-  /** Actions waiting for the user's yes. */
-  approvals: AssistantApproval[];
   /** Cards the reply is writing (show_on_screen calls still streaming), so they fill in as it types. */
   cards?: { id: string; markdown: string }[];
   /** The tab whose message this turn answers (its tab id): only that tab's voice speaks it. */
   for?: string;
-}
-
-/** An action the assistant wants to take, shown to the user to allow or deny. */
-export interface AssistantApproval {
-  id: string;
-  /** e.g. "Send to fix flaky test on hetzner-1". */
-  title: string;
-  /** The exact text that will be sent, if any. */
-  detail?: string;
 }
 
 export type AssistantClientMsg =
@@ -52,8 +41,6 @@ export type AssistantClientMsg =
   | { t: "live"; live: AssistantLive | null }
   /** A prompt for the tab running the turn (sent when another tab holds it); from: the sending tab's id. */
   | { t: "steer"; text: string; from?: string }
-  /** An answer to an approval, for the tab running the turn. */
-  | { t: "approve"; id: string; allow: boolean }
   /** Deletes the whole conversation; answered with cleared (to every tab), or an error while a turn runs. */
   | { t: "clear" }
   /** This tab's mic is on: the others turn theirs off (one voice at a time). */
@@ -74,13 +61,12 @@ export type AssistantServerMsg =
   | { t: "runner"; runner: string | null }
   | { t: "live"; live: AssistantLive | null }
   | { t: "steer"; text: string; from?: string }
-  | { t: "approve"; id: string; allow: boolean }
   /** Another tab turned its mic on. */
   | { t: "voice"; tab: string }
   /** The conversation was cleared, through seq. */
   | { t: "cleared"; throughSeq: number }
-  /** steer or approve with no tab running a turn. */
-  | { t: "noRunner"; text?: string }
+  /** A steer with no tab running a turn. */
+  | { t: "noRunner"; text: string }
   /** re: the request it answers, when it answers one (clear). */
   | { t: "error"; message: string; re?: AssistantClientMsg["t"] };
 

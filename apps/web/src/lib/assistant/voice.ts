@@ -6,7 +6,7 @@
 import type { AssistantListenMsg, AssistantLive } from "@everywhere/protocol";
 import { useSyncExternalStore } from "react";
 import { assistantRunner, composePrompt } from "./agent";
-import { approvalAnswer, speakable } from "./messages";
+import { speakable } from "./messages";
 import { audioContext, audioInfo, closeAudio, isMobile } from "./audio";
 import { clearOutput, outputAnalyser, watchStream } from "./levels";
 import { type MicInfo, micDeviceId, micInfo, openMic } from "./mic";
@@ -128,7 +128,6 @@ class FluxVoice {
   /** The reply being spoken: its text so far, and how much has been queued. */
   private reply = "";
   private spoken = 0;
-  private announced = new Set<string>();
 
   constructor() {
     this.speaker.onActive = (speaking) => {
@@ -246,16 +245,10 @@ class FluxVoice {
   }
 
   private onUtterance(text: string): void {
-    const pending = ours(assistantSync.getSnapshot().live)?.approvals[0];
-    if (pending) {
-      const answer = approvalAnswer(text);
-      assistantRunner.answer(pending.id, answer === true);
-      if (answer !== null) return;
-    }
     void assistantRunner.prompt(composePrompt(text, { voice: true }));
   }
 
-  /** Queues each finished sentence of the streaming reply, and asks about approvals. */
+  /** Queues each finished sentence of the streaming reply. */
   private onLive(live: AssistantLive | null): void {
     const text = live?.text ?? "";
     // Ended (no live state, or the text cleared once it was logged) or a new reply began.
@@ -272,13 +265,6 @@ class FluxVoice {
       if (end > 0) {
         this.say(text.slice(this.spoken, this.spoken + end));
         this.spoken += end;
-      }
-      for (const a of live.approvals) {
-        if (this.announced.has(a.id)) continue;
-        this.announced.add(a.id);
-        this.say(this.reply.slice(this.spoken));
-        this.spoken = this.reply.length;
-        this.speaker.say(`${a.title}. Should I?`);
       }
     }
   }

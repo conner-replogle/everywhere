@@ -100,12 +100,11 @@ export class Assistant extends DurableObject<Env> {
         this.ctx.storage.kv.put("live", m.live);
         this.broadcast({ t: "live", live: m.live }, ws);
         return;
-      case "steer":
-      case "approve": {
+      case "steer": {
         const runner = this.runner();
         const target = runner ? this.socket(runner) : undefined;
-        if (!target || runner === me.id) return send(ws, { t: "noRunner", text: m.t === "steer" ? m.text : undefined });
-        return send(target, m.t === "steer" ? { t: "steer", text: m.text, from: m.from } : { t: "approve", id: m.id, allow: m.allow });
+        if (!target || runner === me.id) return send(ws, { t: "noRunner", text: m.text });
+        return send(target, { t: "steer", text: m.text, from: m.from });
       }
       case "clear":
         return this.clear(ws);

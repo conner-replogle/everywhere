@@ -22,8 +22,6 @@ import {
 } from "./fleet";
 
 export interface ToolHost {
-  /** Asks the user to allow an action; resolves with their answer. */
-  approve(title: string, detail?: string): Promise<boolean>;
   open(deviceId: string, threadId: string): void;
   /** Tells the assistant when the thread stops working. */
   watch(device: FleetDevice, threadId: string): string;
@@ -249,7 +247,7 @@ export function assistantTools(host: ToolHost): AgentTool<TSchema>[] {
     tool(
       "send_to_thread",
       "Sending to a thread",
-      "Send a prompt to a claude thread, as the user. Only after the user said yes to this exact draft in the conversation; send the text they saw, unchanged. Otherwise they're asked to allow it first.",
+      "Send a prompt to a claude thread, as the user. Only after the user said yes to this exact draft in the conversation; send the text they saw, unchanged.",
       Type.Object({
         thread: Type.String({ description: "Thread id, or its name." }),
         device: Type.Optional(Type.String()),
@@ -259,9 +257,6 @@ export function assistantTools(host: ToolHost): AgentTool<TSchema>[] {
         const { device, thread } = findThread(a.thread, a.device);
         const d = onlineDevice(device.id);
         if (thread.kind === "terminal") throw new Error(`"${thread.name}" is a terminal, not a claude thread.`);
-        if (!(await host.approve(`Send to "${thread.name}" on ${device.name}`, a.text))) {
-          return "The user said no. Nothing was sent.";
-        }
         await readAgent(d.peer, thread.id, 1, async (send) => {
           send({ t: "send", text: a.text });
           await new Promise((r) => setTimeout(r, 300));
@@ -272,7 +267,7 @@ export function assistantTools(host: ToolHost): AgentTool<TSchema>[] {
     tool(
       "start_thread",
       "Starting a thread",
-      "Start a new claude thread in a project with a first prompt; it starts working right away. Only after the user said yes to this exact draft in the conversation; send the prompt they saw, unchanged. Otherwise they're asked to allow it first. The new thread knows nothing of this conversation: the prompt must stand on its own.",
+      "Start a new claude thread in a project with a first prompt; it starts working right away. Only after the user said yes to this exact draft in the conversation; send the prompt they saw, unchanged. The new thread knows nothing of this conversation: the prompt must stand on its own.",
       Type.Object({
         device: Type.String({ description: "Device name or id." }),
         project: Type.String({ description: "Project name or id." }),
@@ -286,8 +281,6 @@ export function assistantTools(host: ToolHost): AgentTool<TSchema>[] {
         const { device, project } = findProject(a.project, a.device);
         const d = onlineDevice(device.id);
         const mode = (["default", "acceptEdits", "plan", "auto"].includes(a.mode ?? "") ? a.mode : "default") as PermissionMode;
-        const title = `Start a thread in ${project.name} on ${device.name}${mode === "default" ? "" : ` (${mode} mode)`}`;
-        if (!(await host.approve(title, a.prompt))) return "The user said no. No thread was started.";
         const t = await d.peer.call("threads.create", {
           projectId: project.id,
           kind: "claude",

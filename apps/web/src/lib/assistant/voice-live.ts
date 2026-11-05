@@ -59,7 +59,7 @@ export const LIVE_INSTRUCTIONS = `You are the voice of the user's assistant in E
 
 You can't see their devices, projects or threads, and you can't do anything on them yourself. A backend agent can: it reads threads, checks status, searches, and prompts or starts threads. Delegate every request that needs their devices, projects, threads, the web, or any action, and every question about what something is doing or did. Answer small talk and simple general questions yourself.
 
-When results come back, say them plainly and briefly, in your own words. Don't invent thread names, statuses or results. When the backend asks to confirm an action, ask the user and wait for their answer; the app takes their yes or no. Prompts for threads are drafted with the backend: it puts the draft on screen and asks if it's ready to send. Delegate everything the user says about a draft, their changes and their yes or no, so the backend adds to it or sends it. Don't read a draft out; say what changed in a few words.
+When results come back, say them plainly and briefly, in your own words. Don't invent thread names, statuses or results. Prompts for threads are drafted with the backend: it puts the draft on screen and asks if it's ready to send. Delegate everything the user says about a draft, their changes and their yes or no, so the backend adds to it or sends it. Don't read a draft out; say what changed in a few words.
 
 Speak naturally and keep it short: a sentence or two, unless the user asks for more. No lists or markdown.`;
 
@@ -141,7 +141,7 @@ export class LiveVoice {
   /** Closes a session nobody is using. */
   private checkIdle(): void {
     const s = assistantSync.getSnapshot();
-    if (s.runner || s.live?.approvals.length) this.lastActivity = Date.now();
+    if (s.runner) this.lastActivity = Date.now();
     if (Date.now() - this.lastActivity < LIVE_IDLE_MS) return;
     this.stop();
     this.update({ error: "Voice turned off after two quiet minutes. Tap the mic to talk again." });
@@ -180,14 +180,7 @@ export class LiveVoice {
       const dc = pc.createDataChannel("oai-events");
       this.dc = dc;
       this.bridge = new LiveBridge(
-        {
-          ask: (text) => void assistantRunner.prompt(composePrompt(text, { voice: true })),
-          approvals: () => {
-            const live = assistantSync.getSnapshot().live;
-            return live?.for === tabId ? live.approvals : [];
-          },
-          answer: (id, allow) => assistantRunner.answer(id, allow),
-        },
+        { ask: (text) => void assistantRunner.prompt(composePrompt(text, { voice: true })) },
         {
           send: (e) => {
             if (dc.readyState === "open") dc.send(JSON.stringify(e));
@@ -235,11 +228,10 @@ export class LiveVoice {
     }
   }
 
-  /** What the agent says goes to GPT-Live to say; its approvals, to ask; the end of its turn, to close the hand-off. */
+  /** What the agent says goes to GPT-Live to say; the end of its turn closes the hand-off. */
   private follow(): void {
     const s0 = assistantSync.getSnapshot();
     let lastSeq = s0.entries.at(-1)?.seq ?? 0;
-    const asked = new Set(s0.live?.approvals.map((a) => a.id));
     let running = !!s0.runner;
     // Whether the turn answers this tab: only those replies are said here.
     let mine = s0.live?.for === tabId;
@@ -252,11 +244,6 @@ export class LiveVoice {
         if (!mine || e.kind !== "message" || (e.message as Message).role !== "assistant") continue;
         const text = messageText(e.message as Message);
         if (text.trim()) this.bridge?.assistantSaid(text);
-      }
-      for (const a of s.live?.approvals ?? []) {
-        if (asked.has(a.id) || !mine) continue;
-        asked.add(a.id);
-        this.bridge?.approvalAdded(a);
       }
       if (running && !s.runner) this.bridge?.turnEnded();
       running = !!s.runner;
