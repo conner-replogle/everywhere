@@ -728,7 +728,9 @@ prompting threads, each time after the user says yes to the drafted prompt.
   remembered per browser, and the mic and cards stay. Below it: the cards
   (two at most), the voice bar, and in the corner the mic with a keyboard
   button that opens the composer. The thread composer keeps clear of the
-  corner (`--assistant-dock`). On phones: the mic and a chat button, the
+  corner (`--assistant-dock`, less whatever margin the pane already has
+  beside the composer). On phones the thread composer is full width and the
+  mic and chat button sit above it (`--composer-height`). On phones: the mic and a chat button, the
   newest reply in a bubble above them for 6 s (tap to open, swipe away), a
   frosted sheet from the bottom (78% of the height, swipe its top down to
   close) with the whole conversation and the composer (full width, the mic
