@@ -112,16 +112,13 @@ function messageLine(who: string, id: string, text: string): string {
   return `${who} [message ${id}]: ${text.slice(0, MESSAGE_CHARS)}… (cut at ${MESSAGE_CHARS} of ${text.length} characters; read_message with this id has the rest)`;
 }
 
-/** A thread's conversation as text: prompts and replies, tool calls as one line each. */
+/** A thread's conversation as text: only the prompts and replies. */
 export function transcript(events: AgentEvent[], max = TRANSCRIPT_CHARS): string {
   const lines: string[] = [];
   for (const e of events) {
     if (e.parentId) continue; // subagents
     if (e.type === "user" && e.text) lines.push(messageLine("USER", e.id, e.text));
     else if (e.type === "assistant" && e.text.trim()) lines.push(messageLine("CLAUDE", e.id, e.text));
-    else if (e.type === "tool") lines.push(`  · ${e.name} ${inputSummary(e.input)}`.trimEnd());
-    else if (e.type === "request") lines.push(`  · asked the user (${e.kind}, ${e.toolName}): ${e.decision}`);
-    else if (e.type === "turn" && e.status !== "started") lines.push(`  — turn ${e.status}`);
   }
   // Newest last; keep the newest that fit.
   const out: string[] = [];
@@ -137,14 +134,12 @@ export function transcript(events: AgentEvent[], max = TRANSCRIPT_CHARS): string
   return out.join("\n");
 }
 
+/** What the thread is doing now, in a line (two if it's waiting on the user). */
 function stateSummary(state: AgentState | null): string {
   if (!state) return "";
-  const lines = [`Status: ${state.status}${state.error ? ` (${state.error})` : ""}, mode ${state.permissionMode}`];
-  for (const r of state.pending) {
-    const what = r.kind === "tool" ? `permission to use ${r.toolName} ${inputSummary(r.input)}` : r.kind;
-    lines.push(`Waiting on the user: ${what}${r.title ? ` — ${r.title}` : ""}`);
-  }
-  if (state.context) lines.push(`Context: ${Math.round(state.context.percentage)}% used`);
+  const lines = [`Status: ${state.status}${state.error ? ` (${state.error})` : ""}.`];
+  const r = state.pending[0];
+  if (r) lines.push(`Waiting on the user: ${r.kind === "tool" ? `permission to use ${r.toolName} ${inputSummary(r.input)}` : r.kind}.`);
   return lines.join("\n");
 }
 
@@ -186,18 +181,18 @@ export function assistantTools(host: ToolHost): AgentTool<TSchema>[] {
     tool(
       "read_thread",
       "Reading a thread",
-      "Read a claude thread's recent conversation: the user's prompts, Claude's replies, one line per tool call, and what it's doing or waiting on now. Tool output and file contents aren't included. A very long message is cut and names its id: read it whole with read_message.",
+      "Read a claude thread's recent conversation, only the user's prompts and Claude's replies, and what it's doing or waiting on now. A very long message is cut and names its id: read it whole with read_message.",
       Type.Object({
         thread: Type.String({ description: "Thread id, or its name." }),
         device: Type.Optional(Type.String({ description: "Device name or id, if the name is ambiguous." })),
-        events: Type.Optional(Type.Number({ description: "How far back to read, in events (default 300)." })),
+        events: Type.Optional(Type.Number({ description: "How far back to read, in events, tool calls included (default 600)." })),
       }),
       async (a) => {
         const { device, thread } = findThread(a.thread, a.device);
         const d = onlineDevice(device.id);
         if (thread.kind === "terminal") return `"${thread.name}" is a terminal; its output can't be read from here.`;
-        const { events, state } = await readAgent(d.peer, thread.id, Math.min(Math.max(a.events ?? 300, 20), 1500));
-        const head = `Thread "${thread.name}" [id ${thread.id}] in ${projectName(device, thread.projectId)} on ${device.name}, last active ${ago(thread.lastOpenedAt)}.`;
+        const { events, state } = await readAgent(d.peer, thread.id, Math.min(Math.max(a.events ?? 600, 20), 2000));
+        const head = `"${thread.name}" in ${projectName(device, thread.projectId)} on ${device.name}, last active ${ago(thread.lastOpenedAt)}.`;
         return [head, stateSummary(state), "", transcript(events) || "(no messages yet)"].join("\n");
       },
     ),

@@ -78,8 +78,14 @@ test("transcript keeps short messages whole and names the id of a cut one", asyn
   const long = `${"plan ".repeat(1500)}THE END`;
   const out = transcript([
     { type: "user", id: "u1", text: "make a plan" },
+    { type: "tool", id: "t1", name: "Read", input: { file_path: "/src/app.ts" } },
+    { type: "toolResult", id: "t1", output: "secret file contents" },
+    { type: "turn", status: "completed" },
     { type: "assistant", id: "a1", text: long },
   ]);
+  expect(out).not.toContain("app.ts");
+  expect(out).not.toContain("secret");
+  expect(out).not.toContain("turn");
   expect(out).toContain("USER: make a plan");
   expect(out).toContain("CLAUDE [message a1]:");
   expect(out).toContain(`of ${long.length} characters; read_message`);
