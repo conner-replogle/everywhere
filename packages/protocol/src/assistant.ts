@@ -49,11 +49,17 @@ export type AssistantClientMsg =
   /** A prompt for the tab running the turn (sent when another tab holds it). */
   | { t: "steer"; text: string }
   /** An answer to an approval, for the tab running the turn. */
-  | { t: "approve"; id: string; allow: boolean };
+  | { t: "approve"; id: string; allow: boolean }
+  /** Deletes the whole conversation; answered with cleared (to every tab), or an error while a turn runs. */
+  | { t: "clear" };
 
 export type AssistantServerMsg =
-  /** runner: the connection running a turn, if any. */
-  | { t: "hello"; you: string; runner: string | null; live: AssistantLive | null }
+  /**
+   * runner: the connection running a turn, if any. clearedThrough: the last
+   * seq the latest clear deleted; entries at or before it are gone (seqs
+   * aren't reused, so a tab that missed the clear drops what it still has).
+   */
+  | { t: "hello"; you: string; runner: string | null; live: AssistantLive | null; clearedThrough: number }
   /** initial: the attach replay; more frames may follow until synced. */
   | { t: "entries"; entries: AssistantEntry[]; initial?: boolean }
   | { t: "synced" }
@@ -63,9 +69,12 @@ export type AssistantServerMsg =
   | { t: "live"; live: AssistantLive | null }
   | { t: "steer"; text: string }
   | { t: "approve"; id: string; allow: boolean }
+  /** The conversation was cleared, through seq. */
+  | { t: "cleared"; throughSeq: number }
   /** steer or approve with no tab running a turn. */
   | { t: "noRunner"; text?: string }
-  | { t: "error"; message: string };
+  /** re: the request it answers, when it answers one (clear). */
+  | { t: "error"; message: string; re?: AssistantClientMsg["t"] };
 
 /** Speech to text on GET /api/assistant/listen: sent to the browser as JSON. */
 export type AssistantListenMsg =

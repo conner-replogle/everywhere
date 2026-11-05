@@ -6,7 +6,8 @@
 import type { AssistantListenMsg, AssistantLive } from "@everywhere/protocol";
 import { useSyncExternalStore } from "react";
 import { assistantRunner, composePrompt } from "./agent";
-import { speakable } from "./messages";
+import { NO, speakable, YES } from "./messages";
+import { voiceEngine } from "./voice-engine";
 import { assistantSync } from "./sync";
 
 export type VoiceState = "off" | "starting" | "listening" | "speaking";
@@ -16,10 +17,10 @@ export interface VoiceSnapshot {
   /** What the user is saying, before the turn ends. */
   heard: string;
   error: string | null;
+  /** A note about the voice itself, e.g. that GPT-Live isn't set up. */
+  notice?: string | null;
 }
 
-const YES = /^(yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|send it|send|start it|approve|allow|confirm|please do)\b/i;
-const NO = /^(no|nope|nah|don'?t|do not|cancel|deny|never ?mind)\b/i;
 /** A sentence ends here, so it can be spoken before the rest arrives. */
 const SENTENCE_END = /[.!?](?=\s|$)|\n/g;
 
@@ -103,7 +104,8 @@ class Speaker {
   }
 }
 
-class Voice {
+/** Workers AI as the voice: Flux listens, Aura speaks. */
+class FluxVoice {
   private snap: VoiceSnapshot = { state: "off", heard: "", error: null };
   private listeners = new Set<() => void>();
   private stream: MediaStream | null = null;
@@ -281,6 +283,78 @@ class Voice {
     this.reply = "";
     this.spoken = 0;
     this.update({ state: "off", heard: "" });
+  }
+}
+
+interface Engine {
+  getSnapshot(): VoiceSnapshot;
+  subscribe(fn: () => void): () => void;
+  start(): Promise<void>;
+  stop(): void;
+}
+
+/**
+ * The assistant's voice: GPT-Live when this browser prefers it and the
+ * account has an OpenAI key, Workers AI otherwise. Picked each time it starts.
+ */
+class Voice {
+  private flux = new FluxVoice();
+  private live: Engine | null = null;
+  private engine: Engine = this.flux;
+  private off: (() => void) | null = null;
+  private listeners = new Set<() => void>();
+  /** Shown when GPT-Live was wanted but Workers AI is used. */
+  private notice: string | null = null;
+  private snap: VoiceSnapshot = this.flux.getSnapshot();
+
+  getSnapshot = (): VoiceSnapshot => this.snap;
+  subscribe = (fn: () => void): (() => void) => {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  };
+
+  get on(): boolean {
+    return this.snap.state !== "off";
+  }
+
+  toggle(): void {
+    if (this.on) this.stop();
+    else void this.start();
+  }
+
+  async start(): Promise<void> {
+    if (this.on) return;
+    this.notice = null;
+    let engine: Engine = this.flux;
+    if (voiceEngine() === "live") {
+      const available = await fetch("/api/assistant/live")
+        .then((r) => (r.ok ? (r.json() as Promise<{ available?: boolean }>) : { available: false }))
+        .then((r) => !!r.available, () => false);
+      if (available) {
+        if (!this.live) this.live = new (await import("./voice-live")).LiveVoice();
+        engine = this.live;
+      } else {
+        this.notice = "GPT-Live isn't set up (Settings → Assistant), so this is the Workers AI voice.";
+      }
+    }
+    this.use(engine);
+    await engine.start();
+  }
+
+  stop(): void {
+    this.engine.stop();
+  }
+
+  private use(engine: Engine): void {
+    this.off?.();
+    this.engine = engine;
+    const sync = () => {
+      const s = engine.getSnapshot();
+      this.snap = { ...s, notice: s.state !== "off" ? this.notice : null };
+      for (const fn of this.listeners) fn();
+    };
+    this.off = engine.subscribe(sync);
+    sync();
   }
 }
 

@@ -142,6 +142,7 @@ class AssistantRunner {
     assistantSync.onNoRunner = (text) => {
       if (text) void this.run(text);
     };
+    assistantSync.onCleared = () => this.cleared();
   }
 
   getSnapshot = (): RunnerSnapshot => this.snap;
@@ -208,6 +209,13 @@ class AssistantRunner {
     this.approvals.clear();
     this.agent.clearAllQueues();
     this.agent.abort();
+  }
+
+  /** The conversation was cleared: what this tab was waiting to tell it about goes too. */
+  private cleared(): void {
+    for (const w of [...this.watches.values()]) w.close();
+    this.agent.state.messages = [];
+    this.update({ unread: 0, error: null });
   }
 
   answer(id: string, allow: boolean): void {

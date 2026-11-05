@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { ASSISTANT_SESSION_HEADER } from "../assistant";
 import { originAllowed } from "../security";
 import type { App } from "../types";
+import { LIVE_URL, type LiveRequest, liveSessionBody } from "../openai-live";
 import { workersAiMessage } from "../workers-ai";
 import { requireUser } from "./auth";
 
@@ -41,14 +42,17 @@ async function limited(c: Parameters<typeof requireUser>[0], what: string): Prom
   return !success;
 }
 
+function stub(c: Parameters<typeof requireUser>[0]) {
+  return c.env.ASSISTANT.get(c.env.ASSISTANT.idFromName(c.var.user.id));
+}
+
 // The conversation: a WebSocket to the account's Assistant DO.
 assistant.get("/ws", async (c) => {
   if (c.req.header("upgrade") !== "websocket") return c.text("expected websocket", 426);
   if (!originAllowed(c)) return c.json({ error: "cross-origin websocket rejected" }, 403);
   const headers = new Headers(c.req.raw.headers);
   headers.set(ASSISTANT_SESSION_HEADER, c.var.sessionId);
-  const stub = c.env.ASSISTANT.get(c.env.ASSISTANT.idFromName(c.var.user.id));
-  return stub.fetch(new Request(c.req.raw, { headers }));
+  return stub(c).fetch(new Request(c.req.raw, { headers }));
 });
 
 // The model, as an OpenAI-compatible chat completions endpoint so the agent
@@ -139,6 +143,49 @@ assistant.get("/listen", async (c) => {
   server.addEventListener("close", () => close());
 
   return new Response(null, { status: 101, webSocket: client });
+});
+
+// GPT-Live, the voice: the account's OpenAI API key (kept sealed in the
+// Assistant DO; the app sees only its last characters), whether it's set up,
+// and its session start, which passes the browser's WebRTC offer to OpenAI
+// and the answer back. The key never leaves the Worker.
+const OPENAI_KEY = /^sk-[A-Za-z0-9_-]{20,}$/;
+
+assistant.get("/openai-key", async (c) => c.json(await stub(c).openAIKeyInfo()));
+
+assistant.put("/openai-key", async (c) => {
+  const body = await c.req.json<{ key?: unknown }>().catch(() => ({}) as { key?: unknown });
+  const key = typeof body.key === "string" ? body.key.trim() : "";
+  if (!OPENAI_KEY.test(key)) return c.json({ error: "that isn't an OpenAI API key; they start with sk-" }, 400);
+  return c.json(await stub(c).setOpenAIKey(key));
+});
+
+assistant.delete("/openai-key", async (c) => c.json(await stub(c).setOpenAIKey("")));
+
+assistant.get("/live", async (c) => c.json({ available: (await stub(c).openAIKeyInfo()).set }));
+
+assistant.post("/live", async (c) => {
+  const key = await stub(c).openAIKey();
+  if (!key) return c.json({ error: "GPT-Live isn't set up: add an OpenAI API key in Settings → Assistant" }, 503);
+  if (await limited(c, "live")) return c.json({ error: "too many requests" }, 429);
+  const req = await c.req.json<Partial<LiveRequest>>().catch(() => ({}) as Partial<LiveRequest>);
+  const made = liveSessionBody(req);
+  if ("error" in made) return c.json({ error: made.error }, 400);
+  const res = await fetch(LIVE_URL, {
+    method: "POST",
+    headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+    body: JSON.stringify(made.body),
+  });
+  const out = (await res.json().catch(() => null)) as {
+    session?: { id?: string };
+    transport?: { sdp?: string };
+    error?: { message?: string };
+  } | null;
+  if (!res.ok || !out?.transport?.sdp) {
+    console.error("live session failed", res.status, JSON.stringify(out?.error ?? out).slice(0, 500));
+    return c.json({ error: `GPT-Live didn't start: ${out?.error?.message ?? `status ${res.status}`}` }, 502);
+  }
+  return c.json({ id: out.session?.id ?? null, sdp: out.transport.sdp });
 });
 
 // Text to speech (Aura 2): one sentence or a few at a time, as MP3.

@@ -698,14 +698,42 @@ prompting threads, each time after the user allows it.
   a fixed list of models (`ASSISTANT_MODELS`), passes the fields Workers AI
   takes, and flattens content to strings (`workers-ai.ts`). The model is
   picked per browser; GLM 5.3 Flash by default.
-- **Voice**: one mic button on every page. The mic goes to
-  `GET /api/assistant/listen` as 16 kHz PCM (`public/pcm-worklet.js`, a file
-  because the CSP blocks blob: scripts) and on to Deepgram Flux, which marks
-  the end of each turn; each turn is a prompt. Replies are spoken a sentence
-  at a time as they stream (`POST /api/assistant/speak`, Aura 2, MP3, played
-  through Web Audio since the CSP has no blob: media). Talking over a reply
-  stops it. While an approval waits, "yes" (and the like) allows it and "no"
-  denies it; anything else denies it and is taken as the next prompt.
+- **Voice**: one mic button on every page. Two voices, picked per browser
+  in Settings → Assistant (`voice-engine.ts`); either way the agent above does
+  the work, and what's said is in the conversation. In both, while an
+  approval waits, "yes" (and the like) allows it and "no" denies it; anything
+  else denies it and is taken as the next prompt.
+  - **GPT-Live** (the default, when the account has an OpenAI API key):
+    OpenAI's full-duplex voice model, with client delegation
+    (`voice-live.ts`, `live-bridge.ts`). The tab's mic and GPT-Live's voice
+    go over WebRTC straight to OpenAI; `POST /api/assistant/live` passes the
+    offer to `/v1/live/sessions` with the key and returns the answer
+    (`openai-live.ts`: `gpt-live-1`, the voice's instructions, and the newest
+    16 prompts and replies as seed history). Events come on the
+    `oai-events` channel. GPT-Live hands work off without saying what it is,
+    so the bridge takes what the user said since the last hand-off from
+    `session.input_transcript.delta` (waiting 700 ms for the transcript to
+    settle) and prompts the agent with it. Each reply the agent logs goes
+    back as `session.commentary.append` (1500 characters at a time) with the
+    hand-off's id, until the turn ends; later ones (a watched thread
+    finishing) go without one. An approval is asked the same way; the
+    hand-off after a yes or no gets a quiet `session.thinking.append`.
+    Stopping sends `session.close`. About $0.05 a minute on the user's
+    OpenAI account.
+  - **Workers AI**: the mic goes to `GET /api/assistant/listen` as 16 kHz
+    PCM (`public/pcm-worklet.js`, a file because the CSP blocks blob:
+    scripts) and on to Deepgram Flux, which marks the end of each turn; each
+    turn is a prompt. Replies are spoken a sentence at a time as they stream
+    (`POST /api/assistant/speak`, Aura 2, MP3, played through Web Audio since
+    the CSP has no blob: media). Talking over a reply stops it. Used when
+    GPT-Live isn't set up, saying so in the voice bar.
+- **The OpenAI API key** is an account setting: `GET`/`PUT`/`DELETE
+  /api/assistant/openai-key`, kept sealed (`secretbox`) in the Assistant DO;
+  the app only sees its last four characters, and only the Worker uses it.
+- **Clearing**: the panel's trash button (after a confirm) sends `clear`; the
+  DO deletes every entry and tells every tab (`cleared`). Not while a turn
+  runs. Seqs keep counting, and `hello` says where the last clear was, so a
+  tab that was away drops what it still has.
 - **Limits**: `ASSISTANT_LIMITER`, 300 requests a minute per user across
   the model and speech routes.
 

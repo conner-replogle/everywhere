@@ -5,9 +5,10 @@
 import type { Message } from "@mariozechner/pi-ai";
 import type { AssistantApproval, AssistantEntry } from "@everywhere/protocol";
 import { useNavigate } from "@tanstack/react-router";
-import { LoaderCircleIcon, MessageSquareTextIcon, MicIcon, MicOffIcon, SendIcon, SquareIcon, XIcon } from "lucide-react";
+import { LoaderCircleIcon, MessageSquareTextIcon, MicIcon, MicOffIcon, SendIcon, SquareIcon, Trash2Icon, XIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "@/components/agent/markdown";
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { useFleet } from "@/components/fleet";
 import { Button } from "@/components/ui/button";
 import {
@@ -132,6 +133,7 @@ function VoiceBar() {
           {line}
         </p>
       )}
+      {v.notice && <p className="mt-1.5 text-xs text-muted-foreground">{v.notice}</p>}
     </div>
   );
 }
@@ -169,6 +171,7 @@ function AssistantPanel({ onClose }: { onClose: () => void }) {
   const v = useVoice();
   const [draft, setDraft] = useState("");
   const [model, setModel] = useState(modelId);
+  const [confirmClear, setConfirmClear] = useState(false);
   const scroller = useRef<HTMLDivElement>(null);
   const live = sync.live;
   const busy = runner.busy || !!sync.runner;
@@ -205,10 +208,33 @@ function AssistantPanel({ onClose }: { onClose: () => void }) {
             </option>
           ))}
         </select>
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={() => setConfirmClear(true)}
+          disabled={busy || sync.entries.length === 0}
+          aria-label="Clear the conversation"
+          title={busy ? "Stop the turn to clear" : "Clear the conversation"}
+        >
+          <Trash2Icon className="size-4" />
+        </Button>
         <Button variant="ghost" size="icon" onClick={onClose} aria-label="Close">
           <XIcon className="size-4" />
         </Button>
       </header>
+      <ConfirmDialog
+        open={confirmClear}
+        onOpenChange={setConfirmClear}
+        title="Clear the conversation?"
+        description={
+          <p>
+            This deletes the assistant's whole conversation, earlier summaries included, on every device. The next thing
+            you say starts fresh. It can't be undone.
+          </p>
+        }
+        confirmLabel="Clear"
+        onConfirm={() => assistantSync.clear()}
+      />
       <div ref={scroller} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-4 py-3 text-sm">
         {sync.hasEarlier && (
           <button type="button" className="w-full text-xs text-muted-foreground hover:text-foreground" onClick={() => assistantSync.loadEarlier()}>

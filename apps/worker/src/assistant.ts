@@ -8,8 +8,18 @@ import type {
 } from "@everywhere/protocol";
 import { HUB_PING, HUB_PONG } from "@everywhere/protocol";
 import { randomId } from "./crypto";
+import { open, seal } from "./secretbox";
 
 export const ASSISTANT_SESSION_HEADER = "x-ew-session";
+
+/** The account's OpenAI API key (for GPT-Live, the voice), as the app may see it. */
+export type OpenAIKeyInfo = { set: false } | { set: true; hint: string; setAt: number };
+interface StoredKey {
+  sealed: string;
+  /** Its last four characters, to tell keys apart in Settings. */
+  hint: string;
+  setAt: number;
+}
 
 interface Attachment {
   id: string;
@@ -53,7 +63,7 @@ export class Assistant extends DurableObject<Env> {
     const id = randomId();
     this.ctx.acceptWebSocket(server, [`conn:${id}`]);
     server.serializeAttachment({ id, session: request.headers.get(ASSISTANT_SESSION_HEADER) ?? "" } satisfies Attachment);
-    send(server, { t: "hello", you: id, runner: this.runner(), live: this.live() });
+    send(server, { t: "hello", you: id, runner: this.runner(), live: this.live(), clearedThrough: this.clearedThrough() });
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -97,6 +107,8 @@ export class Assistant extends DurableObject<Env> {
         if (!target || runner === me.id) return send(ws, { t: "noRunner", text: m.t === "steer" ? m.text : undefined });
         return send(target, m.t === "steer" ? { t: "steer", text: m.text } : { t: "approve", id: m.id, allow: m.allow });
       }
+      case "clear":
+        return this.clear(ws);
       default:
         return send(ws, { t: "error", message: "unknown message" });
     }
@@ -108,6 +120,24 @@ export class Assistant extends DurableObject<Env> {
 
   override async webSocketError(ws: WebSocket): Promise<void> {
     this.gone(ws);
+  }
+
+  openAIKeyInfo(): OpenAIKeyInfo {
+    const k = this.ctx.storage.kv.get<StoredKey>("openaiKey");
+    return k ? { set: true, hint: k.hint, setAt: k.setAt } : { set: false };
+  }
+
+  /** Keeps the key sealed, or with "" forgets it. */
+  async setOpenAIKey(key: string): Promise<OpenAIKeyInfo> {
+    if (key) this.ctx.storage.kv.put<StoredKey>("openaiKey", { sealed: await seal(this.env, key), hint: key.slice(-4), setAt: Date.now() });
+    else this.ctx.storage.kv.delete("openaiKey");
+    return this.openAIKeyInfo();
+  }
+
+  /** The key itself, for the Worker's own calls to OpenAI; never sent to a browser. */
+  async openAIKey(): Promise<string | null> {
+    const k = this.ctx.storage.kv.get<StoredKey>("openaiKey");
+    return k ? open(this.env, k.sealed) : null;
   }
 
   /** Closes the sockets of signed-out sessions. */
@@ -165,6 +195,25 @@ export class Assistant extends DurableObject<Env> {
     }
     send(ws, { t: "appended", ref: String(ref).slice(0, 64), seqs: added.map((e) => e.seq) });
     this.broadcast({ t: "entries", entries: added });
+  }
+
+  /**
+   * Deletes the whole conversation. Not while a turn runs: its tab would go
+   * on adding the old conversation to the new one. Seqs keep counting (the
+   * AUTOINCREMENT table remembers), so a tab that missed this can tell its
+   * entries are gone from clearedThrough.
+   */
+  private clear(ws: WebSocket): void {
+    if (this.runner()) return send(ws, { t: "error", re: "clear", message: "The assistant is in the middle of a turn. Stop it, then clear." });
+    const last = this.sql.exec<{ seq: number | null }>("SELECT MAX(seq) AS seq FROM entries").one().seq ?? this.clearedThrough();
+    this.sql.exec("DELETE FROM entries");
+    this.ctx.storage.kv.put("clearedThrough", last);
+    this.ctx.storage.kv.put("live", null);
+    this.broadcast({ t: "cleared", throughSeq: last });
+  }
+
+  private clearedThrough(): number {
+    return this.ctx.storage.kv.get<number>("clearedThrough") ?? 0;
   }
 
   private rows(query: string, ...bindings: unknown[]): AssistantEntry[] {

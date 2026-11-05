@@ -53,14 +53,19 @@ class AssistantSync {
   };
   private appends = new Map<string, { resolve: (seqs: number[]) => void; reject: (e: Error) => void }>();
   private claims: ((granted: boolean) => void)[] = [];
+  private clearing: { resolve: () => void; reject: (e: Error) => void } | null = null;
   private nextRef = 1;
   private loadingEarlier = false;
+  /** The last seq the latest clear deleted: nothing before it is left to load. */
+  private clearedThrough = 0;
 
   /** Messages for the runner: prompts and approvals from other tabs. */
   onSteer: ((text: string) => void) | null = null;
   onApprove: ((id: string, allow: boolean) => void) | null = null;
   /** A steer or approval found no runner; it's this tab's to handle. */
   onNoRunner: ((text?: string) => void) | null = null;
+  /** The conversation was cleared, from this tab or another. */
+  onCleared: (() => void) | null = null;
 
   getSnapshot = (): AssistantSnapshot => this.snap;
 
@@ -129,6 +134,28 @@ class AssistantSync {
     return this.send({ t: "approve", id, allow });
   }
 
+  /** Deletes the whole conversation, for every tab; fails while a turn runs. */
+  clear(): Promise<void> {
+    if (this.clearing) return Promise.reject(new Error("Already clearing."));
+    return new Promise((resolve, reject) => {
+      if (!this.send({ t: "clear" })) return reject(new Error("Not connected to the conversation."));
+      const timer = setTimeout(() => {
+        this.clearing = null;
+        reject(new Error("The conversation didn't answer."));
+      }, REPLY_TIMEOUT_MS);
+      this.clearing = {
+        resolve: () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        reject: (e) => {
+          clearTimeout(timer);
+          reject(e);
+        },
+      };
+    });
+  }
+
   loadEarlier(): void {
     const first = this.snap.entries[0];
     if (!first || this.loadingEarlier) return;
@@ -186,6 +213,8 @@ class AssistantSync {
       for (const a of this.appends.values()) a.reject(new Error("disconnected"));
       this.appends.clear();
       for (const c of this.claims.splice(0)) c(false);
+      this.clearing?.reject(new Error("Disconnected from the conversation."));
+      this.clearing = null;
       this.loadingEarlier = false;
       this.update({ status: "closed", synced: false, me: null, runner: null });
       if (!this.running) return;
@@ -216,14 +245,26 @@ class AssistantSync {
 
   private handle(m: AssistantServerMsg): void {
     switch (m.t) {
-      case "hello":
-        return this.update({ me: m.you, runner: m.runner, live: m.live });
+      case "hello": {
+        // Cleared while this tab was away: what it has is gone.
+        this.clearedThrough = m.clearedThrough;
+        const entries = this.snap.entries.filter((e) => e.seq > m.clearedThrough);
+        return this.update({ me: m.you, runner: m.runner, live: m.live, entries });
+      }
+      case "cleared":
+        this.clearedThrough = m.throughSeq;
+        this.update({ entries: this.snap.entries.filter((e) => e.seq > m.throughSeq), hasEarlier: false, live: null });
+        this.clearing?.resolve();
+        this.clearing = null;
+        this.onCleared?.();
+        return;
       case "entries": {
         const known = new Set(this.snap.entries.map((e) => e.seq));
         const add = m.entries.filter((e) => !known.has(e.seq));
         const entries = [...this.snap.entries, ...add].sort((a, b) => a.seq - b.seq);
-        // A first replay that starts after seq 1 has older entries behind it.
-        const hasEarlier = m.initial && known.size === 0 ? (entries[0]?.seq ?? 1) > 1 : this.snap.hasEarlier;
+        // A first replay that starts after the first seq still there has older entries behind it.
+        const hasEarlier =
+          m.initial && known.size === 0 ? (entries[0]?.seq ?? 1) > this.clearedThrough + 1 : this.snap.hasEarlier;
         return this.update({ entries, hasEarlier });
       }
       case "synced":
@@ -253,6 +294,11 @@ class AssistantSync {
       case "noRunner":
         return this.onNoRunner?.(m.text);
       case "error":
+        if (m.re === "clear" && this.clearing) {
+          this.clearing.reject(new Error(m.message));
+          this.clearing = null;
+          return;
+        }
         console.warn("assistant:", m.message);
         return;
     }

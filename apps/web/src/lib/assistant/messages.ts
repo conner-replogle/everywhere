@@ -98,3 +98,7 @@ export function speakable(text: string): string {
     .replace(/\s+/g, " ")
     .trim();
 }
+
+/** A spoken answer to a waiting approval. */
+export const YES = /^(yes|yeah|yep|yup|sure|ok|okay|go ahead|do it|send it|send|start it|approve|allow|confirm|please do)\b/i;
+export const NO = /^(no|nope|nah|don'?t|do not|cancel|deny|never ?mind)\b/i;
