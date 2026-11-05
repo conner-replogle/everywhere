@@ -11,11 +11,18 @@ export interface InputOptions {
 }
 
 /**
- * How the mouse drives the host pointer, as in Moonlight: "desktop" sends
- * where it points (absolute); "game" captures it with a click and sends its
- * motion (relative), which is what games that grab the pointer read.
+ * How the mouse drives the host pointer. "desktop" sends where it points
+ * (absolute); "game" captures it and sends its motion (relative), which is
+ * what games that grab the pointer read. "auto" (as Parsec does) is the
+ * desktop mouse until the host says a game hid its pointer, the game mouse
+ * while it stays hidden, and the desktop mouse again when it comes back
+ * (a menu, a pause screen, alt-tab).
  */
-export type MouseMode = "desktop" | "game";
+export type MouseMode = "auto" | "desktop" | "game";
+
+/** How long the host pointer stays hidden before auto captures the mouse, and shown before it lets go: games flicker it. */
+const CAPTURE_AFTER_MS = 100;
+const RELEASE_AFTER_MS = 250;
 
 /** Local shortcuts, with Ctrl+Alt+Shift (Moonlight's): release or capture the mouse, and switch modes. */
 export type MouseCombo = "capture" | "mode";
@@ -26,8 +33,10 @@ const COMBOS: Record<string, MouseCombo> = { KeyZ: "capture", KeyM: "mode" };
  * Keys go by physical position (KeyboardEvent.code → evdev), so the host's
  * layout decides the character. Elements marked `data-local-keys` keep their keys.
  *
- * In game mode a click captures the mouse (pointer lock) and its motion goes
- * to the host until Esc, Ctrl+Alt+Shift+Z, or the page loses focus.
+ * While the mouse is relative a click captures it (pointer lock) and its
+ * motion goes to the host until Esc, Ctrl+Alt+Shift+Z, or the page loses
+ * focus. In auto mode it's captured and let go as the host pointer hides and
+ * shows, without a click once a first one has captured it.
  */
 export class InputForwarder {
   private seq = 0;
@@ -37,7 +46,17 @@ export class InputForwarder {
   private viewOnly = false;
   private mode: MouseMode = "desktop";
   private wasLocked = false;
+  /** The host says a game hid its pointer, after CAPTURE_AFTER_MS / RELEASE_AFTER_MS. */
+  private hostCaptured = false;
+  private hostCapturedRaw = false;
+  private hostTimer: ReturnType<typeof setTimeout> | undefined;
+  /** This page let the lock go (auto), so it may take it again without a click. */
+  private releasing = false;
+  /** The viewer let the mouse go (Esc, the shortcut, another window): auto waits for a click. */
+  private userReleased = false;
   onLockChange?: (locked: boolean) => void;
+  /** The mouse became relative (a click captures it) or absolute. */
+  onRelativeChange?: (relative: boolean) => void;
   /** Runs, in the capturing gesture, before the mouse is captured (going fullscreen, so every key comes too). */
   beforeCapture?: () => Promise<void>;
   /** A local shortcut was pressed: "mode" asks to switch modes. */
@@ -77,21 +96,63 @@ export class InputForwarder {
     }
   }
 
-  /** Game mode needs a host that takes relative motion. */
+  /** The mouse sends motion: always in game mode, while a game hides the host pointer in auto. */
+  get relative() {
+    return this.mode === "game" || (this.mode === "auto" && this.hostCaptured);
+  }
+
+  /** Game and auto modes need a host that takes relative motion. */
   setMode(mode: MouseMode) {
+    const was = this.relative;
     this.mode = mode;
-    if (mode === "desktop" && this.locked) document.exitPointerLock();
+    this.userReleased = false;
+    this.relativeChanged(was);
+  }
+
+  /** The host pointer is hidden by a game (CursorPosition.captured), or not. */
+  setHostCaptured(captured: boolean) {
+    if (captured === this.hostCapturedRaw) return;
+    this.hostCapturedRaw = captured;
+    clearTimeout(this.hostTimer);
+    this.hostTimer = setTimeout(
+      () => {
+        if (this.hostCaptured === this.hostCapturedRaw) return;
+        const was = this.relative;
+        this.hostCaptured = this.hostCapturedRaw;
+        this.relativeChanged(was);
+      },
+      captured ? CAPTURE_AFTER_MS : RELEASE_AFTER_MS,
+    );
+  }
+
+  private relativeChanged(was: boolean) {
+    const now = this.relative;
+    if (now === was) return;
+    this.onRelativeChange?.(now);
+    if (!now) {
+      if (this.locked) {
+        this.releasing = true;
+        document.exitPointerLock();
+      }
+      return;
+    }
+    // A page that let the lock go itself may take it back without a click;
+    // if the browser says no, the next click captures it.
+    if (this.mode === "auto" && !this.userReleased && !this.viewOnly && document.hasFocus()) this.lock();
   }
 
   /** Captures the mouse for a game. Needs a user gesture (a click or key press). */
   capture() {
-    if (this.mode !== "game" || this.viewOnly || this.locked) return;
-    // Raw mouse counts where the browser has them, as a game reads a mouse.
+    if (!this.relative || this.viewOnly || this.locked) return;
+    this.userReleased = false;
     // Fullscreen needs no gesture for the lock, so it can come after.
-    const lock = (o?: PointerLockOptions) => Promise.resolve(this.video.requestPointerLock(o));
-    (this.beforeCapture?.() ?? Promise.resolve())
-      .catch(() => {})
-      .then(() => lock({ unadjustedMovement: true }))
+    (this.beforeCapture?.() ?? Promise.resolve()).catch(() => {}).then(() => this.lock());
+  }
+
+  private lock() {
+    // Raw mouse counts where the browser has them, as a game reads a mouse.
+    const lock = (o?: PointerLockOptions) => Promise.resolve().then(() => this.video.requestPointerLock(o));
+    void lock({ unadjustedMovement: true })
       .catch(() => lock())
       .catch(() => {});
   }
@@ -104,11 +165,15 @@ export class InputForwarder {
     const locked = this.locked;
     if (locked === this.wasLocked) return;
     this.wasLocked = locked;
+    // Let go by the viewer, not by this page: auto doesn't take it back until a click.
+    if (!locked && !this.releasing && this.relative) this.userReleased = true;
+    this.releasing = false;
     this.releaseAll();
     this.onLockChange?.(locked);
   }
 
   dispose() {
+    clearTimeout(this.hostTimer);
     if (this.locked) document.exitPointerLock();
     this.releaseAll();
     this.detach.forEach((f) => f());
@@ -169,7 +234,8 @@ export class InputForwarder {
       if (e.movementX || e.movementY) this.send(this.conn.control, proto.moveBy(e.movementX, e.movementY));
       return;
     }
-    if (this.mode === "game" && e.pointerType === "mouse") return; // until a click captures it
+    // Until a click captures it: a game reading motion would take a position as a jump.
+    if (this.relative && e.pointerType === "mouse") return;
     const p = this.normalize(e);
     if (p) this.moveTo(p[0], p[1]);
   }
@@ -182,10 +248,16 @@ export class InputForwarder {
       this.send(this.conn.control, proto.button(e.button, pressed, 0.5, 0.5));
       return;
     }
-    if (this.mode === "game" && e.pointerType === "mouse") {
-      // The click that captures the mouse is the page's, not the game's.
+    if (this.relative && e.pointerType === "mouse") {
       e.preventDefault();
       if (pressed && e.button === 0) this.capture();
+      // In game mode the capturing click is the page's: the host pointer may
+      // be anywhere on the desktop. In auto a game hid it, so the game gets it,
+      // where its pointer is (no motion first would put it at the click).
+      if (this.mode === "auto") {
+        this.send(this.conn.control, proto.moveBy(0, 0));
+        this.send(this.conn.control, proto.button(e.button, pressed, 0.5, 0.5));
+      }
       return;
     }
     const p = this.normalize(e);

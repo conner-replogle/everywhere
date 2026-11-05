@@ -340,17 +340,24 @@ func (c CursorImage) Marshal() []byte {
 
 type CursorPosition struct {
 	Inside bool
-	X, Y   uint16
+	// Captured: a game hid the pointer to read the mouse's motion, so the
+	// viewer captures its mouse and sends motion. It's a flags byte after
+	// the position, which older viewers don't read.
+	Captured bool
+	X, Y     uint16
 }
 
 func (c CursorPosition) Marshal() []byte {
-	b := make([]byte, 6)
+	b := make([]byte, 7)
 	b[0] = TypeCursorPosition
 	if c.Inside {
 		b[1] = 1
 	}
 	le.PutUint16(b[2:], c.X)
 	le.PutUint16(b[4:], c.Y)
+	if c.Captured {
+		b[6] |= 1
+	}
 	return b
 }
 

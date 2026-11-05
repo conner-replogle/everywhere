@@ -642,7 +642,7 @@ func (s *session) cursorLoop(md *media) {
 				sentImage = img.Width != 0
 			}
 		}
-		pos := wire.CursorPosition{Inside: cur.Inside, X: norm(float64(cur.X), logicalW), Y: norm(float64(cur.Y), logicalH)}
+		pos := wire.CursorPosition{Inside: cur.Inside, Captured: cur.Captured, X: norm(float64(cur.X), logicalW), Y: norm(float64(cur.Y), logicalH)}
 		if pos != lastPos {
 			s.sendControl(pos.Marshal())
 			lastPos = pos

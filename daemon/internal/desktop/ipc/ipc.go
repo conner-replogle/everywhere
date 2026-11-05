@@ -79,9 +79,15 @@ var CommandLen = map[byte]int{
 }
 
 // CursorHeaderLen is the fixed part of a cursor message: u64 image generation,
-// u64 position generation, u8 inside, then i32 x, y, hotX, hotY, width, height.
+// u64 position generation, u8 flags, then i32 x, y, hotX, hotY, width, height.
 // RGBA pixels follow when the image changed.
 const CursorHeaderLen = 41
+
+// Cursor message flags.
+const (
+	CursorInside   = 1 // on the captured output, and visible
+	CursorCaptured = 2 // a game hid it to read the mouse's motion
+)
 
 type Codec int
 

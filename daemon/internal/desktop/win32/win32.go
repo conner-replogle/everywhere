@@ -53,6 +53,7 @@ var (
 	procReleaseDC                     = user32.NewProc("ReleaseDC")
 	procPrintWindow                   = user32.NewProc("PrintWindow")
 	procGetCursorPos                  = user32.NewProc("GetCursorPos")
+	procGetCursorInfo                 = user32.NewProc("GetCursorInfo")
 
 	procCreateCompatibleDC = gdi32.NewProc("CreateCompatibleDC")
 	procCreateDIBSection   = gdi32.NewProc("CreateDIBSection")
@@ -322,6 +323,32 @@ func processName(pid uint32) string {
 	}
 	name := filepath.Base(windows.UTF16ToString(buf[:n]))
 	return strings.TrimSuffix(name, filepath.Ext(name))
+}
+
+// cursorInfo is CURSORINFO.
+type cursorInfo struct {
+	Size, Flags uint32
+	Cursor      windows.Handle
+	X, Y        int32
+}
+
+const (
+	cursorShowing    = 1
+	cursorSuppressed = 2 // touch or pen hid it, not a program
+)
+
+// CursorHidden reports whether a program has hidden the pointer, as games do
+// while they read the mouse's motion for the camera.
+func CursorHidden() (hidden, ok bool) {
+	ci := cursorInfo{}
+	ci.Size = uint32(unsafe.Sizeof(ci))
+	if r, _, _ := procGetCursorInfo.Call(uintptr(unsafe.Pointer(&ci))); r == 0 {
+		return false, false
+	}
+	if ci.Flags&cursorSuppressed != 0 {
+		return false, true
+	}
+	return ci.Flags&cursorShowing == 0 || ci.Cursor == 0, true
 }
 
 // Foreground is the window with keyboard focus.

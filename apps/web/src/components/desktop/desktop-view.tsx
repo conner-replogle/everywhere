@@ -87,8 +87,8 @@ interface Prefs {
   touch?: TouchMode;
   /** Nothing reaches the desktop; touch and the mouse zoom the picture instead. */
   viewOnly?: boolean;
-  /** Point at the desktop, or capture the mouse for a game. */
-  mouse?: MouseMode;
+  /** Point at the desktop, capture the mouse for a game, or follow the host (auto, the default). */
+  mouseMode?: MouseMode;
 }
 
 type TouchMode = "trackpad" | "direct";
@@ -108,6 +108,13 @@ async function enterFullscreen(el: HTMLElement | null): Promise<void> {
   const kb = (navigator as Navigator & { keyboard?: { lock?: () => Promise<void> } }).keyboard;
   await kb?.lock?.().catch(() => {});
 }
+
+const NEXT_MOUSE_MODE: Record<MouseMode, MouseMode> = { auto: "game", game: "desktop", desktop: "auto" };
+const MOUSE_MODE_NOTICE: Record<MouseMode, string> = {
+  auto: "Auto mouse: captured while a game hides the pointer, yours again when it shows.",
+  game: "Game mouse: always captured. Click the picture to capture it.",
+  desktop: "Desktop mouse: it points where you point, even in games.",
+};
 
 /** A mouse or touchpad that pointer lock can capture for a game. */
 const canCaptureMouse =
@@ -258,15 +265,17 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
   const [hello, setHello] = useState<Hello | null>(null);
   // Game mode needs a host that takes relative motion (v0.22.1 on).
   const gameMouse = canCaptureMouse && !!hello?.moveBy;
-  const mouseMode: MouseMode = gameMouse && prefs.mouse === "game" && !viewOnly ? "game" : "desktop";
+  const mouseMode: MouseMode = gameMouse && !viewOnly ? (prefs.mouseMode ?? "auto") : "desktop";
   const mouseModeRef = useRef(mouseMode);
   mouseModeRef.current = mouseMode;
+  /** The mouse sends motion now, so a click captures it. */
+  const [mouseRelative, setMouseRelative] = useState(false);
   const toggleMouseModeRef = useRef(() => {});
   toggleMouseModeRef.current = () => {
     if (!gameMouse || viewOnly) return;
-    const next: MouseMode = mouseMode === "game" ? "desktop" : "game";
-    updatePrefs({ mouse: next });
-    setNotice(next === "game" ? "Game mouse: click the picture to capture it." : "Desktop mouse: it points where you point.");
+    const next = NEXT_MOUSE_MODE[mouseMode];
+    updatePrefs({ mouseMode: next });
+    setNotice(MOUSE_MODE_NOTICE[next]);
   };
 
   const rootRef = useRef<HTMLDivElement>(null);
@@ -373,6 +382,8 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
         cur.follow(locked);
         if (locked) setNotice("Mouse captured. Ctrl+Alt+Shift+Z lets it go; hold Esc to leave fullscreen.");
       };
+      setMouseRelative(false);
+      forwarder.onRelativeChange = setMouseRelative;
       forwarder.onCombo = (combo) => {
         if (combo === "mode") toggleMouseModeRef.current();
       };
@@ -408,6 +419,7 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
             break;
           case Type.CursorPosition:
             cur.setPosition(msg);
+            forwarder?.setHostCaptured(msg.captured);
             break;
           case Type.Outputs:
             setOutputs(msg.outputs);
@@ -742,16 +754,13 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
             <Button
               variant="ghost"
               size="icon-sm"
-              className={cn(iconBtn, mouseMode === "game" && "text-primary")}
-              aria-label="Game mouse"
-              aria-pressed={mouseMode === "game"}
+              className={cn(iconBtn, mouseRelative && "text-primary", mouseMode === "desktop" && "opacity-60")}
+              aria-label={`Mouse: ${mouseMode}`}
               disabled={!gameMouse}
               title={
                 !gameMouse
-                  ? "Game mouse needs everywhere 0.22.1 or later on this device"
-                  : mouseMode === "game"
-                    ? "Game mouse: a click captures the mouse and sends its motion, for games. Ctrl+Alt+Shift+Z lets it go; click (or Ctrl+Alt+Shift+M) to point at the desktop instead."
-                    : "Desktop mouse: points where you point. Click (or Ctrl+Alt+Shift+M) for the game mouse, which captures it and sends its motion."
+                  ? "The game mouse needs everywhere 0.22.1 or later on this device"
+                  : `${MOUSE_MODE_NOTICE[mouseMode]} Ctrl+Alt+Shift+Z lets a captured mouse go. Click (or Ctrl+Alt+Shift+M) for the ${NEXT_MOUSE_MODE[mouseMode]} mouse.`
               }
               onClick={() => {
                 toggleMouseModeRef.current();
@@ -1023,9 +1032,9 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
             />
           </div>
         )}
-        {mouseMode === "game" && !mouseLocked && !annotating && status.kind === "live" && !notice && (
+        {mouseRelative && !mouseLocked && !annotating && status.kind === "live" && !notice && (
           <div className="pointer-events-none absolute bottom-2 left-1/2 z-30 max-w-[calc(100%-1rem)] -translate-x-1/2 truncate rounded-md bg-background/90 px-3 py-1.5 text-xs shadow">
-            Click the picture to play: fullscreen, with the mouse and every key · Ctrl+Alt+Shift+Z lets the mouse go · Ctrl+Alt+Shift+M for the desktop mouse
+            Click the picture to play: fullscreen, with the mouse and every key · Ctrl+Alt+Shift+Z lets the mouse go · Ctrl+Alt+Shift+M changes the mouse
           </div>
         )}
         {notice && (

@@ -71,3 +71,11 @@ func TestHello(t *testing.T) {
 		t.Fatalf("got %v", got)
 	}
 }
+
+func TestCursorPositionMarshal(t *testing.T) {
+	got := CursorPosition{Inside: false, Captured: true, X: 1, Y: 2}.Marshal()
+	want := []byte{TypeCursorPosition, 0, 1, 0, 2, 0, 1}
+	if string(got) != string(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}

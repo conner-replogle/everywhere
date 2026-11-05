@@ -89,6 +89,8 @@ export interface CursorPosition {
   type: typeof Type.CursorPosition;
   /** False when the pointer is on another monitor. */
   inside: boolean;
+  /** A game hid the pointer to read the mouse's motion (Windows hosts; older daemons never say so). */
+  captured: boolean;
   /** 0..1 across the video frame. */
   x: number;
   y: number;
@@ -429,6 +431,7 @@ export function parseHost(data: ArrayBuffer): HostMessage | null {
         inside: b.getUint8(1) !== 0,
         x: b.getUint16(2, true) / 65535,
         y: b.getUint16(4, true) / 65535,
+        captured: b.byteLength > 6 && (b.getUint8(6) & 1) !== 0,
       };
     case Type.Outputs: {
       if (b.byteLength < 2) return null;

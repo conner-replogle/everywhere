@@ -141,7 +141,8 @@ func Screenshot(output, window string) (*image.RGBA, error) {
 type Cursor struct {
 	ImageGen, PosGen uint64
 	Inside           bool
-	X, Y             int // hotspot position in output pixels
+	Captured         bool // a game hid the pointer; Windows only (capture_windows.go)
+	X, Y             int  // hotspot position in output pixels
 	HotX, HotY       int
 	Width, Height    int
 	RGBA             []byte // non-nil only when the image changed

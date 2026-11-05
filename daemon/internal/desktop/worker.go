@@ -69,7 +69,8 @@ type frame struct {
 type cursor struct {
 	ImageGen, PosGen uint64
 	Inside           bool
-	X, Y             int // hotspot position, in logical output coordinates (Hyprland)
+	Captured         bool // a game hid the pointer to read the mouse's motion (Windows)
+	X, Y             int  // hotspot position, in logical output coordinates (Hyprland)
 	HotX, HotY       int
 	Width, Height    int
 	RGBA             []byte // non-nil only when the image changed
@@ -211,7 +212,8 @@ func (w *worker) setCursor(p []byte) {
 	}
 	le := ipc.LE
 	c := &cursor{
-		ImageGen: le.Uint64(p[0:]), PosGen: le.Uint64(p[8:]), Inside: p[16] != 0,
+		ImageGen: le.Uint64(p[0:]), PosGen: le.Uint64(p[8:]),
+		Inside: p[16]&ipc.CursorInside != 0, Captured: p[16]&ipc.CursorCaptured != 0,
 		X: int(int32(le.Uint32(p[17:]))), Y: int(int32(le.Uint32(p[21:]))),
 		HotX: int(int32(le.Uint32(p[25:]))), HotY: int(int32(le.Uint32(p[29:]))),
 		Width: int(int32(le.Uint32(p[33:]))), Height: int(int32(le.Uint32(p[37:]))),

@@ -38,10 +38,13 @@ type Output struct {
 type Cursor struct {
 	ImageGen, PosGen uint64
 	Inside           bool
-	X, Y             int // hotspot position in captured pixels
-	HotX, HotY       int
-	Width, Height    int
-	RGBA             []byte // non-nil only when the image changed
+	// Captured: a program has hidden the pointer, as games do while they
+	// read the mouse's motion (the viewer then sends motion too).
+	Captured      bool
+	X, Y          int // hotspot position in captured pixels
+	HotX, HotY    int
+	Width, Height int
+	RGBA          []byte // non-nil only when the image changed
 }
 
 var ErrClosed = errors.New("capture closed")
@@ -80,6 +83,7 @@ func Start(cfg ipc.Config) (*Capture, error) {
 	}
 	ready := make(chan error, 1)
 	go c.run(ready)
+	go c.watchCaptured()
 	if err := <-ready; err != nil {
 		<-c.done
 		return nil, err
@@ -453,6 +457,35 @@ func (c *Capture) loop(p *pipeline) error {
 				}
 			}
 		}
+	}
+}
+
+// capturedPoll is how often the pointer's visibility is checked: Desktop
+// Duplication says when it moves, not when a game hides it.
+const capturedPoll = 50 * time.Millisecond
+
+// watchCaptured keeps Cursor.Captured up to date until the capture ends.
+func (c *Capture) watchCaptured() {
+	t := time.NewTicker(capturedPoll)
+	defer t.Stop()
+	for {
+		select {
+		case <-c.done:
+			return
+		case <-t.C:
+		}
+		hidden, ok := win32.CursorHidden()
+		if !ok {
+			continue
+		}
+		c.setCursor(func(cur *Cursor) bool {
+			if cur.Captured == hidden {
+				return false
+			}
+			cur.Captured = hidden
+			cur.PosGen++
+			return true
+		}, nil)
 	}
 }
 

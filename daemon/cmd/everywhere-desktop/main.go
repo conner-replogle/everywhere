@@ -138,7 +138,10 @@ func serve(cfgJSON []byte, cmds io.Reader, out io.Writer, viaSocket bool) int {
 				le.PutUint64(p[0:], cur.ImageGen)
 				le.PutUint64(p[8:], cur.PosGen)
 				if cur.Inside {
-					p[16] = 1
+					p[16] |= ipc.CursorInside
+				}
+				if cur.Captured {
+					p[16] |= ipc.CursorCaptured
 				}
 				for i, v := range []int{cur.X, cur.Y, cur.HotX, cur.HotY, cur.Width, cur.Height} {
 					le.PutUint32(p[17+4*i:], uint32(int32(v)))
