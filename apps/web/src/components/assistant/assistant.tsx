@@ -23,6 +23,7 @@ import { setFleet } from "@/lib/assistant/fleet";
 import { messageText, spokenPart } from "@/lib/assistant/messages";
 import { assistantSync, useAssistantSync } from "@/lib/assistant/sync";
 import { useVoice, voice } from "@/lib/assistant/voice";
+import { VoiceBars, VoiceRing } from "./visualizer";
 import { cn } from "@/lib/utils";
 
 /** Keeps the assistant's view of the fleet current and starts its connection. */
@@ -64,9 +65,10 @@ export function Assistant() {
       {open && <AssistantPanel onClose={() => setOpen(false)} />}
       {/* The panel has its own mic. */}
       {!open && (
-        <div className="pointer-events-none fixed right-4 bottom-24 z-40 flex items-end gap-2 md:bottom-20">
+        // right-6 and gap-6: room for the voice ring (it reaches 48px from the mic's center).
+        <div className="pointer-events-none fixed right-6 bottom-24 z-40 flex items-end gap-6 md:bottom-20">
           {(v.state !== "off" || showError) && <VoiceBar onDismiss={showError ? () => setDismissed(v.error) : undefined} />}
-          <div className="pointer-events-auto flex flex-col items-center gap-2">
+          <div className="pointer-events-auto flex flex-col items-center gap-6">
             <button
               type="button"
               onClick={() => setOpen(true)}
@@ -78,31 +80,34 @@ export function Assistant() {
                 <span className="absolute -top-0.5 -right-0.5 size-2.5 rounded-full bg-primary ring-2 ring-background" />
               )}
             </button>
-            <button
-              type="button"
-              // Keep the page's text selection: it goes with the prompt.
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => voice.toggle()}
-              aria-label={v.state === "off" ? "Talk to the assistant" : "Stop talking"}
-              className={cn(
-                "relative flex size-12 items-center justify-center rounded-full shadow-xl transition-colors",
-                v.state === "off" ? "bg-primary text-primary-foreground hover:bg-primary/90" : "bg-destructive/90 text-white",
-              )}
-            >
-              {v.state === "starting" ? (
-                <LoaderCircleIcon className="size-5 animate-spin" />
-              ) : v.state === "off" ? (
-                <MicIcon className="size-5" />
-              ) : (
-                <MicOffIcon className="size-5" />
-              )}
-              {v.state === "listening" && (
-                <span className="absolute inset-0 animate-ping rounded-full bg-destructive/40 [animation-duration:2s]" />
-              )}
-              {working && v.state === "off" && (
-                <span className="absolute -inset-1 animate-spin rounded-full border-2 border-transparent border-t-primary" />
-              )}
-            </button>
+            <div className="relative">
+              <VoiceRing
+                active={v.state === "listening" || v.state === "speaking"}
+                className="absolute top-1/2 left-1/2 size-32 -translate-x-1/2 -translate-y-1/2"
+              />
+              <button
+                type="button"
+                // Keep the page's text selection: it goes with the prompt.
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => voice.toggle()}
+                aria-label={v.state === "off" ? "Talk to the assistant" : "Stop talking"}
+                className={cn(
+                  "relative flex size-12 items-center justify-center rounded-full shadow-xl transition-colors",
+                  v.state === "off" ? "bg-primary text-primary-foreground hover:bg-primary/90" : "bg-destructive/90 text-white",
+                )}
+              >
+                {v.state === "starting" ? (
+                  <LoaderCircleIcon className="size-5 animate-spin" />
+                ) : v.state === "off" ? (
+                  <MicIcon className="size-5" />
+                ) : (
+                  <MicOffIcon className="size-5" />
+                )}
+                {working && v.state === "off" && (
+                  <span className="absolute -inset-1 animate-spin rounded-full border-2 border-transparent border-t-primary" />
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -133,6 +138,7 @@ function VoiceBar({ onDismiss }: { onDismiss?: () => void }) {
         <ApprovalCard approval={approval} compact />
       ) : (
         <div className="flex items-start gap-2">
+          {!onDismiss && <VoiceBars active={v.state === "listening" || v.state === "speaking"} className="mt-0.5 h-4 w-12 shrink-0" />}
           <p className={cn("line-clamp-3 flex-1", v.heard ? "text-foreground" : "text-muted-foreground", v.error && "text-destructive")}>
             {line}
           </p>
@@ -269,7 +275,10 @@ function AssistantPanel({ onClose }: { onClose: () => void }) {
       </div>
       <footer className="border-t border-border p-2">
         {v.state !== "off" && (
-          <p className="truncate px-1 pb-1 text-xs text-muted-foreground">{v.heard || (v.state === "speaking" ? "Speaking…" : "Listening…")}</p>
+          <div className="flex items-center gap-2 px-1 pb-1">
+            <VoiceBars active={v.state === "listening" || v.state === "speaking"} className="h-3.5 w-10 shrink-0" />
+            <p className="truncate text-xs text-muted-foreground">{v.heard || (v.state === "speaking" ? "Speaking…" : "Listening…")}</p>
+          </div>
         )}
         <div className="flex items-end gap-1.5">
           <textarea

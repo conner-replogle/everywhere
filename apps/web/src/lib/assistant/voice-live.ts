@@ -8,6 +8,7 @@ import type { AssistantEntry } from "@everywhere/protocol";
 import type { Message } from "@mariozechner/pi-ai";
 import { api } from "@/lib/api";
 import { assistantRunner, composePrompt } from "./agent";
+import { watchStream } from "./levels";
 import { LiveBridge, type LiveEvent } from "./live-bridge";
 import { messageText, spokenPart } from "./messages";
 import { assistantSync } from "./sync";
@@ -147,6 +148,7 @@ export class LiveVoice {
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
       });
+      watchStream("mic", this.stream);
       const pc = new RTCPeerConnection();
       this.pc = pc;
       for (const t of this.stream.getAudioTracks()) pc.addTrack(t, this.stream);
@@ -155,7 +157,9 @@ export class LiveVoice {
       audio.autoplay = true;
       this.audio = audio;
       pc.ontrack = (e) => {
-        audio.srcObject = e.streams[0] ?? new MediaStream([e.track]);
+        const stream = e.streams[0] ?? new MediaStream([e.track]);
+        audio.srcObject = stream;
+        watchStream("out", stream);
         void audio.play().catch(() => {});
       };
       pc.onconnectionstatechange = () => {
@@ -275,6 +279,8 @@ export class LiveVoice {
     this.dc = null;
     this.pc?.close();
     this.pc = null;
+    watchStream("mic", null);
+    watchStream("out", null);
     for (const t of this.stream?.getTracks() ?? []) t.stop();
     this.stream = null;
     if (this.audio) this.audio.srcObject = null;

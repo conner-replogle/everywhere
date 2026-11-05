@@ -7,6 +7,7 @@ import type { AssistantListenMsg, AssistantLive } from "@everywhere/protocol";
 import { useSyncExternalStore } from "react";
 import { assistantRunner, composePrompt } from "./agent";
 import { NO, speakable, YES } from "./messages";
+import { outputAnalyser, watchStream } from "./levels";
 import { voiceEngine } from "./voice-engine";
 import { assistantSync } from "./sync";
 
@@ -26,6 +27,8 @@ const SENTENCE_END = /[.!?](?=\s|$)|\n/g;
 
 class Speaker {
   private ctx: AudioContext | null = null;
+  /** What's played goes through this, for the visualizer. */
+  private out: AnalyserNode | null = null;
   private queue: Promise<AudioBuffer | null>[] = [];
   private playing: AudioBufferSourceNode | null = null;
   private generation = 0;
@@ -35,6 +38,10 @@ class Speaker {
   /** Must be called from a user gesture on iOS. */
   unlock(): void {
     this.ctx ??= new AudioContext();
+    if (!this.out) {
+      this.out = outputAnalyser(this.ctx);
+      this.out.connect(this.ctx.destination);
+    }
     void this.ctx.resume();
   }
 
@@ -66,7 +73,7 @@ class Speaker {
       await new Promise<void>((resolve) => {
         const src = this.ctx!.createBufferSource();
         src.buffer = buf;
-        src.connect(this.ctx!.destination);
+        src.connect(this.out ?? this.ctx!.destination);
         src.onended = () => resolve();
         this.playing = src;
         src.start();
@@ -154,6 +161,7 @@ class FluxVoice {
       this.stream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
       });
+      watchStream("mic", this.stream);
       this.ctx = new AudioContext();
       await this.ctx.audioWorklet.addModule("/pcm-worklet.js");
       const source = this.ctx.createMediaStreamSource(this.stream);
@@ -270,6 +278,7 @@ class FluxVoice {
   }
 
   stop(): void {
+    watchStream("mic", null);
     this.unsubscribeLive?.();
     this.unsubscribeLive = null;
     const ws = this.ws;
