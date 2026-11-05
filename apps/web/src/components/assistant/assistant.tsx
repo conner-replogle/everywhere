@@ -619,7 +619,7 @@ function PhoneAssistant() {
         />
       ) : (
         // Above the thread composer when there is one (it's full width on a phone).
-        <div className="pointer-events-none fixed right-4 bottom-[max(6rem,calc(var(--composer-height,0px)_+_0.5rem))] z-40 flex flex-col items-end gap-4">
+        <div className="pointer-events-none fixed right-4 bottom-[max(6rem,calc(var(--composer-height,0px)_+_1.75rem))] z-40 flex flex-col items-end gap-4">
           {toast && (
             <ReplyToast
               text={toast.text}
