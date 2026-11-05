@@ -9,6 +9,7 @@ import { assistantRunner, composePrompt } from "./agent";
 import { speakable } from "./messages";
 import { audioContext, audioInfo, closeAudio, isMobile } from "./audio";
 import { clearOutput, outputAnalyser, watchStream } from "./levels";
+import { clip, log, logWarn, since } from "./log";
 import { type MicInfo, micDeviceId, micInfo, openMic } from "./mic";
 import { voiceEngine } from "./voice-engine";
 import { assistantSync, tabId } from "./sync";
@@ -48,6 +49,8 @@ class Speaker {
     const t = speakable(text);
     if (!t || !this.ctx) return;
     const ctx = this.ctx;
+    const at = Date.now();
+    log("voice", "speaking a sentence: asking Aura", { text: clip(t, 80), queued: this.queue.length });
     this.queue.push(
       fetch("/api/assistant/speak", {
         method: "POST",
@@ -56,8 +59,12 @@ class Speaker {
       })
         .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(`speak ${r.status}`))))
         .then((b) => ctx.decodeAudioData(b))
+        .then((buf) => {
+          log("voice", `Aura's audio ready after ${since(at)}`, { seconds: +buf.duration.toFixed(1), text: clip(t, 40) });
+          return buf;
+        })
         .catch((e: unknown) => {
-          console.warn("assistant speech:", e);
+          logWarn("voice", `Aura failed after ${since(at)}`, { error: String(e), text: clip(t, 80) });
           return null;
         }),
     );
@@ -91,6 +98,7 @@ class Speaker {
 
   /** Stops speaking and drops what was queued. */
   stop(): void {
+    if (this.loop) log("voice", "stopped speaking", { dropped: this.queue.length });
     this.generation++;
     this.queue = [];
     try {
@@ -164,9 +172,12 @@ class FluxVoice {
   async start(): Promise<void> {
     if (this.on) return;
     this.update({ state: "starting", heard: "", error: null });
+    const t0 = Date.now();
+    log("voice", "starting the Workers AI voice");
     try {
       this.stream = await openMic();
       this.lastMic = micInfo(this.stream);
+      log("voice", `mic open after ${since(t0)}`, { mic: this.lastMic?.label, settings: this.lastMic?.settings });
       // One context for capture, speech and the visualizer, made now that the mic is open.
       this.ctx = audioContext(true);
       this.speaker.attach(this.ctx);
@@ -176,7 +187,9 @@ class FluxVoice {
       const pcm = new AudioWorkletNode(this.ctx, "pcm");
       source.connect(pcm);
       await this.connect(pcm);
+      log("voice", `listening after ${since(t0)}`);
     } catch (e) {
+      logWarn("voice", "couldn't start the Workers AI voice", { error: String(e) });
       this.stop();
       const denied = e instanceof DOMException && e.name === "NotAllowedError";
       this.update({ error: denied ? "Microphone access was denied." : e instanceof Error ? e.message : String(e) });
@@ -212,6 +225,7 @@ class FluxVoice {
         if (this.ws !== ws) return;
         this.ws = null;
         if (this.on) {
+          logWarn("voice", "the speech-to-text socket closed");
           this.stop();
           this.update({ error: "Listening stopped. Tap to talk again." });
         }
@@ -221,11 +235,13 @@ class FluxVoice {
 
   private onListen(m: AssistantListenMsg): void {
     if (m.t === "error") {
+      logWarn("voice", `speech to text: ${m.message}`);
       this.update({ error: m.message });
       return;
     }
     switch (m.event) {
       case "StartOfTurn":
+        log("voice", this.speaker.active ? "you started talking: interrupting the reply" : "you started talking");
         // Talking over the reply stops it.
         this.speaker.stop();
         this.update({ heard: m.transcript });
@@ -237,6 +253,7 @@ class FluxVoice {
         return;
       case "EndOfTurn": {
         const text = m.transcript.trim();
+        log("voice", text ? "you finished: prompting the agent" : "you finished, but nothing was heard", { text: clip(text) });
         this.update({ heard: "" });
         if (text) this.onUtterance(text);
         return;
@@ -324,6 +341,7 @@ class Voice {
     // One mic at a time: turning it on in another tab or device turns it off here.
     assistantSync.onVoiceElsewhere = () => {
       if (!this.on) return;
+      log("voice", "another tab's mic took over: turning this one off");
       this.engine.stop();
       this.movedAway = "Voice moved to another window or device.";
       this.emit();
@@ -359,15 +377,18 @@ class Voice {
         if (!this.live) this.live = new (await import("./voice-live")).LiveVoice();
         engine = this.live;
       } else {
+        log("voice", "GPT-Live is wanted but not set up: using Workers AI");
         this.notice = "GPT-Live isn't set up (Settings → Assistant), so this is the Workers AI voice.";
       }
     }
     this.use(engine);
+    log("voice", `voice on: ${engine === this.flux ? "Workers AI (Flux + Aura)" : "GPT-Live"}`);
     await engine.start();
     if (this.on) assistantSync.voiceOn();
   }
 
   stop(): void {
+    log("voice", "voice off");
     this.engine.stop();
   }
 

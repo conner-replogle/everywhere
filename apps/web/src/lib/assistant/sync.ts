@@ -12,6 +12,7 @@ import {
   HUB_PONG,
 } from "@everywhere/protocol";
 import { useSyncExternalStore } from "react";
+import { clip, log, logWarn } from "./log";
 
 export interface AssistantSnapshot {
   status: "idle" | "connecting" | "open" | "closed";
@@ -111,17 +112,25 @@ class AssistantSync {
   claim(): Promise<boolean> {
     if (this.isRunner) return Promise.resolve(true);
     return new Promise((resolve) => {
-      if (!this.send({ t: "claim" })) return resolve(false);
+      if (!this.send({ t: "claim" })) {
+        logWarn("sync", "can't claim the turn: not connected");
+        return resolve(false);
+      }
+      log("sync", "claiming the turn");
       this.claims.push(resolve);
       setTimeout(() => {
         const i = this.claims.indexOf(resolve);
-        if (i >= 0) this.claims.splice(i, 1)[0]?.(false);
+        if (i < 0) return;
+        logWarn("sync", `claim not answered in ${REPLY_TIMEOUT_MS / 1000}s`);
+        this.claims.splice(i, 1)[0]?.(false);
       }, REPLY_TIMEOUT_MS);
     });
   }
 
   release(): void {
-    if (this.isRunner) this.send({ t: "release" });
+    if (!this.isRunner) return;
+    log("sync", "releasing the turn");
+    this.send({ t: "release" });
   }
 
   setLive(live: AssistantLive | null): void {
@@ -131,11 +140,17 @@ class AssistantSync {
 
   /** Sends a prompt to the tab running a turn. */
   steer(text: string): boolean {
-    return this.send({ t: "steer", text, from: tabId });
+    const sent = this.send({ t: "steer", text, from: tabId });
+    log("sync", sent ? "sent a prompt to the tab running the turn" : "couldn't send a prompt to the running tab: not connected", {
+      text: clip(text),
+      runner: this.snap.runner,
+    });
+    return sent;
   }
 
   /** This tab's mic is on: the others turn theirs off. */
   voiceOn(): void {
+    log("sync", "mic on here: telling the other tabs to turn theirs off", { tab: tabId });
     this.send({ t: "voice", tab: tabId });
   }
 
@@ -191,6 +206,7 @@ class AssistantSync {
       clearInterval(this.pingTimer);
       this.pingTimer = setInterval(() => this.ping(), PING_INTERVAL_MS);
       const last = this.snap.entries.at(-1);
+      log("sync", "connected; attaching", { afterSeq: last?.seq ?? null, tab: tabId });
       this.update({ status: "open", synced: false });
       this.send(last ? { t: "attach", afterSeq: last.seq } : { t: "attach" });
     };
@@ -205,7 +221,7 @@ class AssistantSync {
       try {
         this.handle(JSON.parse(ev.data) as AssistantServerMsg);
       } catch (e) {
-        console.warn("assistant message:", e);
+        logWarn("sync", "couldn't handle a message", { error: String(e), data: clip(ev.data, 300) });
       }
     };
 
@@ -222,8 +238,9 @@ class AssistantSync {
       this.clearing = null;
       this.loadingEarlier = false;
       this.update({ status: "closed", synced: false, me: null, runner: null });
-      if (!this.running) return;
+      if (!this.running) return log("sync", "closed");
       const delay = Math.min(BACKOFF_MAX_MS, BACKOFF_MIN_MS * 2 ** this.attempt++);
+      logWarn("sync", `disconnected; reconnecting in about ${(delay / 1000).toFixed(1)}s`, { attempt: this.attempt });
       this.retryTimer = setTimeout(() => this.connect(), delay * (0.5 + Math.random() / 2));
     };
   }
@@ -254,9 +271,11 @@ class AssistantSync {
         // Cleared while this tab was away: what it has is gone.
         this.clearedThrough = m.clearedThrough;
         const entries = this.snap.entries.filter((e) => e.seq > m.clearedThrough);
+        log("sync", "hello", { connection: m.you, runner: m.runner, turnRunning: !!m.live, clearedThrough: m.clearedThrough });
         return this.update({ me: m.you, runner: m.runner, live: m.live, entries });
       }
       case "cleared":
+        log("sync", "the conversation was cleared", { throughSeq: m.throughSeq });
         this.clearedThrough = m.throughSeq;
         this.update({ entries: this.snap.entries.filter((e) => e.seq > m.throughSeq), hasEarlier: false, live: null });
         this.clearing?.resolve();
@@ -286,18 +305,33 @@ class AssistantSync {
         return;
       case "runner": {
         const granted = !!m.runner && m.runner === this.snap.me;
+        log("sync", m.runner ? (granted ? "this tab runs the turn" : "another tab runs the turn") : "no turn running", {
+          runner: m.runner,
+          waitingClaims: this.claims.length,
+        });
         for (const c of this.claims.splice(0)) c(granted);
         return this.update({ runner: m.runner, ...(m.runner ? {} : { live: null }) });
       }
-      case "live":
-        if (!this.isRunner) this.update({ live: m.live });
-        return;
+      case "live": {
+        if (this.isRunner) return;
+        // Where another tab's turn is, when that changes (not every word).
+        const was = this.snap.live;
+        if (m.live && (m.live.phase !== was?.phase || m.live.activity !== was?.activity)) {
+          log("sync", `the running turn: ${m.live.activity ?? m.live.phase ?? "started"}`, { for: m.live.for === tabId ? "this tab" : m.live.for });
+        }
+        return this.update({ live: m.live });
+      }
       case "steer":
+        log("sync", "a prompt from another tab", { text: clip(m.text), from: m.from });
         return this.onSteer?.(m.text, m.from);
       case "voice":
-        if (m.tab !== tabId) this.onVoiceElsewhere?.();
+        if (m.tab !== tabId) {
+          log("sync", "another tab turned its mic on", { tab: m.tab });
+          this.onVoiceElsewhere?.();
+        }
         return;
       case "noRunner":
+        log("sync", "no tab is running a turn: this one runs the prompt", { text: clip(m.text) });
         return this.onNoRunner?.(m.text);
       case "error":
         if (m.re === "clear" && this.clearing) {
@@ -305,7 +339,7 @@ class AssistantSync {
           this.clearing = null;
           return;
         }
-        console.warn("assistant:", m.message);
+        logWarn("sync", `server error: ${m.message}`, { re: m.re });
         return;
     }
   }

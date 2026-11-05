@@ -12,6 +12,7 @@ import { audioContext, closeAudio, isMobile } from "./audio";
 import { watchStream } from "./levels";
 import { type MicInfo, micInfo, openMic } from "./mic";
 import { LiveBridge, type LiveEvent } from "./live-bridge";
+import { clip, log, logWarn, since } from "./log";
 import { fromVoice, messageText, spokenPart, voiceExchange } from "./messages";
 import { assistantSync, tabId } from "./sync";
 import type { VoiceSnapshot } from "./voice";
@@ -83,6 +84,7 @@ export class LiveVoice {
   private stream: MediaStream | null = null;
   private audio: HTMLAudioElement | null = null;
   private bridge: LiveBridge | null = null;
+  private loggedMinute = -1;
   /** Prompts this voice gave the agent, so they aren't told back to GPT-Live as news. */
   private asked = new Set<string>();
   private unsubscribe: (() => void) | null = null;
@@ -124,7 +126,7 @@ export class LiveVoice {
       this.dbg.transcriptDeltas++;
       if (!this.loggedTranscript.has(e.type)) {
         this.loggedTranscript.add(e.type);
-        console.info("GPT-Live:", e.type === "session.input_transcript.delta" ? "hearing you" : "speaking");
+        log("live", e.type === "session.input_transcript.delta" ? "first words heard" : "first words spoken");
       }
       return;
     }
@@ -136,7 +138,16 @@ export class LiveVoice {
     const detail =
       e.type === "session.closed" || e.type === "error" ? JSON.stringify(e).slice(0, 500) : typeof e.reason === "string" ? e.reason : undefined;
     this.dbg.events.push({ at: Date.now(), type: e.type, ...(detail ? { detail } : {}) });
-    if (e.type !== "session.usage.updated") console.info("GPT-Live:", e.type, detail ?? "");
+    if (e.type === "error") logWarn("live", "GPT-Live error", { event: e });
+    else if (e.type !== "session.usage.updated") log("live", e.type, detail ? { detail } : undefined);
+    else {
+      // Once a minute: what's been billed.
+      const minute = Math.floor((this.dbg.usageSeconds ?? 0) / 60);
+      if (minute !== this.loggedMinute) {
+        this.loggedMinute = minute;
+        log("live", `billed ${Math.round(this.dbg.usageSeconds ?? 0)}s so far`, { contextUsed: this.dbg.contextRatio });
+      }
+    }
     if (this.dbg.events.length > DEBUG_EVENTS) this.dbg.events.splice(0, this.dbg.events.length - DEBUG_EVENTS);
   }
 
@@ -145,6 +156,7 @@ export class LiveVoice {
     const s = assistantSync.getSnapshot();
     if (s.runner) this.lastActivity = Date.now();
     if (Date.now() - this.lastActivity < LIVE_IDLE_MS) return;
+    log("live", `closing: nothing said for ${LIVE_IDLE_MS / 60000} minutes`);
     this.stop();
     this.update({ error: "Voice turned off after two quiet minutes. Tap the mic to talk again." });
   }
@@ -154,9 +166,12 @@ export class LiveVoice {
     this.dbg = { ...emptyDebug(), startedAt: Date.now() };
     this.loggedTranscript.clear();
     this.update({ state: "starting", heard: "", error: null });
+    const t0 = Date.now();
+    log("live", "starting a GPT-Live session");
     try {
       this.stream = await openMic();
       this.lastMic = micInfo(this.stream);
+      log("live", `mic open after ${since(t0)}`, { mic: this.lastMic?.label, settings: this.lastMic?.settings });
       // The visualizer's context, made now that the mic is open.
       audioContext(true);
       watchStream("mic", this.stream);
@@ -177,10 +192,13 @@ export class LiveVoice {
       };
       pc.onconnectionstatechange = () => {
         this.dbg.events.push({ at: Date.now(), type: "pc.connectionstate", detail: pc.connectionState });
+        (pc.connectionState === "failed" || pc.connectionState === "disconnected" ? logWarn : log)("live", `connection ${pc.connectionState}`);
         if (pc.connectionState === "failed") this.fail("The voice connection dropped.");
       };
       const dc = pc.createDataChannel("oai-events");
       this.dc = dc;
+      dc.onopen = () => log("live", `event channel open after ${since(t0)}`);
+      dc.onclose = () => log("live", "event channel closed");
       this.bridge = new LiveBridge(
         {
           ask: (text) => {
@@ -206,7 +224,7 @@ export class LiveVoice {
           onAnswered: (said, reply) => {
             void assistantSync
               .append(voiceExchange(composePrompt(said, { voice: true }), reply).map((message) => ({ kind: "message" as const, message })))
-              .catch((e: unknown) => console.warn("logging GPT-Live's answer:", e));
+              .catch((e: unknown) => logWarn("live", "couldn't log GPT-Live's own answer", { error: String(e), said: clip(said) }));
           },
           onClosed: (reason) => {
             this.dbg.closeReason = reason;
@@ -226,6 +244,7 @@ export class LiveVoice {
 
       await pc.setLocalDescription(await pc.createOffer());
       await gathered(pc);
+      log("live", `offer ready after ${since(t0)}: asking the Worker for a session`, { iceGathering: pc.iceGatheringState });
       const answer = await api.startLive({
         sdp: pc.localDescription?.sdp ?? "",
         instructions: LIVE_INSTRUCTIONS,
@@ -233,6 +252,7 @@ export class LiveVoice {
       });
       await pc.setRemoteDescription({ type: "answer", sdp: answer.sdp });
       this.dbg.sessionId = answer.id;
+      log("live", `session ${answer.id} answered after ${since(t0)}`, { seedMessages: seedHistory(assistantSync.getSnapshot().entries).length });
       this.follow();
       this.lastActivity = Date.now();
       this.idleTimer = setInterval(() => this.checkIdle(), IDLE_CHECK_MS);
@@ -283,6 +303,7 @@ export class LiveVoice {
   }
 
   private fail(message: string): void {
+    logWarn("live", `voice stopped: ${message}`);
     this.stop();
     this.update({ error: message });
   }

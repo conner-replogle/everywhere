@@ -14,6 +14,8 @@
 // No browser APIs here: the voice controller (voice-live.ts) feeds it
 // events and sends what it returns.
 
+import { clip, log, logWarn } from "./log";
+
 /** GPT-Live takes at most 500 tokens per append; this stays well under. */
 const APPEND_CHARS = 1500;
 /** A hand-off can come before the transcript catches up; wait this long for it. */
@@ -85,7 +87,7 @@ export class LiveBridge {
         return this.h.onStarted?.();
       case "session.input_transcript.delta": {
         if (typeof e.delta !== "string") return;
-        const span = this.add(this.you, e);
+        const span = this.add(this.you, e, "you");
         this.lastHeardAt = this.now();
         this.h.onHeard?.(span.text.trim());
         this.checkAnswered();
@@ -93,7 +95,7 @@ export class LiveBridge {
       }
       case "session.output_transcript.delta": {
         if (typeof e.delta !== "string") return;
-        const span = this.add(this.it, e);
+        const span = this.add(this.it, e, "GPT-Live");
         this.h.onSaid?.(span.text.trim());
         this.checkAnswered();
         return;
@@ -101,16 +103,19 @@ export class LiveBridge {
       case "session.delegation.created": {
         const d = e.delegation as { id?: string; target?: string } | undefined;
         if (!d?.id) return;
+        if (this.delegation) log("bridge", "a new hand-off while one is still open: the old one's replies go to the new one", { old: this.delegation });
         this.delegation = d.id;
         const at = typeof e.offset_ms === "number" ? e.offset_ms : this.timeline();
+        log("bridge", `hand-off ${d.id} at ${(at / 1000).toFixed(1)}s`, { target: d.target, unusedUtterances: this.you.filter((u) => !u.used).length });
         this.settle(this.now(), at);
         return;
       }
       case "session.closed":
+        log("bridge", "session closed", { reason: e.reason });
         this.flushAnswered(Infinity);
         return this.h.onClosed?.(typeof e.reason === "string" ? e.reason : "closed");
       case "error":
-        console.warn("GPT-Live:", e);
+        logWarn("bridge", "GPT-Live sent an error", { event: e });
         return;
     }
   }
@@ -118,6 +123,7 @@ export class LiveBridge {
   /** The agent said something: GPT-Live says it, as the result of the hand-off if there is one. */
   assistantSaid(text: string): void {
     const t = text.trim();
+    log("bridge", `the agent's reply goes to GPT-Live to say (${t.length} chars)`, { delegation: this.delegation, text: clip(t) });
     for (let i = 0; i < t.length; i += APPEND_CHARS) this.append("session.commentary.append", t.slice(i, i + APPEND_CHARS));
   }
 
@@ -125,11 +131,13 @@ export class LiveBridge {
   note(text: string): void {
     const t = text.trim();
     if (!t) return;
+    log("bridge", "a quiet note to GPT-Live", { text: clip(t) });
     this.h.send({ type: "session.thinking.append", event_id: `ew_${this.nextEvent++}`, delegation_id: null, content: t.slice(-APPEND_CHARS) });
   }
 
   /** The agent's turn is over: later replies aren't this hand-off's. */
   turnEnded(): void {
+    if (this.delegation) log("bridge", `the agent's turn ended: hand-off ${this.delegation} closed`);
     this.delegation = null;
   }
 
@@ -145,7 +153,7 @@ export class LiveBridge {
   }
 
   /** Adds a transcript piece: to the last span if it follows closely, else as a new one. */
-  private add(spans: Span[], e: LiveEvent): Span {
+  private add(spans: Span[], e: LiveEvent, who: string): Span {
     const delta = e.delta as string;
     const start = typeof e.start_ms === "number" ? e.start_ms : this.timeline();
     const end = typeof e.end_ms === "number" ? e.end_ms : start;
@@ -156,6 +164,7 @@ export class LiveBridge {
       return last;
     }
     const span = { text: delta, start, end };
+    log("bridge", `${who} speaking at ${(start / 1000).toFixed(1)}s`);
     spans.push(span);
     if (spans.length > 200) spans.splice(0, spans.length - 200);
     return span;
@@ -174,6 +183,7 @@ export class LiveBridge {
     const open = this.you.filter((u) => !u.used);
     const settle = /[.?!]["')\]]?\s*$/.test(open.at(-1)?.text ?? "") ? DELEGATION_SETTLE_SENTENCE_MS : DELEGATION_SETTLE_MS;
     if (quietFor < settle && waited < DELEGATION_WAIT_MAX_MS) {
+      if (!waited) log("bridge", `waiting for the transcript to settle (${settle} ms quiet)`);
       this.settleTimer = setTimeout(() => this.settle(since, at), settle - quietFor);
       return;
     }
@@ -183,11 +193,18 @@ export class LiveBridge {
     const cutoff = last ? Math.max(-Infinity, ...this.it.filter((s) => s.end <= last.start).map((s) => s.end)) : -Infinity;
     this.flushAnswered(cutoff);
     const task = mine.filter((u) => !u.used && u.start >= cutoff);
+    const left = open.filter((u) => !mine.includes(u));
     for (const u of mine) u.used = true;
     const text = task
       .map((u) => u.text.trim())
       .filter(Boolean)
       .join(" ");
+    log("bridge", text ? "hand-off: the agent gets" : "hand-off with nothing new heard", {
+      text: clip(text, 300),
+      waitedMs: waited,
+      answeredBefore: cutoff === -Infinity ? null : `${(cutoff / 1000).toFixed(1)}s`,
+      laterWords: left.map((u) => clip(u.text, 60)),
+    });
     if (text) return this.agent.ask(text);
     // Nothing for the agent: tell GPT-Live quietly, so it doesn't wait on it.
     this.h.send({
@@ -222,6 +239,7 @@ export class LiveBridge {
       u.used = true;
       for (const r of replies) r.used = true;
       const reply = replies.map((r) => r.text.trim()).join(" ").trim();
+      log("bridge", "GPT-Live answered this itself: logging it", { said: clip(u.text), reply: clip(reply) });
       if (u.text.trim() && reply) this.h.onAnswered?.(u.text.trim(), reply);
     }
   }

@@ -3,6 +3,8 @@
 // opening the mic switches iOS into call audio at another sample rate, and a
 // context made before that (or several at once) is resampled and crackles.
 
+import { log } from "./log";
+
 let ctx: AudioContext | null = null;
 
 /** iPhone and iPad (iPadOS says it's a Mac), and Android. */
@@ -19,7 +21,13 @@ export function isMobile(): boolean {
  */
 export function audioContext(fresh = false): AudioContext {
   if (fresh || ctx?.state === "closed") closeAudio();
-  ctx ??= new AudioContext({ latencyHint: isMobile() ? "balanced" : "interactive" });
+  if (!ctx) {
+    const latencyHint = isMobile() ? "balanced" : "interactive";
+    const c = new AudioContext({ latencyHint });
+    log("audio", "audio context made", { sampleRate: c.sampleRate, baseLatency: c.baseLatency, latencyHint, state: c.state });
+    c.onstatechange = () => log("audio", `audio context ${c.state}`);
+    ctx = c;
+  }
   void ctx.resume();
   return ctx;
 }
@@ -28,7 +36,10 @@ export function audioContext(fresh = false): AudioContext {
 export function closeAudio(): void {
   const c = ctx;
   ctx = null;
-  if (c && c.state !== "closed") void c.close();
+  if (c && c.state !== "closed") {
+    log("audio", "audio context closed");
+    void c.close();
+  }
 }
 
 /** For bug reports. */

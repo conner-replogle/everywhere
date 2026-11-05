@@ -805,6 +805,22 @@ prompting threads, each time after the user says yes to the drafted prompt.
   Both voices open the chosen input, or the default if it's gone. The page
   tests it with a level meter, and bug reports include the inputs there are
   and the one a voice opened (its settings, live or muted).
+- **Debug log** (`log.ts`): the live parts log to the browser console, one
+  tagged line per event (`[assistant:sync]`, `turn`, `tool`, `voice`,
+  `live`, `bridge`, `audio`), with details as an object. It covers:
+  - the socket: connects, reconnects, who runs the turn, prompts between
+    tabs, mic hand-offs;
+  - each model call: time to first token, when reasoning, writing or a tool
+    call starts, how it ended (stop reason, tokens), errors;
+  - each tool: arguments, time taken, result size, failures;
+  - Aura's latency per sentence;
+  - GPT-Live's connection steps and events, and billed time each minute;
+  - the bridge: hand-offs with what the agent got and what was left out,
+    own answers logged, notes;
+  - the audio context.
+  It's on by default; `ewDebug.off()`, `ewDebug.on()` and
+  `ewDebug.only("bridge", …)` set it per browser. Warnings always show.
+  Console output goes into bug reports.
 - **The OpenAI API key** is an account setting: `GET`/`PUT`/`DELETE
   /api/assistant/openai-key`, kept sealed (`secretbox`) in the Assistant DO;
   the app only sees its last four characters, and only the Worker uses it.

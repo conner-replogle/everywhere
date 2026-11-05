@@ -11,6 +11,7 @@ import { useSyncExternalStore } from "react";
 import { describeView, type FleetDevice, fleetDevices, fleetOverview, threadName, threadStatus } from "./fleet";
 import { contextFrom, convertToLlm, messageText, userMessage } from "./messages";
 import { assistantSystemPrompt, contextNote } from "./prompt";
+import { clip, log, logWarn, since } from "./log";
 import { assistantSync, tabId } from "./sync";
 import { assistantTools } from "./tools";
 
@@ -109,6 +110,11 @@ class AssistantRunner {
   private watches = new Map<string, Watch>();
   /** The tools running now (several at once when it reads in parallel), by call id. */
   private tools = new Map<string, string>();
+  /** For the log: this turn's model calls, when the current one went out and what it's streamed so far. */
+  private calls = 0;
+  private callAt = 0;
+  private streamed = new Set<string>();
+  private toolAt = new Map<string, number>();
   /** The tab whose message the turn is answering; its voice speaks the reply. */
   private asker: string = tabId;
   /** Shows a thread; set by the app's bridge. */
@@ -162,27 +168,46 @@ class AssistantRunner {
   private async run(text: string, from: string = tabId): Promise<void> {
     const msg = userMessage(text);
     this.asker = from;
+    const asker = from === tabId ? "this tab" : from;
     if (this.snap.busy) {
+      log("turn", "added to the running turn", { text: clip(text), from: asker });
       this.publish(true);
       this.agent.steer(msg);
       return;
     }
+    const started = Date.now();
+    this.calls = 0;
+    log("turn", "starting a turn", { text: clip(text), from: asker, model: modelId() });
     this.update({ busy: true, error: null });
     try {
       if (!(await assistantSync.claim())) {
+        log("turn", "another tab got the turn first: sending it the prompt");
         if (!assistantSync.steer(text)) throw new Error("Couldn't reach the conversation. Check your connection.");
         return;
       }
       this.agent.state.model = model();
       this.agent.state.systemPrompt = systemPrompt();
       this.agent.state.messages = contextFrom(assistantSync.getSnapshot().entries);
+      log("turn", "context built", {
+        messages: this.agent.state.messages.length,
+        approxTokens: estimateTokens(this.agent.state.messages),
+        systemPromptChars: this.agent.state.systemPrompt.length,
+      });
       await this.agent.prompt(msg);
       // Steered in after the loop's last check.
-      while (this.agent.hasQueuedMessages()) await this.agent.continue();
-      if (this.agent.state.errorMessage) this.update({ error: this.agent.state.errorMessage });
+      while (this.agent.hasQueuedMessages()) {
+        log("turn", "a prompt came in at the end: continuing");
+        await this.agent.continue();
+      }
+      if (this.agent.state.errorMessage) {
+        logWarn("turn", `the turn failed: ${this.agent.state.errorMessage}`);
+        this.update({ error: this.agent.state.errorMessage });
+      }
       await Promise.allSettled(this.saving);
       await this.compactIfNeeded();
+      log("turn", `turn done in ${since(started)}`, { modelCalls: this.calls });
     } catch (e) {
+      logWarn("turn", `the turn threw after ${since(started)}`, { error: e instanceof Error ? e.message : String(e) });
       this.update({ error: e instanceof Error ? e.message : String(e) });
     } finally {
       this.saving = [];
@@ -195,6 +220,7 @@ class AssistantRunner {
   }
 
   stop(): void {
+    log("turn", "stopped by the user");
     this.agent.clearAllQueues();
     this.agent.abort();
   }
@@ -223,6 +249,10 @@ class AssistantRunner {
     switch (e.type) {
       case "turn_start":
         // A request is out to the model; nothing back yet.
+        this.calls++;
+        this.callAt = Date.now();
+        this.streamed.clear();
+        log("turn", `model call ${this.calls}: waiting on ${modelName()}`, { messages: this.agent.state.messages.length });
         this.live = { ...this.live, phase: "waiting", thinking: undefined, model: modelName() };
         this.publish(true);
         return;
@@ -234,6 +264,13 @@ class AssistantRunner {
         return;
       case "message_update": {
         const ev = e.assistantMessageEvent;
+        // The first of each kind of output, with how long it took to come.
+        const kind = ev.type.startsWith("thinking") ? "reasoning" : ev.type.startsWith("toolcall") ? "a tool call" : ev.type.startsWith("text") ? "the reply" : null;
+        if (kind && !this.streamed.has(kind)) {
+          if (!this.streamed.size) log("turn", `first token after ${since(this.callAt)}`);
+          this.streamed.add(kind);
+          log("turn", `writing ${kind} (${since(this.callAt)} in)`);
+        }
         const phase = ev.type.startsWith("thinking") ? "thinking" : ev.type === "start" ? this.live.phase : "writing";
         const thinking = phase === "thinking" ? thinkingTail(e.message as Message) : this.live.thinking;
         const changed = phase !== this.live.phase;
@@ -243,7 +280,21 @@ class AssistantRunner {
       }
       case "message_end": {
         const m = e.message as Message;
-        this.saving.push(assistantSync.append([{ kind: "message", message: m }]).catch((err: unknown) => console.warn(err)));
+        if (m.role === "assistant") {
+          const calls = m.content.filter((b) => b.type === "toolCall").map((b) => (b.type === "toolCall" ? b.name : ""));
+          const line = `model call ${this.calls} ended (${m.stopReason}) after ${since(this.callAt)}`;
+          const details = {
+            replyChars: messageText(m).length,
+            toolCalls: calls,
+            usage: m.usage ? { input: m.usage.input, output: m.usage.output } : undefined,
+            ...(m.errorMessage ? { error: m.errorMessage } : {}),
+          };
+          if (m.stopReason === "error" || m.stopReason === "aborted") logWarn("turn", line, details);
+          else log("turn", line, details);
+        }
+        this.saving.push(
+          assistantSync.append([{ kind: "message", message: m }]).catch((err: unknown) => logWarn("sync", "a message didn't save", { error: String(err), role: m.role })),
+        );
         if (m.role === "assistant") {
           // The whole reply once (the voice speaks what's left of it), then it's the log's to show.
           this.live = { ...this.live, text: messageText(m) };
@@ -258,15 +309,26 @@ class AssistantRunner {
         const t = this.agent.state.tools.find((x) => x.name === e.toolName);
         const about = typeof e.args?.thread === "string" ? ` ${threadName(e.args.thread)}` : "";
         this.tools.set(e.toolCallId, `${t?.label ?? e.toolName}${about}`);
+        this.toolAt.set(e.toolCallId, Date.now());
+        log("tool", `${e.toolName} started`, { args: e.args });
         this.live = { ...this.live, phase: "tool", activity: toolsActivity(this.tools) };
         this.publish(true);
         return;
       }
-      case "tool_execution_end":
+      case "tool_execution_end": {
+        const result = (e.result as { content?: { type: string; text?: string }[] } | undefined)?.content
+          ?.map((c) => c.text ?? "")
+          .join("");
+        const line = `${e.toolName} ${e.isError ? "failed" : "done"} in ${since(this.toolAt.get(e.toolCallId) ?? Date.now())}`;
+        const details = { result: clip(result ?? "", e.isError ? 400 : 160), resultChars: result?.length ?? 0 };
+        if (e.isError) logWarn("tool", line, details);
+        else log("tool", line, details);
+        this.toolAt.delete(e.toolCallId);
         this.tools.delete(e.toolCallId);
         this.live = { ...this.live, activity: toolsActivity(this.tools) };
         this.publish(true);
         return;
+      }
       default:
         return;
     }
@@ -285,7 +347,10 @@ class AssistantRunner {
     while (cut > 0 && (messages[cut]!.message as Message).role !== "user") cut--;
     if (cut <= 0) return;
     const older = contextFrom(entries.filter((e) => e.kind === "compaction" || e.seq <= messages[cut - 1]!.seq));
+    const at = Date.now();
+    log("turn", "the context is long: summarizing older messages", { through: messages[cut - 1]!.seq, approxTokens: estimateTokens(context) });
     const summary = await summarize(older);
+    log("turn", summary ? `summarized in ${since(at)}` : `summary came back empty after ${since(at)}`, { chars: summary.length });
     if (summary) await assistantSync.append([{ kind: "compaction", summary, throughSeq: messages[cut - 1]!.seq }]);
   }
 
@@ -317,11 +382,13 @@ class AssistantRunner {
         const lastReply = [...events].reverse().find((x) => x.type === "assistant" && !x.parentId);
         const reply = lastReply?.type === "assistant" ? `\nIts last reply: ${lastReply.text.slice(0, 1500)}` : "";
         stop();
+        log("turn", `watched thread ${what}: telling the assistant`, { thread: name, device: device.name });
         void this.run(`[Update] The thread "${name}" on ${device.name} ${what}.${reply}`, asker);
       },
       onClose: () => stop(),
     });
     const timer = setTimeout(() => stop(), WATCH_MS);
+    log("turn", "watching a thread", { thread: threadId, device: device.name, for: asker === tabId ? "this tab" : asker });
     const stop = () => {
       clearTimeout(timer);
       this.watches.delete(key);
