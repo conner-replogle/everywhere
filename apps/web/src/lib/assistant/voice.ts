@@ -21,6 +21,8 @@ export interface VoiceSnapshot {
   /** What the user is saying, before the turn ends. */
   heard: string;
   error: string | null;
+  /** The mic is muted: nothing is captured, sent or heard until it's unmuted. */
+  muted: boolean;
   /** A note about the voice itself, e.g. that GPT-Live isn't set up. */
   notice?: string | null;
 }
@@ -126,7 +128,7 @@ class Speaker {
 /** Workers AI as the voice: Flux listens, Aura speaks. */
 class FluxVoice {
   private lastMic: MicInfo | null = null;
-  private snap: VoiceSnapshot = { state: "off", heard: "", error: null };
+  private snap: VoiceSnapshot = { state: "off", heard: "", error: null, muted: false };
   private listeners = new Set<() => void>();
   private stream: MediaStream | null = null;
   private ctx: AudioContext | null = null;
@@ -171,7 +173,7 @@ class FluxVoice {
 
   async start(): Promise<void> {
     if (this.on) return;
-    this.update({ state: "starting", heard: "", error: null });
+    this.update({ state: "starting", heard: "", error: null, muted: false });
     const t0 = Date.now();
     log("voice", "starting the Workers AI voice");
     try {
@@ -210,7 +212,8 @@ class FluxVoice {
       this.ws = ws;
       ws.onopen = () => {
         pcm.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
-          if (ws.readyState === WebSocket.OPEN) ws.send(e.data);
+          // Muted, silence goes instead (the track is off too): Flux closes a socket that gets no audio.
+          if (ws.readyState === WebSocket.OPEN) ws.send(this.snap.muted ? new ArrayBuffer(e.data.byteLength) : e.data);
         };
         resolve();
       };
@@ -239,6 +242,8 @@ class FluxVoice {
       this.update({ error: m.message });
       return;
     }
+    // Muted: nothing is heard, not even the end of a turn begun before.
+    if (this.snap.muted) return;
     switch (m.event) {
       case "StartOfTurn":
         log("voice", this.speaker.active ? "you started talking: interrupting the reply" : "you started talking");
@@ -259,6 +264,14 @@ class FluxVoice {
         return;
       }
     }
+  }
+
+  /** Pauses the mic (the session stays), or resumes it. */
+  setMuted(muted: boolean): void {
+    if (this.snap.state === "off" || this.snap.state === "starting" || muted === this.snap.muted) return;
+    for (const t of this.stream?.getAudioTracks() ?? []) t.enabled = !muted;
+    log("voice", muted ? "muted" : "unmuted");
+    this.update({ muted, heard: "" });
   }
 
   private onUtterance(text: string): void {
@@ -304,7 +317,7 @@ class FluxVoice {
     closeAudio();
     this.reply = "";
     this.spoken = 0;
-    this.update({ state: "off", heard: "" });
+    this.update({ state: "off", heard: "", muted: false });
   }
 }
 
@@ -320,6 +333,7 @@ interface Engine {
   subscribe(fn: () => void): () => void;
   start(): Promise<void>;
   stop(): void;
+  setMuted(muted: boolean): void;
 }
 
 /**
@@ -362,6 +376,10 @@ class Voice {
   toggle(): void {
     if (this.on) this.stop();
     else void this.start();
+  }
+
+  toggleMute(): void {
+    this.engine.setMuted(!this.snap.muted);
   }
 
   async start(): Promise<void> {
@@ -414,7 +432,7 @@ class Voice {
 
   private emit(): void {
     const s = this.engine.getSnapshot();
-    this.snap = { ...s, error: s.error ?? (s.state === "off" ? this.movedAway : null), notice: s.state !== "off" ? this.notice : null };
+    this.snap = { ...s, error: s.error ?? (s.state === "off" ? this.movedAway : null), notice: s.state !== "off" ? (s.notice ?? this.notice) : null };
     for (const fn of this.listeners) fn();
   }
 }

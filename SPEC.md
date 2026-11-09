@@ -754,36 +754,58 @@ prompting threads, each time after the user says yes to the drafted prompt.
     (`voice-live.ts`, `live-bridge.ts`). The tab's mic and GPT-Live's voice
     go over WebRTC straight to OpenAI; `POST /api/assistant/live` passes the
     offer to `/v1/live/sessions` with the key and returns the answer
-    (`openai-live.ts`: `gpt-live-1`, the voice's instructions, and the newest
-    16 prompts and replies as seed history). Events come on the
-    `oai-events` channel. GPT-Live marks no turns: transcripts come in
-    pieces placed on the session's timeline (`start_ms`, `end_ms`), and a
-    hand-off carries only its `offset_ms`, not the task. So the bridge keeps
-    both sides' speech as spans on that timeline (pieces closer than 700 ms
-    are one utterance):
-    - A hand-off takes the user's words up to it that came since GPT-Live
-      last answered them, after waiting up to 700 ms for the transcript to
-      settle, and prompts the agent with them.
+    (`openai-live.ts`: `gpt-live-1`, the voice's instructions, the newest
+    16 prompts and replies as seed history, and a data channel allowed to
+    send only `session.commentary.append`, `session.thinking.append` and
+    `session.close`). Events come on the `oai-events` channel. The
+    instructions follow OpenAI's template for `gpt-live-1` (backchannel,
+    interruption and delegation policies, "Generate <|SpawnThinking|>" for
+    a hand-off). GPT-Live marks no turns: transcripts come in pieces placed
+    on the session's timeline (`start_ms`, `end_ms`), and a hand-off carries
+    only its `offset_ms`, not the task, and can come before the words are
+    transcribed. So the bridge keeps both sides' speech as spans on that
+    timeline, in timeline order (pieces closer than 700 ms are one
+    utterance):
+    - A hand-off (each id once) waits for the transcript to settle (700 ms
+      quiet, 300 ms after a full sentence, 3 s at most). The agent gets the
+      user's words since GPT-Live last spoke before it and they spoke
+      again; what GPT-Live said after their last words is its
+      acknowledgement. Exchanges it answered itself before the hand-off are
+      logged then, and go along in the prompt's context note ("On the call,
+      since the last request"), with a note that it's transcribed speech
+      that may have errors and later corrections.
     - Words GPT-Live answered itself (it spoke after them, and no hand-off
       came within 4 s, since it may say "let me check" first) are logged in
       the conversation with its reply (`voiceExchange`, marked
-      `origin: "gpt-live"`). The chat labels that reply "Answered by
-      GPT-Live", and the agent sees the exchange next turn.
+      `origin: "gpt-live"`); words said one after another before it replied
+      are one exchange. The chat labels that reply "Answered by GPT-Live",
+      and the agent sees the exchange next turn.
     - What GPT-Live didn't hear (text typed in any tab, replies to it,
       updates for other tabs) goes to it as `session.thinking.append` with
-      `delegation_id: null`: it knows, without saying it. Each reply the agent logs goes
-    back as `session.commentary.append` (1500 characters at a time) with the
-    hand-off's id, until the turn ends; later ones (a watched thread
-    finishing) go without one. A hand-off with nothing heard gets a quiet
-    `session.thinking.append`.
-    Stopping sends `session.close`. A session is billed while it's open,
-    quiet or not, and OpenAI only closes it at its duration limit
-    (`expired`), so the tab closes it after two minutes with nothing said by
-    either side and no turn running. Why it stopped stays in the
-    voice bar until dismissed. About $0.05 a minute on the user's OpenAI
-    account. Bug reports include the session: its id, when it started and
-    ended, the close reason, seconds used, connection state and the newest
-    event types.
+      `delegation_id: null`: it knows, without saying it. Any thinking or
+      commentary cancels GPT-Live's pending spoken acknowledgement, so these
+      notes wait while a hand-off settles. Each reply the agent logs goes
+      back as `session.commentary.append` (1500 characters at a time) with
+      the hand-off's id, until the turn ends; later ones (a watched thread
+      finishing) go without one. A reply logged while a newer request from
+      this tab hasn't reached the log yet answers the older one (OpenAI's
+      task revision): it isn't said, only noted quietly. A hand-off with
+      nothing heard gets a quiet `session.thinking.append`. Each update is
+      matched to its `*.appended` acknowledgement or `error`
+      (`client_event_id`), and one GPT-Live refused or never acknowledged
+      is logged.
+    "Speaking" follows the loudness of GPT-Live's voice where it's measured
+    (not on phones), else its transcript. The voice bar says so a minute
+    before the session reaches OpenAI's time limit (`expires_at`).
+    Stopping turns the mic off at once and sends `session.close`; the call
+    stays up until `session.closed` (with the final usage) or 15 s. A
+    session is billed while it's open, quiet or not, and OpenAI only closes
+    it at its duration limit (`expired`), so the tab closes it after two
+    minutes with nothing said by either side and no turn running. Why it
+    stopped stays in the voice bar until dismissed. About $0.05 a minute on
+    the user's OpenAI account. Bug reports include the session: its id,
+    when it started, ended and expires, the close reason, seconds used,
+    connection state and the newest event types.
   - **Workers AI**: the mic goes to `GET /api/assistant/listen` as 16 kHz
     PCM (`public/pcm-worklet.js`, a file because the CSP blocks blob:
     scripts) and on to Deepgram Flux, which marks the end of each turn; each

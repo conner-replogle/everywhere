@@ -15,11 +15,12 @@ test("a live session uses client delegation and seeds the newest history", () =>
   });
   if ("error" in made) throw new Error(made.error);
   const body = made.body as {
-    session: { model: string; delegation: unknown; audio: { output: { voice: string } }; input: { role: string; content: { type: string; text: string }[] }[] };
+    session: { model: string; delegation: unknown; client: unknown; audio: { output: { voice: string } }; input: { role: string; content: { type: string; text: string }[] }[] };
     transport: { type: string; sdp: string };
   };
   expect(body.session.model).toBe("gpt-live-1");
   expect(body.session.delegation).toEqual({ type: "client" });
+  expect(body.session.client).toEqual({ data_channel: { allowed_client_events: ["session.commentary.append", "session.thinking.append", "session.close"] } });
   expect(body.session.audio.output.voice).toBe("marin");
   expect(body.session.input.map((m) => [m.role, m.content[0]!.type, m.content[0]!.text])).toEqual([
     ["user", "input_text", "old"],

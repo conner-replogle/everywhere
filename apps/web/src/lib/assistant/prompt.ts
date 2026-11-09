@@ -32,13 +32,15 @@ ${overview}`;
 }
 
 /** The note that ends each of the user's messages: where they are, and whether they spoke. */
-export function contextNote(opts: { view: string; selection?: string; voice?: boolean }): string {
+export function contextNote(opts: { view: string; selection?: string; voice?: boolean; call?: string }): string {
   const parts = [`The user is looking at ${opts.view}.`];
   if (opts.selection) parts.push(`They have this text selected: "${opts.selection}".`);
   if (opts.voice) {
     parts.push(
       "They said this out loud: answer in one to three short spoken sentences, with no lists, markdown or ids. Give the gist; offer more if there's more.",
+      "It's transcribed speech: it can have mistakes, unfinished phrases and later corrections. Go by the latest; when a detail you need is unclear, ask for it instead of guessing.",
     );
   }
+  if (opts.call) parts.push(`On the call, since the last request:\n${opts.call}`);
   return `${CONTEXT_OPEN}${parts.join(" ")}${CONTEXT_CLOSE}`;
 }

@@ -129,7 +129,7 @@ function MicButton({ size = "md", className }: { size?: "md" | "lg"; className?:
   return (
     <div className={cn("relative", big && "scale-[1.6]", className)}>
       <VoiceRing
-        active={v.state === "listening" || v.state === "speaking"}
+        active={v.state === "speaking" || (v.state === "listening" && !v.muted)}
         className="absolute top-1/2 left-1/2 size-32 -translate-x-1/2 -translate-y-1/2"
       />
       <button
@@ -158,22 +158,72 @@ function MicButton({ size = "md", className }: { size?: "md" | "lg"; className?:
   );
 }
 
+/**
+ * While talking: mutes the mic without ending the call, and unmutes it. Shows
+ * what the mic is doing now: struck through and amber while muted.
+ */
+function MuteButton({ size = "md", className }: { size?: "md" | "lg"; className?: string }) {
+  const v = useVoice();
+  if (v.state === "off" || v.state === "starting") return null;
+  const label = v.muted ? "Unmute the mic" : "Mute the mic";
+  return (
+    <button
+      type="button"
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={() => voice.toggleMute()}
+      aria-label={label}
+      aria-pressed={v.muted}
+      title={label}
+      className={cn(
+        "pointer-events-auto flex shrink-0 items-center justify-center rounded-full border shadow-lg backdrop-blur transition-colors",
+        size === "lg" ? "size-14" : "size-10",
+        v.muted
+          ? "border-amber-500 bg-amber-500 text-white hover:bg-amber-500/90"
+          : "border-border bg-background/90 text-foreground hover:bg-muted",
+        className,
+      )}
+    >
+      {v.muted ? <MicOffIcon className={size === "lg" ? "size-6" : "size-4"} /> : <MicIcon className={size === "lg" ? "size-6" : "size-4"} />}
+    </button>
+  );
+}
+
 /** While talking: what it heard and what it's doing; after, why it stopped. */
 function VoiceBar({ className, statusOnly }: { className?: string; statusOnly?: boolean }) {
   const v = useVoice();
   const sync = useAssistantSync();
   const { error, dismiss } = useVoiceError();
+  // Before the early return: hooks run in the same order every render.
+  const { status } = useTurnStatus();
   if (v.state === "off" && !error) return null;
   const live = sync.live;
-  const { status } = useTurnStatus();
   // statusOnly: what's being said shows in the conversation instead.
   const heard = statusOnly ? "" : v.heard;
-  const line = error ? error : heard ? heard : v.state === "speaking" ? "Speaking…" : (status?.label ?? (sync.runner ? "Writing…" : "Listening…"));
+  const line = error
+    ? error
+    : heard
+      ? heard
+      : v.state === "speaking"
+        ? "Speaking…"
+        : v.muted
+          ? "Muted. Unmute to talk."
+          : (status?.label ?? (sync.runner ? "Writing…" : "Listening…"));
   return (
     <div className={cn("pointer-events-auto rounded-xl border border-border bg-background/90 p-3 text-sm shadow-xl backdrop-blur-md", className)}>
       <div className="flex items-start gap-2">
-        {!error && <VoiceBars active={v.state === "listening" || v.state === "speaking"} className="mt-0.5 h-4 w-12 shrink-0" />}
-        <p className={cn("line-clamp-3 flex-1", heard ? "text-foreground" : "text-muted-foreground", error && "text-destructive")}>
+        {!error && v.muted && v.state !== "speaking" ? (
+          <MicOffIcon className="mt-0.5 size-4 shrink-0 text-amber-500" />
+        ) : (
+          !error && <VoiceBars active={v.state === "listening" || v.state === "speaking"} className="mt-0.5 h-4 w-12 shrink-0" />
+        )}
+        <p
+          className={cn(
+            "line-clamp-3 flex-1",
+            heard ? "text-foreground" : "text-muted-foreground",
+            v.muted && !heard && !error && v.state !== "speaking" && "text-amber-600 dark:text-amber-400",
+            error && "text-destructive",
+          )}
+        >
           {line}
         </p>
         {error && (
@@ -654,6 +704,7 @@ function DesktopAssistant() {
               <KeyboardIcon className="size-4" />
             </Button>
           )}
+          <MuteButton className="mb-1" />
           <MicButton />
         </div>
       </div>
@@ -748,6 +799,7 @@ function PhoneAssistant() {
             <MessageSquareTextIcon className="size-4" />
             {runner.unread > 0 && <span className="absolute -top-0.5 -right-0.5 size-2.5 rounded-full bg-primary ring-2 ring-background" />}
           </Button>
+          <MuteButton />
           <MicButton />
         </div>
       )}
@@ -879,8 +931,11 @@ function PhoneLayer({ voiceMode, onClose, onMinimize }: { voiceMode: boolean; on
           <div className="min-h-0 flex-1" />
           <VoiceConversation items={items} />
           <VoiceBar statusOnly className="mx-3 mb-2" />
-          <div className="flex shrink-0 justify-center pt-4 pb-10">
+          {/* The mic in the middle; mute on its left, balanced by a spacer on its right. */}
+          <div className="flex shrink-0 items-center justify-center gap-12 pt-4 pb-10">
+            <MuteButton size="lg" />
             <MicButton size="lg" />
+            <span aria-hidden className="size-14 shrink-0" />
           </div>
         </>
       ) : (

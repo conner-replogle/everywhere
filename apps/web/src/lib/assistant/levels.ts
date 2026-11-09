@@ -68,3 +68,13 @@ export function bands(which: "mic" | "out", out: Float32Array): void {
     out[i] = Math.max(0, (sum / (to - from) / 255 - 0.12) / 0.88);
   }
 }
+
+/** How loud one source is now, 0 to 1 (its speech bands' average); null when it isn't measured. */
+export function loudness(which: "mic" | "out"): number | null {
+  if (!analysers[which]) return null;
+  const out = new Float32Array(8);
+  bands(which, out);
+  let sum = 0;
+  for (const v of out) sum += v;
+  return sum / out.length;
+}

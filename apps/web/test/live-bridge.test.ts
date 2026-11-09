@@ -6,9 +6,15 @@ const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function setup() {
   const sent: LiveEvent[] = [];
   const asked: string[] = [];
+  const calls: (string | undefined)[] = [];
   const answered: [string, string][] = [];
   const bridge = new LiveBridge(
-    { ask: (t) => asked.push(t) },
+    {
+      ask: (t, call) => {
+        asked.push(t);
+        calls.push(call);
+      },
+    },
     { send: (e) => sent.push(e), onAnswered: (said, reply) => answered.push([said, reply]) },
   );
   const hear = (...parts: string[]) => {
@@ -22,7 +28,7 @@ function setup() {
     bridge.handle({ type: "session.output_transcript.delta", delta, start_ms, end_ms });
   const delegateAt = (id: string, offset_ms: number) =>
     bridge.handle({ type: "session.delegation.created", offset_ms, delegation: { id, type: "delegation", target: "client" } });
-  return { bridge, sent, asked, answered, hear, delegate, you, it, delegateAt };
+  return { bridge, sent, asked, calls, answered, hear, delegate, you, it, delegateAt };
 }
 
 describe("LiveBridge", () => {
@@ -75,9 +81,65 @@ describe("LiveBridge", () => {
     await wait(500);
     expect(t.asked).toEqual(["What's running on omarcherion?"]);
     expect(t.answered).toEqual([["How's it going?", "Pretty good, thanks!"]]);
+    // The agent also gets the exchange, in case the log hasn't caught up.
+    expect(t.calls).toEqual(["You: How's it going?\nGPT-Live: Pretty good, thanks!\nYou: What's running on omarcherion?"]);
     t.bridge.close();
     // "Let me check." belonged to the hand-off: nothing more is logged.
     expect(t.answered).toHaveLength(1);
+  });
+
+  test("an acknowledgement said before the hand-off arrives isn't taken for an answer", async () => {
+    const t = setup();
+    t.you("What's running on omarcherion?", 0, 1500);
+    t.it("Let me check.", 1700, 2200);
+    t.delegateAt("item_6", 2300);
+    await wait(500);
+    expect(t.asked).toEqual(["What's running on omarcherion?"]);
+    expect(t.calls).toEqual([undefined]);
+    t.bridge.close();
+    expect(t.answered).toEqual([]);
+  });
+
+  test("words said one after another before GPT-Live replies are one exchange", () => {
+    const t = setup();
+    t.you("Hey.", 0, 400);
+    t.you("What's a good name for a cat?", 1500, 2700);
+    t.it("How about Miso?", 3000, 3800);
+    t.bridge.close();
+    expect(t.answered).toEqual([["Hey. What's a good name for a cat?", "How about Miso?"]]);
+  });
+
+  test("a hand-off seen twice is handled once", async () => {
+    const t = setup();
+    t.hear("Is the build done?");
+    t.delegate("item_7");
+    t.delegate("item_7");
+    await wait(500);
+    expect(t.asked).toEqual(["Is the build done?"]);
+    t.bridge.close();
+  });
+
+  test("notes wait while a hand-off settles, so GPT-Live's spoken acknowledgement isn't cancelled", async () => {
+    const t = setup();
+    t.hear("What's running?");
+    t.delegate("item_8");
+    t.bridge.note("Meanwhile the user typed in the chat: hi");
+    expect(t.sent).toEqual([]);
+    await wait(500);
+    expect(t.asked).toEqual(["What's running?"]);
+    expect(t.sent.at(-1)).toMatchObject({ type: "session.thinking.append", delegation_id: null, content: "Meanwhile the user typed in the chat: hi" });
+    t.bridge.close();
+  });
+
+  test("an update GPT-Live refuses is matched to it", () => {
+    const t = setup();
+    t.bridge.assistantSaid("Done.");
+    const id = t.sent.at(-1)!.event_id;
+    t.bridge.handle({ type: "error", error: { client_event_id: id, message: "unknown delegation" } });
+    t.bridge.assistantSaid("Again.");
+    t.bridge.handle({ type: "session.commentary.appended", client_event_id: t.sent.at(-1)!.event_id });
+    // Nothing left waiting on an acknowledgement.
+    expect((t.bridge as unknown as { unacked: Map<string, unknown> }).unacked.size).toBe(0);
   });
 
   test("what GPT-Live answers with no hand-off is logged once it's had its say", () => {

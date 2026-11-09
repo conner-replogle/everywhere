@@ -76,12 +76,13 @@ function systemPrompt(): string {
 }
 
 /** The user's words plus where they were, as the model sees them. */
-export function composePrompt(text: string, opts: { voice?: boolean } = {}): string {
+export function composePrompt(text: string, opts: { voice?: boolean; call?: string } = {}): string {
   const selection = (window.getSelection?.()?.toString() ?? "").trim().slice(0, 1000);
   const note = contextNote({
     view: describeView(location.pathname, location.search),
     selection,
     voice: opts.voice,
+    call: opts.call,
   });
   return `${text.trim()}\n\n${note}`;
 }

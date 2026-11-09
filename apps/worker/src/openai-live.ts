@@ -9,6 +9,11 @@ export const LIVE_MODEL = "gpt-live-1";
 export const LIVE_VOICES = ["marin", "quartz", "ripple", "vesper", "willow", "stone", "gleam", "meridian", "beacon", "delta", "cinder"];
 
 const MAX_SDP = 32_000;
+/**
+ * All the browser sends on the data channel: what the agent found, quiet
+ * notes, and the close. OpenAI refuses anything else from it.
+ */
+export const LIVE_CLIENT_EVENTS = ["session.commentary.append", "session.thinking.append", "session.close"];
 /** GPT-Live takes up to 16 384 tokens of instructions. */
 const MAX_INSTRUCTIONS = 40_000;
 /** And up to 128 seed messages, 8192 tokens in all. */
@@ -49,6 +54,7 @@ export function liveSessionBody(r: Partial<LiveRequest>): { body: unknown } | { 
         ...(input.length ? { input } : {}),
         audio: { output: { voice } },
         delegation: { type: "client" },
+        client: { data_channel: { allowed_client_events: LIVE_CLIENT_EVENTS } },
       },
       transport: { type: "webrtc", sdp: r.sdp },
     },
