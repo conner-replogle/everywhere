@@ -11,6 +11,7 @@ one plugin, published to the registry that devices install from:
 
 | Plugin | What it does |
 |---|---|
+| [codex](codex) | OpenAI's Codex as an agent, in threads drawn like Claude's |
 | [linear](linear) | A Linear tab with a linked project's issues, issue pages, comments and status, and tools for Claude |
 
 ## How the registry works

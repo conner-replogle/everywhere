@@ -1,0 +1,14 @@
+{
+  "id": "codex",
+  "title": "Codex",
+  "version": "0.1.0",
+  "api": 1,
+  "description": "OpenAI's Codex as an agent: Codex threads drawn like Claude's, with the timeline, permissions, modes and models. Runs the Codex ACP adapter (@agentclientprotocol/codex-acp) through npx, so it needs Node.js, and Codex signed in on the device with `codex login`.",
+  "icon": "icon.svg",
+  "permissions": ["exec"],
+  "contributes": {
+    "agents": [
+      { "kind": "codex", "title": "Codex", "command": ["npx", "-y", "@agentclientprotocol/codex-acp@2"] }
+    ]
+  }
+}
