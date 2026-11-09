@@ -44,7 +44,9 @@ func (p *Plugin) Manifest() plugin.Manifest {
 	return m
 }
 
-func supported() bool { return runtime.GOOS == "linux" || runtime.GOOS == "windows" }
+func supported() bool {
+	return runtime.GOOS == "linux" || runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+}
 
 func (p *Plugin) Start(h plugin.Host) error {
 	if d, err := desktop.NewManager(h.WebRTC().SettingEngine()); err != nil {

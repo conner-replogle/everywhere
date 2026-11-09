@@ -75,8 +75,11 @@ func TestMacLive(t *testing.T) {
 				dump.Write(f.Data)
 				if f.Keyframe {
 					keyframe = true
-					// H.264 SPS (0x67), HEVC VPS (0x40).
-					params = params || bytes.Contains(f.Data, []byte{0, 0, 1, 0x67}) || bytes.Contains(f.Data, []byte{0, 0, 1, 0x40})
+					// H.264 SPS (type 7, any nal_ref_idc: VideoToolbox writes 0x27), HEVC VPS (0x40).
+					params = params || bytes.Contains(f.Data, []byte{0, 0, 1, 0x40})
+					for i := 0; !params && i+3 < len(f.Data); i++ {
+						params = f.Data[i] == 0 && f.Data[i+1] == 0 && f.Data[i+2] == 1 && f.Data[i+3]&0x9f == 0x07
+					}
 				}
 			}
 			t.Logf("%d frames, %d bytes, keyframe %v with parameter sets %v", frames, size, keyframe, params)

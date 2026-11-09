@@ -23,7 +23,7 @@ passing through the Worker.
 - **Scratch:** ask Claude to work on the machine itself, outside any project.
 - **Assistant:** one voice or text conversation about all your machines and
   threads that can prompt and start threads for you (on Workers AI).
-- **Remote desktop** for Hyprland and Windows, low latency over WebRTC (opt-in on each machine).
+- **Remote desktop** for Hyprland, Windows and macOS, low latency over WebRTC (opt-in on each machine).
 - **Agent browser:** each thread gets a Chromium page that you and Claude share.
 - **Processes and dashboards** for dev servers and long-running jobs.
 - **Desktop app** (Electron) with web tabs that can open a machine's localhost.
@@ -92,7 +92,7 @@ irm https://<your-host>/i/<token>/windows | iex            # Windows (PowerShell
 ```
 
 The command installs the daemon, enrolls the machine, and starts it as a
-service. Remote desktop on macOS is in progress.
+service.
 
 On the machine:
 
@@ -101,6 +101,8 @@ everywhere add ~/code/api        # register a project (also possible from the we
 everywhere status
 everywhere update
 everywhere desktop enable        # allow remote desktop on this machine
+                                 # (on a Mac, then allow Everywhere Desktop under
+                                 # Screen Recording and Accessibility)
 everywhere uninstall [--purge]
 ```
 
