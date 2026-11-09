@@ -37,9 +37,9 @@ type Client struct {
 	OnSignal   SignalHandler
 	// OnClientRevoked is called when a browser connection's session is signed out.
 	OnClientRevoked func(connID string)
-	// OnRPC, if set, answers the Worker's own requests (the methods
-	// registered as Remote). It's called on its own goroutine.
-	OnRPC func(method string, params json.RawMessage) (any, error)
+	// OnRPC, if set, answers requests over the hub: the Worker's own, or
+	// (agent set) a connected agent's. It's called on its own goroutine.
+	OnRPC func(method string, params json.RawMessage, agent string) (any, error)
 
 	conn atomic.Pointer[websocket.Conn]
 }
@@ -110,14 +110,15 @@ func (c *Client) session(ctx context.Context) error {
 		return err
 	}
 	defer conn.CloseNow()
-	conn.SetReadLimit(1 << 20)
+	// Room for a connected agent's attachments (agent.send).
+	conn.SetReadLimit(maxRPCRequest)
 	c.conn.Store(conn)
 	defer c.conn.Store(nil)
 	slog.Info("connected to hub", "server", c.Server)
 
 	h := protocol.Hello{T: "hello", Version: version.Version}
 	if c.OnRPC != nil {
-		h.Features = []string{protocol.HubFeatureRPC, protocol.HubFeatureClaudeToken, protocol.HubFeaturePluginSettings}
+		h.Features = []string{protocol.HubFeatureRPC, protocol.HubFeatureClaudeToken, protocol.HubFeaturePluginSettings, protocol.HubFeatureAgents}
 	}
 	hello, _ := json.Marshal(h)
 	if err := conn.Write(ctx, websocket.MessageText, hello); err != nil {
@@ -195,7 +196,7 @@ func (c *Client) session(ctx context.Context) error {
 			}
 		case "rpc":
 			if c.OnRPC != nil {
-				go c.answer(conn, msg.ID, msg.Method, msg.Params)
+				go c.answer(conn, msg.ID, msg.Method, msg.Params, msg.Agent)
 			}
 		case "error":
 			slog.Warn("hub error", "code", msg.Code, "message", msg.Message)
@@ -206,10 +207,13 @@ func (c *Client) session(ctx context.Context) error {
 // maxRPCResult bounds an answer; the hub's sockets take up to 32 MiB.
 const maxRPCResult = 16 << 20
 
+// maxRPCRequest bounds a message from the hub.
+const maxRPCRequest = 24 << 20
+
 // answer runs one hub RPC request and sends its result.
-func (c *Client) answer(conn *websocket.Conn, id, method string, params json.RawMessage) {
+func (c *Client) answer(conn *websocket.Conn, id, method string, params json.RawMessage, agent string) {
 	out := protocol.HubRPCResult{T: "rpc.result", ID: id}
-	result, err := c.OnRPC(method, params)
+	result, err := c.OnRPC(method, params, agent)
 	if err == nil {
 		out.Result = result
 	} else {

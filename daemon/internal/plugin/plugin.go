@@ -171,6 +171,9 @@ type RPCContext struct {
 	Peer Peer
 	// Remote: the call came over the hub.
 	Remote bool
+	// Agent names the connected agent (an MCP client the account
+	// authorized) the call came from, over the hub; empty otherwise.
+	Agent string
 }
 
 // RPCOption configures a method.
@@ -189,6 +192,12 @@ type RPCSpec struct {
 	Remote bool
 	// RemoteOnly methods are only for the hub (e.g. agent.setToken).
 	RemoteOnly bool
+	// Agent methods are reachable by connected agents (MCP clients the
+	// account authorized), relayed over the hub, while the device allows
+	// them. Off by default: each method an outside agent may call is
+	// chosen. Never for running commands, files, terminals, the desktop,
+	// plugins or answering permission prompts.
+	Agent bool
 }
 
 // Slow answers the method concurrently.
@@ -199,6 +208,9 @@ func Remote() RPCOption { return func(s *RPCSpec) { s.Remote = true } }
 
 // RemoteOnly makes the method reachable only over the hub.
 func RemoteOnly() RPCOption { return func(s *RPCSpec) { s.Remote, s.RemoteOnly = true, true } }
+
+// Agent makes the method reachable by connected agents.
+func Agent() RPCOption { return func(s *RPCSpec) { s.Agent = true } }
 
 // Peer is a browser tab's connection to the daemon.
 type Peer interface {

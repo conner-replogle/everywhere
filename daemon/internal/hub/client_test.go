@@ -94,7 +94,7 @@ func TestSessionAnswersRPC(t *testing.T) {
 	c := &Client{
 		Server:   srv.URL,
 		OnSignal: func(string, string, protocol.SignalData) {},
-		OnRPC: func(method string, params json.RawMessage) (any, error) {
+		OnRPC: func(method string, params json.RawMessage, _ string) (any, error) {
 			if method == "fail" {
 				return nil, errors.New("nope")
 			}
@@ -105,8 +105,8 @@ func TestSessionAnswersRPC(t *testing.T) {
 	defer cancel()
 	go c.session(ctx)
 
-	if h := <-hello; len(h.Features) != 3 || h.Features[0] != protocol.HubFeatureRPC || h.Features[1] != protocol.HubFeatureClaudeToken ||
-		h.Features[2] != protocol.HubFeaturePluginSettings {
+	if h := <-hello; len(h.Features) != 4 || h.Features[0] != protocol.HubFeatureRPC || h.Features[1] != protocol.HubFeatureClaudeToken ||
+		h.Features[2] != protocol.HubFeaturePluginSettings || h.Features[3] != protocol.HubFeatureAgents {
 		t.Errorf("hello features = %v", h.Features)
 	}
 	results := map[string]protocol.HubRPCResult{}

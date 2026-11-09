@@ -27,6 +27,9 @@ const statements = [
   `UPDATE users SET password_hash = ${sqlString(hash)} WHERE username = ${sqlString(username)}`,
   `DELETE FROM sessions WHERE user_id = ${who}`,
   `DELETE FROM mfa_challenges WHERE user_id = ${who}`,
+  // Connected agents' keys too, and their switch: turning it back on takes the new password.
+  `DELETE FROM agent_keys WHERE user_id = ${who}`,
+  `UPDATE users SET agents_enabled_at = NULL WHERE username = ${sqlString(username)}`,
 ];
 if (disable2fa) {
   statements.push(

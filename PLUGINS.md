@@ -169,8 +169,11 @@ What this removes from `internal/peer`:
 - The hard-coded list of slow methods (`device.checkUpdate`, `agent.login`,
   `desktop.start`…) becomes `Slow()` on the registration.
 - `Remote()` on the registration makes a method reachable over the hub, by
-  the Worker itself. Only `agent.setToken`, `plugins.setAccountSettings` and
-  `projects.clone` have it; external plugins can't.
+  the Worker itself. Only `agent.setToken`, `plugins.setAccountSettings`,
+  `projects.clone` and `device.agents` have it; external plugins can't.
+- `Agent()` makes a method reachable by connected agents (MCP clients with
+  an API key), relayed over the hub, while the device allows them. Only
+  built-ins have it, each chosen (see `AgentMethods`); external plugins can't.
 - `callDesktop`'s special case for methods that need the calling peer is
   `RPCContext.Peer`.
 - `NewServer`'s tool list and `claudeArgs`' allowed-tool list are built from
@@ -354,8 +357,9 @@ The rules that matter today carry over as host rules, not one-off checks:
   (Settings → Plugins): the app can already open a shell on the device, so
   keeping that to the CLI added friction, not safety. None of these methods
   are `remote`, so the Worker can't install code.
-- **Not over the hub.** Only the core's three Worker methods are `Remote()`;
-  plugins' methods never are.
+- **Not over the hub.** Only the core's few Worker methods are `Remote()`,
+  and only the chosen built-in thread methods `Agent()`; external plugins'
+  methods are neither.
 - **Ask before running commands.** Tools declared `ask: true` stay out of
   claude's allowed tools, as `process_start` does today.
 

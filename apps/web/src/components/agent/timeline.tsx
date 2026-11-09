@@ -228,6 +228,8 @@ function ItemView({
               <div className="rounded-lg bg-secondary px-3 py-2 whitespace-pre-wrap break-words">{e.text}</div>
             )}
             {e.attachments && e.attachments.length > 0 && <SentAttachments attachments={e.attachments} />}
+            {/* Sent by a connected agent (ChatGPT…), not typed here. */}
+            {e.via && <span className="text-[11px] text-muted-foreground">via {e.via}</span>}
           </div>
         </div>
       );

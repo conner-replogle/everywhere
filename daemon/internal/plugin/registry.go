@@ -365,7 +365,10 @@ func (r *Registry) Call(ctx context.Context, method string, c RPCContext, params
 	if spec == nil || (spec.RemoteOnly && !c.Remote) {
 		return nil, fmt.Errorf("unknown method %q", method)
 	}
-	if c.Remote && !spec.Remote {
+	switch {
+	case c.Agent != "" && !spec.Agent:
+		return nil, fmt.Errorf("%s isn't available to connected agents", method)
+	case c.Remote && c.Agent == "" && !spec.Remote:
 		return nil, fmt.Errorf("%s isn't available remotely", method)
 	}
 	defer func() {

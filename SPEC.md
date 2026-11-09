@@ -884,9 +884,52 @@ daemon's socket (hub feature `rpc`), answered with `rpc.result`. Only the
 methods registered as Remote are served (`RemoteMethods` in
 `packages/protocol`): `agent.setToken` (the account's Claude token),
 `plugins.setAccountSettings` (plugins' account settings) and
-`projects.clone` (with the account's GitHub token). Nothing else is
-reachable that way, so the Worker can't run commands, read files or drive
-threads on a device. There is no MCP endpoint for outside agents.
+`projects.clone` (with the account's GitHub token), and `device.agents`
+(reading the switch below). Nothing else is reachable that way for the
+Worker itself, so it can't run commands, read files or drive threads on a
+device. Connected agents' requests are the one other kind (see below).
+
+## Connected agents (MCP)
+
+`POST /mcp` is an MCP server (Streamable HTTP, stateless JSON responses) for
+outside AI apps (Claude Code, Cursor, any MCP client). It reads threads and
+drives agent threads; it never runs commands, reads files outside threads,
+types into terminals or answers permission prompts. `apps/worker/src/agents`.
+
+- **Off twice over.** The account switch (Settings → Connected agents, off by
+  default; turning it on takes the password and 2FA code) gates everything:
+  while off, `/mcp` is 404. Each device has its own switch too, in its
+  config.json (`agents`), set only from a browser over WebRTC
+  (`device.setAgents`) or on the device (`everywhere agents enable`), never
+  over the hub. The daemon refuses connected agents' requests while it's off.
+- **API keys.** Made in Settings → Connected agents (with the password again),
+  sent as `Authorization: Bearer ewk_…`. Each has a name (shown with the
+  prompts it sends, the user event's `via`), scopes (`read` always; `drive`:
+  start, prompt, stop and change threads; `projects`: add projects, list
+  folders), the devices it may reach, and an expiry (7, 30 or 90 days).
+  Stored hashed (`agent_keys`). Turning the account switch off, changing the
+  password or resetting it deletes every key.
+- **Transport.** Tool calls reach daemons as `rpc` messages with `agent` (the
+  key's name), on daemons with hub feature `agents`. The daemon serves only
+  methods registered with `plugin.Agent()` (`AgentMethods` in
+  `packages/protocol`): `projects.list|create`, `threads.list|get|create|
+  rename|archive|search`, `fs.listDirs`, and `agent.read` (a page of the log
+  plus state, optionally waiting for the turn), `agent.send` (a prompt with
+  base64 files, 8 MB each, 16 MB in all), `agent.interrupt`,
+  `agent.configure` (never `bypassPermissions`) and `agent.file` (a thread's
+  own attachment by id). `threads.create` from an agent takes only agent
+  kinds, never `bypassPermissions`.
+- **Tools.** `list_devices`, `list_projects`, `list_threads` (filters,
+  offset paging), `search_threads`, `read_thread` (pages newest first with
+  `before` cursors, `after` with `wait_seconds` to follow a turn; long
+  messages in fixed 6000-character parts so cursors stay put; `detail` full
+  adds tool calls), `get_attachment` (images as images), `create_thread` and
+  `send_message` (files as text, base64 or an https URL; both wait for the
+  reply), `interrupt_thread`, `update_thread`, `list_directories`,
+  `create_project`. A key sees only its scopes' tools.
+- **Activity.** Every tool call is logged (`agent_activity`: key, tool,
+  device, thread, error) and listed in Settings → Connected agents; kept 90
+  days.
 
 ## Push notifications
 
@@ -1006,6 +1049,7 @@ TODO.md items come later.
 /settings/devices               add device (shows install command), rename, revoke
 /settings/notifications         push notifications on this browser, test
 /settings/security              password, 2FA, sessions
+/settings/agents                connected agents: the switch, each device's switch, API keys, activity
 ```
 
 The thread page's top row holds the threads opened recently in this browser,

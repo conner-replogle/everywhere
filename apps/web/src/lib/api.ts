@@ -1,4 +1,4 @@
-// REST wrappers for the Worker (auth, device registry, enrollment, GitHub).
+// REST wrappers for the Worker (auth, device registry, enrollment, GitHub, connected agents).
 
 import type { PluginSettingView, Project } from "@everywhere/protocol";
 import type { Prefs } from "@/lib/prefs";
@@ -65,6 +65,57 @@ export interface GithubRepo {
   defaultBranch: string;
   pushedAt: string | null;
   cloneUrl: string;
+}
+
+/** Connected agents: the account switch, its MCP URL and the API keys made under it. */
+export interface AgentsStatus {
+  enabled: boolean;
+  enabledAt?: number;
+  /** The MCP endpoint a key is used with. */
+  mcpUrl: string;
+  keys: AgentKey[];
+}
+
+export type AgentScope = "read" | "drive" | "projects";
+
+/** An API key a connected agent signs in with, and what it may do. */
+export interface AgentKey {
+  id: string;
+  /** The user's label, e.g. "Claude Code on my laptop"; threads show "via <name>". */
+  name: string;
+  /** The secret's last 4 characters. */
+  hint: string;
+  /** read is always included. */
+  scopes: AgentScope[];
+  /** The devices it may reach, by id. */
+  devices: string[];
+  createdAt: number;
+  lastUsedAt?: number;
+  expiresAt: number;
+}
+
+export interface NewAgentKey {
+  name: string;
+  scopes: AgentScope[];
+  devices: string[];
+  expiresInDays: 7 | 30 | 90;
+  password: string;
+  code?: string;
+}
+
+/** One tool call a connected agent made. */
+export interface AgentActivity {
+  id: string;
+  at: number;
+  keyId: string;
+  /** The key's name at the time. */
+  key: string;
+  /** The MCP tool's name, e.g. "send_message". */
+  tool: string;
+  deviceId?: string;
+  threadId?: string;
+  ok: boolean;
+  error?: string;
 }
 
 export class ApiError extends Error {
@@ -171,6 +222,24 @@ export const api = {
   /** A clearer version of a composer draft, given the thread's recent messages. */
   rewritePrompt: (draft: string, context: { role: "user" | "claude"; text: string }[]) =>
     request<{ text: string }>("POST", "/api/prompt/rewrite", { draft, context }),
+
+  agents: () => request<AgentsStatus>("GET", "/api/agents"),
+  /** Needs the password again, and a 2FA code when it's on (else a 401 with needsCode). */
+  enableAgents: (password: string, code?: string) =>
+    request<{ enabled: true }>("POST", "/api/agents/enable", code ? { password, code } : { password }),
+  /** Also deletes every key. */
+  disableAgents: () => request<object>("POST", "/api/agents/disable"),
+  /** Needs the password (and 2FA code) as enableAgents does; the secret comes back only here. */
+  createAgentKey: (k: NewAgentKey) => request<{ key: AgentKey; secret: string }>("POST", "/api/agents/keys", k),
+  deleteAgentKey: (id: string) => request<object>("DELETE", `/api/agents/keys/${encodeURIComponent(id)}`),
+  /** Newest first; pass the answer's next back as cursor for older ones (none = no more). */
+  agentActivity: (opts: { cursor?: string; limit?: number } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.cursor !== undefined) q.set("cursor", opts.cursor);
+    if (opts.limit !== undefined) q.set("limit", String(opts.limit));
+    const qs = q.toString();
+    return request<{ entries: AgentActivity[]; next?: string }>("GET", `/api/agents/activity${qs ? `?${qs}` : ""}`);
+  },
 
   githubStatus: () => request<{ configured: boolean; login: string | null }>("GET", "/api/github/status"),
   /** A page navigation, not a fetch: it goes to GitHub and comes back to Settings. */

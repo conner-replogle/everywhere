@@ -40,7 +40,7 @@ async function body<T>(c: Context<App>): Promise<Partial<T>> {
   }
 }
 
-interface UserRow {
+export interface UserRow {
   id: string;
   username: string;
   password_hash: string;
@@ -49,14 +49,14 @@ interface UserRow {
   totp_last_step: number | null;
 }
 
-async function userRow(env: Env, id: string): Promise<UserRow> {
+export async function userRow(env: Env, id: string): Promise<UserRow> {
   const row = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
   if (!row) throw new Error("user vanished");
   return row;
 }
 
 /** Checks a TOTP code (no replays) or consumes a recovery code. */
-async function verifySecondFactor(env: Env, user: UserRow, code: string): Promise<boolean> {
+export async function verifySecondFactor(env: Env, user: UserRow, code: string): Promise<boolean> {
   code = code.trim();
   if (/^\d{6}$/.test(code)) {
     if (!user.totp_secret) return false;
@@ -222,6 +222,8 @@ auth.post("/password", requireUser, async (c) => {
     .bind(await hashPassword(newPassword!), user.id)
     .run();
   await revokeSessions(c.env, user.id, await otherSessionIds(c.env, user.id, c.var.sessionId));
+  // Connected agents' keys go too, like every other session.
+  await c.env.DB.prepare("DELETE FROM agent_keys WHERE user_id = ?").bind(user.id).run();
   return c.json({});
 });
 

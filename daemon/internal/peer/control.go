@@ -52,11 +52,17 @@ func (s *Server) serveControl(p *peer, dc *webrtc.DataChannel) {
 	})
 }
 
-// Remote answers the Worker's own requests over the hub: only the methods
-// registered as Remote (the Claude token, plugins' account settings, and
-// cloning with a GitHub token). Browsers' requests come over WebRTC.
-func (s *Server) Remote(method string, raw json.RawMessage) (any, error) {
-	return s.plugins.Call(context.Background(), method, plugin.RPCContext{Remote: true}, raw)
+// Remote answers requests over the hub. The Worker's own reach only the
+// methods registered as Remote (the Claude token, plugins' account
+// settings, and cloning with a GitHub token). A connected agent's (agent is
+// its name) reach only those registered as Agent, and only while this
+// device allows connected agents, a switch the hub can't flip.
+// Browsers' requests come over WebRTC.
+func (s *Server) Remote(method string, raw json.RawMessage, agent string) (any, error) {
+	if agent != "" && (s.AgentsEnabled == nil || !s.AgentsEnabled()) {
+		return nil, errors.New("connected agents are turned off on this device; turn them on in the app (Settings → Connected agents) or with `everywhere agents enable` on the device")
+	}
+	return s.plugins.Call(context.Background(), method, plugin.RPCContext{Remote: true, Agent: agent}, raw)
 }
 
 type coreParams struct {
@@ -76,6 +82,8 @@ type coreParams struct {
 	Prompt   string `json:"prompt"`
 	Archived bool   `json:"archived"`
 	Force    bool   `json:"force"`
+	// device.setAgents
+	Enabled bool `json:"enabled"`
 	// A new claude thread or tab's starting permission mode.
 	PermissionMode string `json:"permissionMode"`
 	// debug.logs: how many of the newest lines (all that are kept if 0).
@@ -91,6 +99,21 @@ func (s *Server) registerCore(h plugin.Host) {
 	rpc("device.info", func(plugin.RPCContext, coreParams) (any, error) { return s.Info(), nil })
 	rpc("device.checkUpdate", func(_ plugin.RPCContext, p coreParams) (any, error) { return s.checkUpdate(p.Force) }, plugin.Slow())
 	rpc("device.update", func(plugin.RPCContext, coreParams) (any, error) { return s.applyUpdate() }, plugin.Slow())
+	// Connected agents' switch on this device. Reading it is open to the
+	// Worker (so it can say why a device can't be reached); setting it only
+	// to a browser over WebRTC, never the hub.
+	rpc("device.agents", func(plugin.RPCContext, coreParams) (any, error) {
+		return protocol.AgentsInfo{Enabled: s.AgentsEnabled != nil && s.AgentsEnabled()}, nil
+	}, plugin.Remote())
+	rpc("device.setAgents", func(c plugin.RPCContext, p coreParams) (any, error) {
+		if c.Remote || c.Peer == nil || s.SetAgents == nil {
+			return nil, errors.New("connected agents can only be turned on or off from the app or on the device")
+		}
+		if err := s.SetAgents(p.Enabled); err != nil {
+			return nil, err
+		}
+		return protocol.AgentsInfo{Enabled: s.AgentsEnabled()}, nil
+	})
 	h.HandleRPC("debug.peer", func(_ context.Context, c plugin.RPCContext, _ json.RawMessage) (any, error) {
 		p, ok := c.Peer.(*peer)
 		if !ok {
@@ -100,14 +123,14 @@ func (s *Server) registerCore(h plugin.Host) {
 	})
 	rpc("debug.logs", func(_ plugin.RPCContext, p coreParams) (any, error) { return logring.Default.Tail(p.Lines), nil })
 
-	rpc("projects.list", func(plugin.RPCContext, coreParams) (any, error) { return s.store.ListProjects() })
+	rpc("projects.list", func(plugin.RPCContext, coreParams) (any, error) { return s.store.ListProjects() }, plugin.Agent())
 	rpc("projects.create", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		proj, err := s.store.CreateProject(p.Path, p.Name)
 		if err == nil {
 			s.broadcast(protocol.EventProjectsChanged)
 		}
 		return proj, err
-	})
+	}, plugin.Agent())
 	rpc("projects.rename", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		proj, err := s.store.RenameProject(p.ID, p.Name)
 		if err == nil {
@@ -136,11 +159,11 @@ func (s *Server) registerCore(h plugin.Host) {
 			s.plugins.Decorate(&threads[i])
 		}
 		return threads, err
-	})
+	}, plugin.Agent())
 	rpc("threads.get", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		return s.Threads().Live(p.ThreadID)
-	})
-	rpc("threads.create", func(_ plugin.RPCContext, p coreParams) (any, error) {
+	}, plugin.Agent())
+	rpc("threads.create", func(c plugin.RPCContext, p coreParams) (any, error) {
 		kind := p.Kind
 		if kind == "" {
 			kind = protocol.ThreadTerminal
@@ -148,6 +171,16 @@ func (s *Server) registerCore(h plugin.Host) {
 		k, ok := s.plugins.Kind(kind)
 		if !ok || !k.Thread {
 			return nil, fmt.Errorf("unknown thread kind %q", kind)
+		}
+		if c.Agent != "" {
+			// Connected agents start conversations with coding agents, whose
+			// permission prompts come to the user; never a shell.
+			if kind != protocol.ThreadClaude && k.View != "agent" {
+				return nil, fmt.Errorf("connected agents can't start %s threads", kind)
+			}
+			if p.PermissionMode == "bypassPermissions" {
+				return nil, errors.New("connected agents can't start a thread that skips permission prompts")
+			}
 		}
 		t, err := s.store.CreateThread(p.ProjectID, p.Name, kind)
 		if err != nil {
@@ -158,7 +191,7 @@ func (s *Server) registerCore(h plugin.Host) {
 			err = k.Created(t, plugin.CreateParams{PermissionMode: p.PermissionMode, Prompt: p.Prompt})
 		}
 		return t, err
-	})
+}, plugin.Agent())
 	rpc("threads.rename", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		t, err := s.store.RenameThread(p.ID, p.Name)
 		if err == nil {
@@ -166,7 +199,7 @@ func (s *Server) registerCore(h plugin.Host) {
 			s.broadcast(protocol.EventThreadsChanged)
 		}
 		return t, err
-	})
+}, plugin.Agent())
 	rpc("threads.archive", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		t, err := s.store.SetThreadArchived(p.ID, p.Archived)
 		if err != nil {
@@ -185,7 +218,7 @@ func (s *Server) registerCore(h plugin.Host) {
 		s.plugins.Decorate(&t)
 		s.broadcast(protocol.EventThreadsChanged)
 		return t, nil
-	})
+	}, plugin.Agent())
 	rpc("threads.delete", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		t, err := s.store.GetThread(p.ID)
 		if err != nil {
@@ -235,7 +268,7 @@ func (s *Server) registerCore(h plugin.Host) {
 		return plugin.Empty{}, nil
 	})
 
-	rpc("fs.listDirs", func(_ plugin.RPCContext, p coreParams) (any, error) { return listDirs(p.Path) })
+	rpc("fs.listDirs", func(_ plugin.RPCContext, p coreParams) (any, error) { return listDirs(p.Path) }, plugin.Agent())
 	rpc("fs.mkdir", func(_ plugin.RPCContext, p coreParams) (any, error) { return makeDir(p.Path, p.Name) })
 }
 

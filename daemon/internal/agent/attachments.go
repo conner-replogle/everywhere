@@ -138,6 +138,27 @@ func (a attachmentStore) resolve(threadID string, ids []string) ([]storedAttachm
 	return out, nil
 }
 
+// ReadAttachment reads one of a thread's files, an upload or one an agent
+// shared, by id: only what's in the thread's own attachment directory.
+func (m *Manager) ReadAttachment(threadID, id string, maxBytes int64) (protocol.AgentAttachment, []byte, error) {
+	files, err := m.attachments.resolve(threadID, []string{id})
+	if err != nil {
+		return protocol.AgentAttachment{}, nil, err
+	}
+	f := files[0]
+	att := f.AgentAttachment
+	att.Path = ""
+	info, err := os.Stat(f.Path)
+	if err != nil {
+		return att, nil, fmt.Errorf("attachment %s is gone", id)
+	}
+	if info.Size() > maxBytes {
+		return att, nil, fmt.Errorf("%s is %d MB; at most %d MB can be read this way", att.Name, info.Size()>>20, maxBytes>>20)
+	}
+	data, err := os.ReadFile(f.Path)
+	return att, data, err
+}
+
 // promptContent builds a prompt: images as image blocks ahead of the text,
 // and a line per attachment saying where it's saved, so claude can open
 // files it can't see inline (t3code's wording).
@@ -307,6 +328,9 @@ func copyFile(src, dst string) error {
 }
 
 // newUploadID is an attachment id, as the web app makes for uploads.
+// NewUploadID makes an id for SaveUpload.
+func NewUploadID() string { return newUploadID() }
+
 func newUploadID() string {
 	return strings.ReplaceAll(newUUID(), "-", "")
 }

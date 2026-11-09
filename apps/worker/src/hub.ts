@@ -6,6 +6,8 @@ import type {
   HubFeature,
   HubToClient,
   HubToDaemon,
+  AgentMethod,
+  AgentMethods,
   RemoteMethod,
   RemoteMethods,
   SignalData,
@@ -42,7 +44,7 @@ const DEVICE_SILENT_MS = 60_000;
 const SWEEP_INTERVAL_MS = 30_000;
 
 /** Hub features the core serves; plugins add theirs. */
-const CORE_FEATURES: HubFeature[] = ["rpc"];
+const CORE_FEATURES: HubFeature[] = ["rpc", "agents"];
 
 export const HUB_KIND_HEADER = "x-ew-kind";
 export const HUB_ID_HEADER = "x-ew-id";
@@ -236,14 +238,16 @@ export class AccountHub extends DurableObject<Env> {
     }
   }
 
-  /** The online devices, and which of them answer rpc requests. */
-  async devices(): Promise<{ id: string; rpc: boolean }[]> {
-    const out = new Map<string, boolean>();
+  /** The online devices, and which of them answer rpc requests and connected agents'. */
+  async devices(): Promise<{ id: string; rpc: boolean; agents: boolean }[]> {
+    const out = new Map<string, { id: string; rpc: boolean; agents: boolean }>();
     for (const ws of this.ctx.getWebSockets()) {
       const a = ws.deserializeAttachment() as Attachment | null;
-      if (a?.kind === "device" && this.live(ws)) out.set(a.id, !!a.features?.includes("rpc"));
+      if (a?.kind === "device" && this.live(ws)) {
+        out.set(a.id, { id: a.id, rpc: !!a.features?.includes("rpc"), agents: !!a.features?.includes("agents") });
+      }
     }
-    return [...out].map(([id, rpc]) => ({ id, rpc }));
+    return [...out.values()];
   }
 
   /**
@@ -256,10 +260,34 @@ export class AccountHub extends DurableObject<Env> {
     params: RemoteMethods[M][0],
     timeoutMs = 30_000,
   ): Promise<DeviceRpcResult<RemoteMethods[M][1]>> {
+    return (await this.relay(deviceId, "rpc", { method, params }, timeoutMs)) as DeviceRpcResult<RemoteMethods[M][1]>;
+  }
+
+  /**
+   * Relays a connected agent's request (agent: its name) to a daemon (see
+   * AgentMethods). The daemon answers only while the device allows
+   * connected agents, and only those methods.
+   */
+  async agentRpc<M extends AgentMethod>(
+    deviceId: string,
+    agent: string,
+    method: M,
+    params: AgentMethods[M][0],
+    timeoutMs = 30_000,
+  ): Promise<DeviceRpcResult<AgentMethods[M][1]>> {
+    return (await this.relay(deviceId, "agents", { method, params, agent }, timeoutMs)) as DeviceRpcResult<AgentMethods[M][1]>;
+  }
+
+  private async relay(
+    deviceId: string,
+    feature: HubFeature,
+    req: { method: string; params: unknown; agent?: string },
+    timeoutMs: number,
+  ): Promise<DeviceRpcResult> {
     const ws = this.socket(`device:${deviceId}`);
     if (!ws) return { ok: false, code: "offline", message: "the device is offline" };
     const a = ws.deserializeAttachment() as Attachment;
-    if (a.kind !== "device" || !a.features?.includes("rpc")) {
+    if (a.kind !== "device" || !a.features?.includes(feature)) {
       return { ok: false, code: "unsupported", message: "the device's daemon is too old for this; update it" };
     }
     const id = randomId();
@@ -270,8 +298,8 @@ export class AccountHub extends DurableObject<Env> {
       }, timeoutMs);
       this.pending.set(id, { deviceId, resolve, timer });
     });
-    send(ws, { t: "rpc", id, method, params } satisfies HubToDaemon);
-    return (await result) as DeviceRpcResult<RemoteMethods[M][1]>;
+    send(ws, { t: "rpc", id, ...req } satisfies HubToDaemon);
+    return result;
   }
 
   /** Connected daemons that announced a hub feature. */

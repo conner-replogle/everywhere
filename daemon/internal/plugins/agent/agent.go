@@ -3,8 +3,8 @@
 // Claude Code's through package claude, others' (OpenCode, and those
 // plugins add with AgentService.AddAgent) over the Agent Client Protocol
 // through package harness. It also serves the
-// upload: channel, signs claude in, and reads and drives agent threads over
-// the hub. Other plugins reach agents through the AgentService it exports
+// upload: channel, signs claude in, and lets connected agents read and
+// drive agent threads over the hub (connected.go). Other plugins reach agents through the AgentService it exports
 // and add to claude's launch with ContributeAgent.
 package agent
 
@@ -150,7 +150,8 @@ func (p *Plugin) Start(h plugin.Host) error {
 		Limit int    `json:"limit"`
 	}) (any, error) {
 		return h.Store().SearchAgentEvents(s.Query, min(max(s.Limit, 1), 50))
-	}))
+	}), plugin.Agent())
+	p.registerConnected(h)
 
 	go p.m.ContinueMarked() // turns interrupted by an update
 	return nil

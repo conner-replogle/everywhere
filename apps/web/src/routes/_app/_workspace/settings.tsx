@@ -1,5 +1,5 @@
 import { createFileRoute, Link, Outlet } from "@tanstack/react-router";
-import { AudioLinesIcon, MonitorIcon, PaletteIcon, PuzzleIcon, ShieldIcon } from "lucide-react";
+import { AudioLinesIcon, MonitorIcon, PaletteIcon, PlugZapIcon, PuzzleIcon, ShieldIcon } from "lucide-react";
 import { pluginSettings } from "@/plugins/registry";
 import type { SettingsSection } from "@/plugins/types";
 
@@ -13,6 +13,7 @@ const CORE: SettingsSection[] = [
   { to: "/settings/assistant", label: "Assistant", icon: AudioLinesIcon, order: 30 },
   { to: "/settings/appearance", label: "Appearance", icon: PaletteIcon, order: 40 },
   { to: "/settings/security", label: "Security", icon: ShieldIcon, order: 60 },
+  { to: "/settings/agents", label: "Connected agents", icon: PlugZapIcon, order: 65 },
   { to: "/settings/plugins", label: "Plugins", icon: PuzzleIcon, order: 70 },
 ];
 const SECTIONS = [...CORE, ...pluginSettings()].sort((a, b) => a.order - b.order);

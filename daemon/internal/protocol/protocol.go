@@ -42,6 +42,9 @@ type HubToDaemon struct {
 	ID     string          `json:"id,omitempty"`
 	Method string          `json:"method,omitempty"`
 	Params json.RawMessage `json:"params,omitempty"`
+	// Agent names the connected agent (an MCP client) a request comes from;
+	// empty for the Worker's own. See plugin.Agent.
+	Agent string `json:"agent,omitempty"`
 }
 
 type Hello struct {
@@ -57,6 +60,11 @@ const HubFeatureRPC = "rpc"
 // HubFeatureClaudeToken: the daemon takes the account's Claude token
 // (agent.setToken), which the hub sends when it connects.
 const HubFeatureClaudeToken = "claudeToken"
+
+// HubFeatureAgents: the daemon serves connected agents' requests (rpc with
+// Agent set) for the methods registered with plugin.Agent, while the device
+// allows them (`device.agents`).
+const HubFeatureAgents = "agents"
 
 // HubRPCResult answers a hub "rpc" request (T "rpc.result").
 type HubRPCResult struct {
@@ -150,7 +158,16 @@ const (
 	FeatureClaudeAuth = "claudeAuth"  // agent.auth, agent.login*, claude.auth and kind signedOut
 	FeatureDone       = "done"        // Thread.doneAt, threads.done and the thread_done tool
 	FeatureToken      = "claudeToken" // agent.setToken and ClaudeAuth.token
+	// FeatureAgents: device.agents and device.setAgents, connected agents'
+	// switch on this device; AgentEvent.Via.
+	FeatureAgents = "agents"
 )
+
+// AgentsInfo is the result of device.agents: whether this device lets
+// connected agents (MCP clients the account authorized) reach it.
+type AgentsInfo struct {
+	Enabled bool `json:"enabled"`
+}
 
 // DesktopInfo is the result of desktop.info.
 type DesktopInfo struct {
@@ -512,6 +529,8 @@ type AgentClientMsg struct {
 	Thinking    *bool    `json:"thinking,omitempty"`
 	ID          string   `json:"id,omitempty"`    // rewind: the prompt's event id
 	Files       bool     `json:"files,omitempty"` // rewind: restore files too
+	// Via names the connected agent that sent a prompt, shown with it.
+	Via string `json:"via,omitempty"`
 }
 
 // Frames from the daemon, discriminated by T.
@@ -790,6 +809,8 @@ type AgentEvent struct {
 	// an agent shared, with Text its caption, or (toolResult) the images in
 	// a tool's result, as claude saw them.
 	Attachments []AgentAttachment `json:"attachments,omitempty"`
+	// Via (user) names the connected agent that sent the prompt.
+	Via string `json:"via,omitempty"`
 	// FromSeq (rewind): the events from this seq up to the rewind's own were
 	// removed. ID is the prompt rolled back and Text its text.
 	FromSeq int64 `json:"fromSeq,omitempty"`

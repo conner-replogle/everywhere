@@ -59,9 +59,9 @@ func TestMethodsAndRemoteAccess(t *testing.T) {
 		"tabs.list", "tabs.create", "tabs.close", "tabs.setState", "fs.listDirs", "fs.list", "fs.mkdir",
 		"git.status", "git.fetch", "git.pull", "git.updateDefault", "git.info",
 		"telemetry.catalog", "telemetry.query", "telemetry.events", "telemetry.deleteRun", "threads.get",
-		"debug.peer", "debug.logs", "device.update", "desktop.info", "desktop.start", "desktop.candidate", "desktop.stop", "rtc.open", "rtc.candidate", "rtc.close",
+		"debug.peer", "debug.logs", "device.update", "device.setAgents", "agent.read", "agent.send", "agent.interrupt", "agent.configure", "agent.file", "desktop.info", "desktop.start", "desktop.candidate", "desktop.stop", "rtc.open", "rtc.candidate", "rtc.close",
 	}
-	remote := []string{"projects.clone"}
+	remote := []string{"projects.clone", "device.agents"}
 	remoteOnly := []string{"agent.setToken", "plugins.setAccountSettings"}
 
 	registered := map[string]bool{}
@@ -70,7 +70,7 @@ func TestMethodsAndRemoteAccess(t *testing.T) {
 			registered[r] = true
 		}
 	}
-	core := []string{"device.info", "device.checkUpdate", "device.update", "debug.peer", "debug.logs", "projects.list", "projects.create", "projects.rename",
+	core := []string{"device.info", "device.checkUpdate", "device.update", "device.agents", "device.setAgents", "debug.peer", "debug.logs", "projects.list", "projects.create", "projects.rename",
 		"projects.icon", "projects.delete", "threads.list", "threads.get", "threads.create", "threads.rename", "threads.archive", "threads.delete",
 		"threads.workdir", "tabs.list", "tabs.create", "tabs.close", "tabs.setState", "fs.listDirs", "fs.mkdir", "rtc.open", "rtc.candidate", "rtc.close",
 		"plugins.setAccountSettings"}
@@ -87,7 +87,7 @@ func TestMethodsAndRemoteAccess(t *testing.T) {
 			t.Errorf("%s over the hub: %v", m, err)
 		}
 	}
-	for _, m := range []string{"code.exec", "term.write", "agent.read", "agent.request"} {
+	for _, m := range []string{"code.exec", "term.write", "term.read", "agent.request"} {
 		if _, err := call[any](t, s, true, m, map[string]any{}); err == nil || !strings.Contains(err.Error(), "unknown method") {
 			t.Errorf("%s over the hub: %v", m, err)
 		}
@@ -194,3 +194,91 @@ func TestDeleteScratchFolder(t *testing.T) {
 		}
 	}
 }
+
+// Connected agents reach only the methods registered as Agent, and only
+// while the device allows them; they can't flip that switch themselves.
+func TestConnectedAgentAccess(t *testing.T) {
+	s := testServer(t)
+	on := false
+	s.AgentsEnabled = func() bool { return on }
+	s.SetAgents = func(v bool) error { on = v; return nil }
+
+	agentMethods := []string{"projects.list", "projects.create", "threads.list", "threads.get", "threads.create", "threads.rename",
+		"threads.archive", "threads.search", "fs.listDirs", "agent.read", "agent.send", "agent.interrupt", "agent.configure", "agent.file"}
+	never := []string{"device.setAgents", "device.update", "agent.setToken", "projects.clone", "plugins.setAccountSettings",
+		"threads.delete", "tabs.create", "processes.start", "fs.list", "fs.mkdir", "git.pull", "desktop.start", "rtc.open",
+		"code.exec", "term.write", "agent.request", "plugins.install"}
+
+	for _, m := range agentMethods {
+		if _, err := s.Remote(m, json.RawMessage(`{}`), "ChatGPT"); err == nil || !strings.Contains(err.Error(), "turned off on this device") {
+			t.Errorf("%s while off: %v", m, err)
+		}
+	}
+	on = true
+	for _, m := range agentMethods {
+		if _, err := s.Remote(m, json.RawMessage(`{}`), "ChatGPT"); err != nil && (strings.Contains(err.Error(), "isn't available") || strings.Contains(err.Error(), "unknown method")) {
+			t.Errorf("%s while on: %v", m, err)
+		}
+	}
+	for _, m := range never {
+		if _, err := s.Remote(m, json.RawMessage(`{}`), "ChatGPT"); err == nil ||
+			!(strings.Contains(err.Error(), "isn't available to connected agents") || strings.Contains(err.Error(), "unknown method")) {
+			t.Errorf("%s reached by an agent: %v", m, err)
+		}
+	}
+	// Without an agent name, the Worker reaches none of them.
+	for _, m := range agentMethods {
+		if _, err := s.Remote(m, json.RawMessage(`{}`), ""); err == nil {
+			t.Errorf("%s reached by the Worker", m)
+		}
+	}
+
+	// Only claude (and other agents') threads, never skipping prompts.
+	projects, err := call[[]protocol.Project](t, s, false, "projects.list", nil)
+	if err != nil || len(projects) == 0 {
+		t.Fatalf("projects: %v %v", projects, err)
+	}
+	pid := projects[0].ID
+	for _, p := range []map[string]any{
+		{"projectId": pid, "kind": "terminal"},
+		{"projectId": pid},
+		{"projectId": pid, "kind": "claude", "permissionMode": "bypassPermissions"},
+	} {
+		raw, _ := json.Marshal(p)
+		if _, err := s.Remote("threads.create", raw, "ChatGPT"); err == nil {
+			t.Errorf("agent created %v", p)
+		}
+	}
+	raw, _ := json.Marshal(map[string]any{"projectId": pid, "kind": "claude", "name": "from an agent"})
+	res, err := s.Remote("threads.create", raw, "ChatGPT")
+	if err != nil {
+		t.Fatalf("claude thread: %v", err)
+	}
+	th := res.(protocol.Thread)
+	raw, _ = json.Marshal(map[string]any{"threadId": th.ID, "mode": "bypassPermissions"})
+	if _, err := s.Remote("agent.configure", raw, "ChatGPT"); err == nil {
+		t.Error("agent turned permission prompts off")
+	}
+	raw, _ = json.Marshal(map[string]any{"threadId": th.ID, "limit": 10})
+	if _, err := s.Remote("agent.read", raw, "ChatGPT"); err != nil {
+		t.Errorf("agent.read: %v", err)
+	}
+	raw, _ = json.Marshal(map[string]any{"threadId": th.ID, "id": "../../etc"})
+	if _, err := s.Remote("agent.file", raw, "ChatGPT"); err == nil {
+		t.Error("agent.file read outside the thread's attachments")
+	}
+
+	// The switch: a browser can set it, the hub can't.
+	if _, err := s.Remote("device.setAgents", json.RawMessage(`{"enabled":false}`), ""); err == nil || !on {
+		t.Errorf("hub set the switch: %v", err)
+	}
+	if _, err := s.plugins.Call(context.Background(), "device.setAgents", plugin.RPCContext{Peer: fakePeer{}}, json.RawMessage(`{"enabled":false}`)); err != nil || on {
+		t.Errorf("browser couldn't set the switch: %v", err)
+	}
+}
+
+type fakePeer struct{}
+
+func (fakePeer) ID() string     { return "p" }
+func (fakePeer) Client() string { return "c" }
+func (fakePeer) Send(any)       {}

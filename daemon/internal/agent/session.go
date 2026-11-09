@@ -289,7 +289,7 @@ func (s *session) handle(c Client, msg protocol.AgentClientMsg) {
 		return
 	case "send":
 		s.refreshRetries = 0 // the user's prompt gets retries of its own
-		err = s.send(msg.Text, msg.Attachments)
+		err = s.send(msg.Text, msg.Attachments, msg.Via)
 	case "interrupt":
 		s.interrupt()
 	case "restart":
@@ -321,7 +321,8 @@ func (s *session) handle(c Client, msg protocol.AgentClientMsg) {
 	s.changed()
 }
 
-func (s *session) send(text string, attachmentIDs []string) error {
+// via names the connected agent that sent it, if one did.
+func (s *session) send(text string, attachmentIDs []string, via string) error {
 	text = strings.TrimSpace(text)
 	if text == "" && len(attachmentIDs) == 0 {
 		return nil
@@ -353,7 +354,7 @@ func (s *session) send(text string, attachmentIDs []string) error {
 	} else if !s.recapping {
 		s.doneAfterTurn = false // a new ask: the work isn't done
 	}
-	ev := protocol.AgentEvent{Type: "user", ID: id, Text: text}
+	ev := protocol.AgentEvent{Type: "user", ID: id, Text: text, Via: via}
 	for _, f := range files {
 		ev.Attachments = append(ev.Attachments, f.AgentAttachment)
 	}
@@ -1402,7 +1403,7 @@ func (s *session) scheduleRefreshRetry(recap bool) {
 			}
 			s.refreshRetry = nil
 			if recap {
-				if err := s.send(recapPrompt, nil); err != nil {
+				if err := s.send(recapPrompt, nil, ""); err != nil {
 					slog.Warn("retrying claude recap", "thread", s.threadID, "err", err)
 				}
 				return

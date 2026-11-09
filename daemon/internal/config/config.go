@@ -17,6 +17,10 @@ type Config struct {
 	// Desktop allows remote desktop sessions. Only `everywhere desktop enable`,
 	// run on the device, turns it on.
 	Desktop bool `json:"desktop,omitempty"`
+	// Agents lets connected agents (MCP clients the account authorized)
+	// read and drive this device's threads. Off until turned on from the
+	// device: the CLI or the app over WebRTC, never through the hub.
+	Agents bool `json:"agents,omitempty"`
 	// Plugins are the external plugins enabled on this device: by
 	// `everywhere plugin install|enable`, or from the app for registry
 	// plugins that need no local consent.
@@ -104,6 +108,23 @@ func SetDesktop(on bool) error {
 		return err
 	}
 	cfg.Desktop = on
+	return Save(cfg, cred)
+}
+
+// AgentsEnabled reads the config on each call, so the switch takes effect
+// without restarting the daemon.
+func AgentsEnabled() bool {
+	cfg, _, err := Load()
+	return err == nil && cfg.Agents
+}
+
+// SetAgents turns connected agents' access to this device on or off.
+func SetAgents(on bool) error {
+	cfg, cred, err := Load()
+	if err != nil {
+		return err
+	}
+	cfg.Agents = on
 	return Save(cfg, cred)
 }
 

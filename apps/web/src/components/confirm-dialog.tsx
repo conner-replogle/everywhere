@@ -16,6 +16,7 @@ export function ConfirmDialog({
   title,
   description,
   confirmLabel,
+  confirmVariant = "destructive",
   onConfirm,
 }: {
   open: boolean;
@@ -23,6 +24,8 @@ export function ConfirmDialog({
   title: string;
   description: React.ReactNode;
   confirmLabel: string;
+  /** default for confirming something that isn't a loss (turning a feature on). */
+  confirmVariant?: "destructive" | "default";
   onConfirm: () => Promise<void>;
 }) {
   const [error, setError] = useState<string | null>(null);
@@ -50,7 +53,7 @@ export function ConfirmDialog({
             Cancel
           </Button>
           <Button
-            variant="destructive"
+            variant={confirmVariant}
             disabled={busy}
             onClick={async () => {
               setBusy(true);

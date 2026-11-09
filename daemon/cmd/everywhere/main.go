@@ -45,6 +45,7 @@ Usage:
   everywhere service install|uninstall           manage the background service
   everywhere update                              install the latest release
   everywhere desktop enable|disable|status       allow remote desktop of this machine's screen
+  everywhere agents enable|disable|status        let connected agents (MCP) reach this machine's threads
   everywhere plugin list|install|enable|disable|remove   manage plugins installed on this machine
   everywhere uninstall [--purge]                 remove the service and binary (--purge: config and data too,
                                                  but Scratch folders only with --purge-scratch)
@@ -75,6 +76,8 @@ func main() {
 		err = selfUpdate()
 	case "desktop":
 		err = desktopCmd(args)
+	case "agents":
+		err = agentsCmd(args)
 	case "plugin", "plugins":
 		err = pluginCmd(args)
 	case "uninstall":
@@ -161,7 +164,7 @@ func daemon(args []string) error {
 	hostname, _ := os.Hostname()
 	home, _ := os.UserHomeDir()
 	// The core's features; plugins add theirs.
-	features := []string{protocol.FeatureUpdate, protocol.FeatureArchive, protocol.FeatureTabs, protocol.FeatureIcons, protocol.FeatureMkdir}
+	features := []string{protocol.FeatureUpdate, protocol.FeatureArchive, protocol.FeatureTabs, protocol.FeatureIcons, protocol.FeatureMkdir, protocol.FeatureAgents}
 	manager, installed := external.Load(config.PluginsDir(), config.PluginEnabled, config.SetPluginEnabled)
 	all := append(append(builtin.Plugins(), manager), installed...)
 	srv := peer.NewServer(st, protocol.DeviceInfo{
@@ -172,6 +175,8 @@ func daemon(args []string) error {
 	manager.Attach(srv.Plugins())
 	srv.DesktopEnabled = config.DesktopEnabled
 	srv.PluginEnabled = config.PluginEnabled
+	srv.AgentsEnabled = config.AgentsEnabled
+	srv.SetAgents = config.SetAgents
 	srv.ICEServers = (&ice.Provider{Server: cfg.Server, Credential: credential}).Servers
 	go srv.ICEServers() // warm the cache so the first connection doesn't wait
 

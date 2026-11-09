@@ -35,6 +35,10 @@ type Server struct {
 	DesktopEnabled func() bool
 	// PluginEnabled reports whether the device owner enabled an external plugin.
 	PluginEnabled func(id string) bool
+	// AgentsEnabled reports whether this device lets connected agents in;
+	// SetAgents changes it (from a browser over WebRTC only).
+	AgentsEnabled func() bool
+	SetAgents     func(on bool) error
 
 	store   *store.Store
 	plugins *plugin.Registry

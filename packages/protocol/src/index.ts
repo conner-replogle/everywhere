@@ -98,16 +98,22 @@ export function notifyText(n: Pick<HubNotify, "kind" | "tool">): string {
 /**
  * rpc: the daemon answers rpc requests (see RemoteMethods). claudeToken: it
  * takes the account's Claude token (agent.setToken), sent when it connects.
+ * agents: it answers connected agents' requests (see AgentMethods) while
+ * the device allows them.
  */
-export type HubFeature = "rpc" | "claudeToken" | "pluginSettings";
+export type HubFeature = "rpc" | "claudeToken" | "pluginSettings" | "agents";
 
 /** Sent by the hub to a daemon. `from` is a browser connection id. */
 export type HubToDaemon =
   | { t: "signal"; from: string; sid: string; data: SignalData }
   /** The browser connection's session was signed out; close its peers. */
   | { t: "client.revoked"; connId: string }
-  /** A request from the Worker itself (see RemoteMethods); answered with rpc.result. */
-  | { t: "rpc"; id: string; method: string; params: unknown }
+  /**
+   * A request from the Worker itself (see RemoteMethods), or with agent (the
+   * client's name) from a connected agent (see AgentMethods); answered with
+   * rpc.result.
+   */
+  | { t: "rpc"; id: string; method: string; params: unknown; agent?: string }
   | { t: "error"; code: HubErrorCode; message: string };
 
 export type HubErrorCode = "device_offline" | "client_gone" | "daemon_too_old" | "bad_message" | "revoked";
@@ -330,7 +336,8 @@ export interface PluginKind {
  * tabs.create's input and threads.create's prompt. claudeAuth:
  * agent.auth, agent.login, agent.loginCode, agent.loginCancel, claude.auth
  * and the signedOut turn kind. done: Thread.doneAt, threads.done and the
- * agent's thread_done tool.
+ * agent's thread_done tool. agents: device.agents and device.setAgents
+ * (connected agents' switch on the device) and the user event's via.
  */
 export type DeviceFeature =
   | "plugins"
@@ -352,7 +359,8 @@ export type DeviceFeature =
   | "scratch"
   | "claudeAuth"
   | "done"
-  | "claudeToken";
+  | "claudeToken"
+  | "agents";
 
 /**
  * What desktop.start captures: a monitor by name, or a window by id
@@ -793,6 +801,10 @@ export interface RpcMethods {
   "device.checkUpdate": [{ force?: boolean }, UpdateInfo];
   /** Installs the latest release, answers, then restarts into it (the connection drops). */
   "device.update": [Record<string, never>, { version: string }];
+  /** agents: whether connected agents can reach this device. */
+  "device.agents": [Record<string, never>, AgentsInfo];
+  /** agents: turns that on or off; only from a browser, never over the hub. */
+  "device.setAgents": [{ enabled: boolean }, AgentsInfo];
   "projects.list": [Record<string, never>, Project[]];
   "projects.create": [{ path: string; name?: string }, Project];
   "projects.rename": [{ id: string; name: string }, Project];
@@ -968,8 +980,80 @@ export interface RemoteMethods {
   "agent.setToken": RpcMethods["agent.setToken"];
   /** A plugin's account settings, whole (sealed in the hub, sent to each device that takes them). */
   "plugins.setAccountSettings": [{ id: string; values: Record<string, unknown> }, Record<string, never>];
+  /** Whether the device lets connected agents in (so the Worker can say why not). */
+  "device.agents": RpcMethods["device.agents"];
 }
 export type RemoteMethod = keyof RemoteMethods;
+
+/** device.agents: whether a device lets connected agents in. */
+export interface AgentsInfo {
+  enabled: boolean;
+}
+
+/**
+ * What a connected agent (an MCP client the account authorized) can call on
+ * a daemon, relayed by the Worker as rpc with agent set. The daemon answers
+ * only while the device allows connected agents (device.agents), and only
+ * these: nothing that runs commands, reads files outside a thread's own
+ * attachments, types into terminals or answers permission prompts.
+ * threads.create takes only agent kinds, never bypassPermissions.
+ */
+export interface AgentMethods {
+  "projects.list": RpcMethods["projects.list"];
+  "projects.create": RpcMethods["projects.create"];
+  "threads.list": RpcMethods["threads.list"];
+  "threads.get": [{ threadId: string }, Thread];
+  "threads.create": RpcMethods["threads.create"];
+  "threads.rename": RpcMethods["threads.rename"];
+  "threads.archive": RpcMethods["threads.archive"];
+  "threads.search": RpcMethods["threads.search"];
+  "fs.listDirs": RpcMethods["fs.listDirs"];
+  /**
+   * An agent thread's state and the newest limit (default 200, at most 1000)
+   * events after afterSeq and before beforeSeq. waitMs: first wait up to that
+   * long (at most 50s) for a turn in progress to finish or stop on a prompt.
+   */
+  "agent.read": [{ threadId: string; afterSeq?: number; beforeSeq?: number; limit?: number; waitMs?: number }, AgentRead];
+  /** A prompt, with files (base64, 8 MB each, 16 MB in all), marked as the agent's (via). */
+  "agent.send": [{ threadId: string; text: string; files?: AgentFile[] }, Record<string, never>];
+  "agent.interrupt": [{ threadId: string }, Record<string, never>];
+  /** Settings, as the agent channel's set* requests; never mode bypassPermissions. */
+  "agent.configure": [
+    {
+      threadId: string;
+      model?: string;
+      mode?: PermissionMode;
+      effort?: string;
+      thinking?: boolean;
+      workspace?: "local" | "worktree";
+      baseBranch?: string;
+    },
+    AgentState,
+  ];
+  /** One of the thread's files (an upload or one an agent shared), base64; up to 8 MB. */
+  "agent.file": [{ threadId: string; id: string }, { attachment: AgentAttachment; data: string }];
+}
+export type AgentMethod = keyof AgentMethods;
+
+export interface AgentRead {
+  thread: Thread;
+  /** Without models and commands. */
+  state: AgentState;
+  /** Oldest first. */
+  events: { seq: number; at: number; event: AgentEvent }[];
+  /** There are older events before these. */
+  more: boolean;
+  /** The newest event's seq (afterSeq if none). */
+  lastSeq: number;
+}
+
+/** A file a connected agent sends with a prompt. */
+export interface AgentFile {
+  name: string;
+  mediaType: string;
+  /** base64 */
+  data: string;
+}
 
 export interface SearchHit {
   threadId: string;
@@ -1308,7 +1392,8 @@ interface AgentEventBase {
 export type AgentEvent = AgentEventBase &
   (
     /** text is absent when the prompt was only attachments. */
-    | { type: "user"; id: string; text?: string; attachments?: AgentAttachment[] }
+    /** via: the connected agent that sent it. */
+    | { type: "user"; id: string; text?: string; attachments?: AgentAttachment[]; via?: string }
     | { type: "assistant" | "thinking"; id: string; text: string; streamKey?: string }
     /** id is the tool_use id; a toolResult with the same id follows. */
     | { type: "tool"; id: string; name: string; input: unknown }
