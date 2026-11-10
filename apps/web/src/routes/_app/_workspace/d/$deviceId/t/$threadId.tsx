@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import type { Tab, TabKind } from "@everywhere/protocol";
-import { ArrowLeftRightIcon, Columns2Icon, PlusIcon, PuzzleIcon, XIcon } from "lucide-react";
+import { ArrowLeftRightIcon, CheckIcon, ChevronDownIcon, Columns2Icon, PencilIcon, PlusIcon, PuzzleIcon, XIcon } from "lucide-react";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { CenteredMessage } from "@/components/centered-message";
 import { ConfirmDialog } from "@/components/confirm-dialog";
@@ -13,6 +13,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -431,7 +432,7 @@ function ThreadPage() {
           <div
             role="tablist"
             aria-label="Tabs"
-            className={cn("flex min-w-0 items-stretch overflow-x-auto", !(canTab || legacyBrowser) && "hidden")}
+            className={cn("flex min-w-0 items-stretch overflow-x-auto max-md:hidden", !(canTab || legacyBrowser) && "hidden")}
           >
             {panes.map((p) => {
               const local = isLocal(p);
@@ -452,10 +453,30 @@ function ThreadPage() {
               );
             })}
           </div>
+          {/* Phones: one menu of the tabs, opening new ones too, in place of the strip. */}
+          {(canTab || legacyBrowser) && active && (
+            <TabMenu
+              panes={panes}
+              active={active}
+              kindOf={kindOf}
+              badge={(p) => kindOf(p.kind).badge?.(p, thread)}
+              closable={(p) => !!p.parentId && (canTab || isLocal(p))}
+              onSelect={select}
+              onClose={requestClose}
+              onRename={(p) => (keep(), setRenaming(p))}
+              newKinds={(canTab || !archived) && ctx ? newTabKinds : []}
+              onNew={(k) => {
+                keep();
+                if (k.create) void k.create(ctx!);
+                else void openTab(k.kind);
+              }}
+              onCloseSplit={splitPane ? closeSplit : undefined}
+            />
+          )}
           {(canTab || !archived) && newTabKinds.length > 0 && ctx && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon-sm" className="mx-1 self-center" aria-label="New tab" title="New tab">
+                <Button variant="ghost" size="icon-sm" className="mx-1 self-center max-md:hidden" aria-label="New tab" title="New tab">
                   <PlusIcon />
                 </Button>
               </DropdownMenuTrigger>
@@ -491,7 +512,8 @@ function ThreadPage() {
           {archived ? (
             <span className="shrink-0 rounded-sm bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">Archived</span>
           ) : (
-            active && activeKind?.status?.(active, reports[active.id])
+            // Phones need the width for tabs; the agent's state shows in its pane.
+            <span className="hidden md:contents">{active && activeKind?.status?.(active, reports[active.id])}</span>
           )}
           {panes.length > 1 && (
             <DropdownMenu>
@@ -499,7 +521,7 @@ function ThreadPage() {
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  className={cn("mr-1 self-center", splitPane && "text-primary")}
+                  className={cn("mr-1 self-center max-md:hidden", splitPane && "text-primary")}
                   aria-label="Split view"
                   title="Split view: two tabs at once"
                 >
@@ -643,9 +665,7 @@ function TabButton({
   onRename?: () => void;
   onClose?: () => void;
 }) {
-  const Icon = kind.icon;
   const label = paneLabel(p, kind);
-  const status = !isLocal(p) ? p.agentStatus : undefined;
   return (
     <div
       className={cn(
@@ -666,21 +686,9 @@ function TabButton({
         title={onRename ? `${label} — double-click to rename` : label}
         className={cn("flex h-full max-w-48 items-center gap-1.5 pl-3 outline-none", onClose ? "pr-1" : "pr-3")}
       >
-        {isLocal(p) && p.icon ? (
-          <img src={p.icon} alt="" className="size-3.5 shrink-0 rounded-[2px] object-contain" />
-        ) : (
-          <Icon className="size-3.5 shrink-0" />
-        )}
+        <PaneIcon pane={p} kind={kind} />
         <span className="truncate">{label}</span>
-        {(status === "working" || status === "starting") && (
-          <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-primary" aria-label="working" />
-        )}
-        {status === "waiting" && <span className="size-1.5 shrink-0 rounded-full bg-warn" aria-label="needs you" />}
-        {!!running && (
-          <span className="shrink-0 rounded-sm bg-live/15 px-1 text-[10px] text-live tabular-nums" aria-label={`${running} running`}>
-            {running}
-          </span>
-        )}
+        <PaneMarks pane={p} running={running} />
       </button>
       {onClose && (
         <button
@@ -696,6 +704,160 @@ function TabButton({
         </button>
       )}
     </div>
+  );
+}
+
+/** A tab's icon: a web page's own, else its kind's. */
+function PaneIcon({ pane: p, kind }: { pane: Pane; kind: TabKindDef }) {
+  const Icon = kind.icon;
+  return isLocal(p) && p.icon ? (
+    <img src={p.icon} alt="" className="size-3.5 shrink-0 rounded-[2px] object-contain" />
+  ) : (
+    <Icon className="size-3.5 shrink-0" />
+  );
+}
+
+/** What a tab says about itself: its agent working or waiting, things running. */
+function PaneMarks({ pane: p, running }: { pane: Pane; running?: number }) {
+  const status = !isLocal(p) ? p.agentStatus : undefined;
+  return (
+    <>
+      {(status === "working" || status === "starting") && (
+        <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-primary" aria-label="working" />
+      )}
+      {status === "waiting" && <span className="size-1.5 shrink-0 rounded-full bg-warn" aria-label="needs you" />}
+      {!!running && (
+        <span className="shrink-0 rounded-sm bg-live/15 px-1 text-[10px] text-live tabular-nums" aria-label={`${running} running`}>
+          {running}
+        </span>
+      )}
+    </>
+  );
+}
+
+/**
+ * The tabs on a phone: the one shown, opening a menu of them all, where
+ * new ones are opened too. A strip of tabs doesn't fit beside the header.
+ */
+function TabMenu({
+  panes,
+  active,
+  kindOf,
+  badge,
+  closable,
+  onSelect,
+  onClose,
+  onRename,
+  newKinds,
+  onNew,
+  onCloseSplit,
+}: {
+  panes: Pane[];
+  active: Pane;
+  kindOf: (kind: TabKind) => TabKindDef;
+  badge: (p: Pane) => number | undefined;
+  closable: (p: Pane) => boolean;
+  onSelect: (id: string) => void;
+  onClose: (p: Pane) => void;
+  onRename: (p: Pane) => void;
+  newKinds: TabKindDef[];
+  onNew: (k: TabKindDef) => void;
+  onCloseSplit?: () => void;
+}) {
+  const kind = kindOf(active.kind);
+  // Elsewhere, something needing you or running would go unseen behind the menu.
+  const others = panes.filter((p) => p.id !== active.id);
+  const othersWaiting = others.some((p) => !isLocal(p) && p.agentStatus === "waiting");
+  const othersWorking = others.some((p) => !isLocal(p) && (p.agentStatus === "working" || p.agentStatus === "starting"));
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className="flex min-w-0 shrink items-center gap-2 px-2 text-sm outline-none focus-visible:bg-accent/60 data-[state=open]:bg-accent/60 md:hidden"
+          aria-label={`Tabs: ${paneLabel(active, kind)}`}
+        >
+          <PaneIcon pane={active} kind={kind} />
+          <span className="truncate font-medium">{paneLabel(active, kind)}</span>
+          <PaneMarks pane={active} running={badge(active)} />
+          {panes.length > 1 && (
+            <span className="shrink-0 rounded-full bg-muted px-1.5 text-[10px] leading-4 text-muted-foreground tabular-nums">
+              {panes.length}
+            </span>
+          )}
+          {othersWaiting ? (
+            <span className="size-1.5 shrink-0 rounded-full bg-warn" aria-label="a tab needs you" />
+          ) : (
+            othersWorking && <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-primary" aria-label="a tab is working" />
+          )}
+          <ChevronDownIcon className="size-3.5 shrink-0 text-muted-foreground" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="max-h-[70dvh] w-64 overflow-y-auto">
+        <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">Tabs</DropdownMenuLabel>
+        {panes.map((p) => {
+          const k = kindOf(p.kind);
+          const label = paneLabel(p, k);
+          const current = p.id === active.id;
+          return (
+            <DropdownMenuItem key={p.id} onSelect={() => onSelect(p.id)} className={cn("h-10 pr-1", current && "bg-accent/40")}>
+              <PaneIcon pane={p} kind={k} />
+              <span className="min-w-0 truncate">{label}</span>
+              <PaneMarks pane={p} running={badge(p)} />
+              <span className="ml-auto flex shrink-0 items-center">
+                {current && <CheckIcon className="mx-1.5 size-3.5 text-muted-foreground" />}
+                {closable(p) && (
+                  <button
+                    type="button"
+                    aria-label={`Close ${label}`}
+                    // A tap here closes the tab rather than showing it.
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      onClose(p);
+                    }}
+                    className="grid size-8 place-items-center rounded-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+                  >
+                    <XIcon className="size-3.5" />
+                  </button>
+                )}
+              </span>
+            </DropdownMenuItem>
+          );
+        })}
+        {(closable(active) || onCloseSplit) && <DropdownMenuSeparator />}
+        {closable(active) && (
+          <DropdownMenuItem onSelect={() => onRename(active)}>
+            <PencilIcon />
+            Rename this tab…
+          </DropdownMenuItem>
+        )}
+        {onCloseSplit && (
+          <DropdownMenuItem onSelect={onCloseSplit}>
+            <Columns2Icon />
+            Close split
+          </DropdownMenuItem>
+        )}
+        {newKinds.length > 0 && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-xs font-normal text-muted-foreground">New tab</DropdownMenuLabel>
+            {newKinds.map((k) => {
+              const Icon = k.icon;
+              return (
+                <DropdownMenuItem key={k.kind} onSelect={() => onNew(k)}>
+                  <Icon />
+                  {k.title}
+                  {k.create ? "…" : ""}
+                  <PlusIcon className="ml-auto size-3.5 text-muted-foreground" />
+                </DropdownMenuItem>
+              );
+            })}
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

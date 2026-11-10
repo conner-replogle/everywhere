@@ -75,7 +75,7 @@ export function GitChip({ peer, threadId }: { peer: DevicePeer; threadId: string
           title={summary(s)}
         >
           <Icon className="size-3.5 shrink-0" />
-          <span className="max-w-40 truncate font-mono">{label}</span>
+          <span className="hidden max-w-40 truncate font-mono md:inline">{label}</span>
           {(s.ahead > 0 || s.behind > 0) && (
             <span className="flex shrink-0 items-center tabular-nums">
               {s.behind > 0 && (
