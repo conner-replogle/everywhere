@@ -76,6 +76,10 @@ func (p *Plugin) claudeArgs(threadID, projectID string) ([]string, func(), error
 	for _, d := range contrib.AddDirs {
 		args = append(args, "--add-dir", d)
 	}
+	// The user's own, last: they speak for the user rather than a plugin.
+	if s := p.instructions(); s != "" {
+		contrib.SystemPrompt = append(contrib.SystemPrompt, instructionsHeader+s)
+	}
 	if len(contrib.SystemPrompt) > 0 {
 		args = append(args, "--append-system-prompt", strings.Join(contrib.SystemPrompt, "\n\n"))
 	}

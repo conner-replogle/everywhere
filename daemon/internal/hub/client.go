@@ -118,7 +118,7 @@ func (c *Client) session(ctx context.Context) error {
 
 	h := protocol.Hello{T: "hello", Version: version.Version}
 	if c.OnRPC != nil {
-		h.Features = []string{protocol.HubFeatureRPC, protocol.HubFeatureClaudeToken, protocol.HubFeaturePluginSettings, protocol.HubFeatureAgents}
+		h.Features = []string{protocol.HubFeatureRPC, protocol.HubFeatureClaudeToken, protocol.HubFeaturePluginSettings, protocol.HubFeatureAgents, protocol.HubFeatureClaudeInstructions}
 	}
 	hello, _ := json.Marshal(h)
 	if err := conn.Write(ctx, websocket.MessageText, hello); err != nil {

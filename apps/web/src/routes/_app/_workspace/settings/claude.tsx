@@ -1,10 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { CheckIcon, KeyRoundIcon } from "lucide-react";
+import { CheckIcon, KeyRoundIcon, SaveIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Section } from "@/components/settings-section";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { api, type ClaudeTokenInfo, type ClaudeTokenResult } from "@/lib/api";
+import { api, type ClaudeTokenInfo, type ClaudeTokenResult, MAX_CLAUDE_INSTRUCTIONS } from "@/lib/api";
 import { useDevices } from "@/lib/devices";
 import { PERMISSION_MODES } from "@/lib/permission-modes";
 import { setPref, usePrefs } from "@/lib/prefs";
@@ -78,8 +78,121 @@ function ClaudeSettings() {
             : "Off. Type /recap in a thread to ask for one."}
         </p>
       </Section>
+      <CustomInstructions />
       <ClaudeToken />
     </div>
+  );
+}
+
+/**
+ * The account's custom instructions: added to the system prompt of every
+ * Claude thread, on every device (the hub sends them to each daemon).
+ */
+function CustomInstructions() {
+  const [saved, setSaved] = useState<string | undefined>();
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<Record<string, string> | null>(null);
+  const devices = useDevices();
+  const name = (id: string) => devices.devices?.find((d) => d.id === id)?.name ?? id;
+
+  useEffect(() => {
+    api.claudeInstructions().then(
+      (r) => {
+        setSaved(r.text);
+        setText(r.text);
+      },
+      (e: unknown) => setError(errorMessage(e)),
+    );
+  }, []);
+
+  const save = async (next: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api.setClaudeInstructions(next);
+      setSaved(r.text);
+      setText(r.text);
+      setResult(r.devices);
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const dirty = saved !== undefined && text.trim() !== saved;
+  const tooLong = text.trim().length > MAX_CLAUDE_INSTRUCTIONS;
+
+  return (
+    <Section
+      title="Custom instructions"
+      description="Added to Claude's system prompt in every thread, on every device: how you like to work, conventions to follow, things to always or never do. New threads get them; a thread already open gets them the next time its Claude starts."
+    >
+      <form
+        className="grid gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (dirty && !tooLong) void save(text.trim());
+        }}
+      >
+        <textarea
+          value={text}
+          onChange={(e) => {
+            setText(e.target.value);
+            setResult(null);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) e.currentTarget.form?.requestSubmit();
+          }}
+          disabled={saved === undefined}
+          placeholder={
+            saved === undefined
+              ? "Loading…"
+              : "e.g. Explain your plan before large changes. Use bun, not npm. Never push without asking."
+          }
+          rows={6}
+          spellCheck
+          aria-label="Custom instructions"
+          className="field-sizing-content max-h-96 min-h-28 w-full resize-y rounded-md border bg-transparent px-3 py-2 text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/40 disabled:opacity-60"
+        />
+        <div className="flex flex-wrap items-center gap-2">
+          <span className={cn("text-xs tabular-nums", tooLong ? "text-destructive" : "text-muted-foreground")}>
+            {text.trim().length.toLocaleString()} / {MAX_CLAUDE_INSTRUCTIONS.toLocaleString()}
+          </span>
+          <span className="ml-auto flex gap-2">
+            {dirty && (
+              <Button type="button" size="sm" variant="ghost" disabled={busy} onClick={() => setText(saved ?? "")}>
+                Discard
+              </Button>
+            )}
+            {!!saved && !dirty && (
+              <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void save("")}>
+                Clear
+              </Button>
+            )}
+            <Button type="submit" size="sm" disabled={busy || !dirty || tooLong}>
+              <SaveIcon />
+              Save
+            </Button>
+          </span>
+        </div>
+        {result && (
+          <ul className="grid gap-0.5 text-xs">
+            {Object.keys(result).length === 0 && (
+              <li className="text-muted-foreground">Saved. No device is connected; each gets them when it connects.</li>
+            )}
+            {Object.entries(result).map(([id, r]) => (
+              <li key={id} className={cn(r === "ok" ? "text-muted-foreground" : "text-warn")}>
+                {name(id)}: {r === "ok" ? "updated" : r}
+              </li>
+            ))}
+          </ul>
+        )}
+        {error && <p className="text-destructive">{error}</p>}
+      </form>
+    </Section>
   );
 }
 

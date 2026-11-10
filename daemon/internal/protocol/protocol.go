@@ -61,6 +61,11 @@ const HubFeatureRPC = "rpc"
 // (agent.setToken), which the hub sends when it connects.
 const HubFeatureClaudeToken = "claudeToken"
 
+// HubFeatureClaudeInstructions: the daemon takes the account's custom
+// instructions for Claude (agent.setInstructions), which the hub sends when
+// it connects and when they change.
+const HubFeatureClaudeInstructions = "claudeInstructions"
+
 // HubFeatureAgents: the daemon serves connected agents' requests (rpc with
 // Agent set) for the methods registered with plugin.Agent, while the device
 // allows them (`device.agents`).

@@ -100,6 +100,8 @@ func (p *Plugin) Start(h plugin.Host) error {
 		Console bool   `json:"console"`
 		Token   string `json:"token"`
 		Code    string `json:"code"`
+		// Instructions: agent.setInstructions.
+		Instructions string `json:"instructions"`
 	}
 	rpc := func(method string, fn func(ctx context.Context, p params) (any, error), opts ...plugin.RPCOption) {
 		h.HandleRPC(method, func(ctx context.Context, _ plugin.RPCContext, raw json.RawMessage) (any, error) {
@@ -142,6 +144,13 @@ func (p *Plugin) Start(h plugin.Host) error {
 			return nil, err
 		}
 		h.Emit(protocol.RPCEvent{Event: protocol.EventClaudeAuth})
+		return plugin.Empty{}, nil
+	}, plugin.RemoteOnly())
+	// And the account's custom instructions, for claude's system prompt.
+	rpc("agent.setInstructions", func(_ context.Context, ps params) (any, error) {
+		if err := p.setInstructions(ps.Instructions); err != nil {
+			return nil, err
+		}
 		return plugin.Empty{}, nil
 	}, plugin.RemoteOnly())
 

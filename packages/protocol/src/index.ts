@@ -99,9 +99,10 @@ export function notifyText(n: Pick<HubNotify, "kind" | "tool">): string {
  * rpc: the daemon answers rpc requests (see RemoteMethods). claudeToken: it
  * takes the account's Claude token (agent.setToken), sent when it connects.
  * agents: it answers connected agents' requests (see AgentMethods) while
- * the device allows them.
+ * the device allows them. claudeInstructions: it takes the account's custom
+ * instructions for Claude (agent.setInstructions), sent when it connects.
  */
-export type HubFeature = "rpc" | "claudeToken" | "pluginSettings" | "agents";
+export type HubFeature = "rpc" | "claudeToken" | "pluginSettings" | "agents" | "claudeInstructions";
 
 /** Sent by the hub to a daemon. `from` is a browser connection id. */
 export type HubToDaemon =
@@ -977,6 +978,8 @@ export interface RemoteMethods {
   /** projects.clone, with a token answering git's HTTPS credential prompt. */
   "projects.clone": [{ url: string; path: string; name?: string; token?: string }, Project];
   "agent.setToken": RpcMethods["agent.setToken"];
+  /** The account's custom instructions, added to every Claude thread's system prompt ("" for none). */
+  "agent.setInstructions": [{ instructions: string }, Record<string, never>];
   /** A plugin's account settings, whole (sealed in the hub, sent to each device that takes them). */
   "plugins.setAccountSettings": [{ id: string; values: Record<string, unknown> }, Record<string, never>];
   /** Whether the device lets connected agents in (so the Worker can say why not). */

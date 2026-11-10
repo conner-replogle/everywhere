@@ -137,3 +137,41 @@ func TestLiveMCP(t *testing.T) {
 		t.Fatalf("result %q", res.Result)
 	}
 }
+
+func TestClaudeArgsInstructions(t *testing.T) {
+	p, _, th := testAgent(t)
+	prompt := func() string {
+		args, release, err := p.claudeArgs(th, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		release()
+		for i, a := range args {
+			if a == "--append-system-prompt" {
+				return args[i+1]
+			}
+		}
+		return ""
+	}
+	if s := prompt(); s != "" {
+		t.Fatalf("prompt before any instructions = %q", s)
+	}
+	if err := p.setInstructions("  Use bun, not npm.\n"); err != nil {
+		t.Fatal(err)
+	}
+	if s := prompt(); s != instructionsHeader+"Use bun, not npm." {
+		t.Fatalf("prompt = %q", s)
+	}
+	if fi, err := os.Stat(p.instructionsPath()); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("instructions file: %v %v", fi, err)
+	}
+	if err := p.setInstructions(strings.Repeat("x", maxInstructions+1)); err == nil {
+		t.Fatal("too-long instructions were taken")
+	}
+	if err := p.setInstructions(""); err != nil {
+		t.Fatal(err)
+	}
+	if s := prompt(); s != "" {
+		t.Fatalf("prompt after clearing = %q", s)
+	}
+}

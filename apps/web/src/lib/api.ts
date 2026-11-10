@@ -209,6 +209,11 @@ export const api = {
   /** Sets it, sending it to every connected device; devices maps each to "ok" or what went wrong. */
   setClaudeToken: (token: string) => request<ClaudeTokenResult>("PUT", "/api/claude/token", { token }),
   removeClaudeToken: () => request<ClaudeTokenResult>("DELETE", "/api/claude/token"),
+  /** The account's custom instructions, added to every Claude thread's system prompt. */
+  claudeInstructions: () => request<ClaudeInstructions>("GET", "/api/claude/instructions"),
+  /** Sets them ("" clears them), sending them to every connected device; devices as for the token. */
+  setClaudeInstructions: (text: string) =>
+    request<ClaudeInstructions & { devices: Record<string, string> }>("PUT", "/api/claude/instructions", { text }),
 
   /** A clearer version of a composer draft, given the thread's recent messages. */
   rewritePrompt: (draft: string, context: { role: "user" | "claude"; text: string }[]) =>
@@ -246,3 +251,6 @@ export const api = {
 
 export type ClaudeTokenInfo = { set: false } | { set: true; hint: string; setAt: number };
 export type ClaudeTokenResult = ClaudeTokenInfo & { devices: Record<string, string> };
+export type ClaudeInstructions = { text: string; setAt?: number };
+/** As the Worker allows (apps/worker/src/plugins/claude.ts). */
+export const MAX_CLAUDE_INSTRUCTIONS = 16_000;
