@@ -1,6 +1,4 @@
-import { FitAddon } from "@xterm/addon-fit";
-import { WebglAddon } from "@xterm/addon-webgl";
-import { type ITheme, Terminal } from "@xterm/xterm";
+import { FitAddon, type ITheme, init as initGhostty, Terminal } from "ghostty-web";
 import { EyeIcon, RotateCcwIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { applyModifiers, type Modifiers, TerminalKeys, useCoarsePointer } from "@/components/terminal-keys";
@@ -34,6 +32,52 @@ const THEME = {
   brightCyan: "#8fe6ea",
   brightWhite: "#f2f4f8",
 } satisfies ITheme;
+
+/** DEC private mode 1 (DECCKM): arrows send SS3 sequences. */
+const APPLICATION_CURSOR = 1;
+
+/** Loads Ghostty's VT core (WASM, inlined in the bundle) once per page. */
+let ghosttyReady: Promise<void> | null = null;
+function loadGhostty(): Promise<void> {
+  ghosttyReady ??= initGhostty().catch((e) => {
+    ghosttyReady = null;
+    throw e;
+  });
+  return ghosttyReady;
+}
+
+async function copyText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    console.warn("Copy failed", e);
+  }
+}
+
+/**
+ * Ctrl+Shift+C / Ctrl+Shift+V, as in native Linux terminals. (Selecting text
+ * already copies it, Ctrl+V and Cmd+C/V are handled by ghostty-web, and a
+ * right-click gets the browser's own Copy/Paste menu.)
+ */
+function clipboardKeys(term: Terminal) {
+  return (e: KeyboardEvent): boolean => {
+    if (e.type !== "keydown" || !e.ctrlKey || !e.shiftKey || e.altKey || e.metaKey) return false;
+    if (e.code === "KeyC") {
+      e.preventDefault();
+      if (term.hasSelection()) void copyText(term.getSelection());
+      return true;
+    }
+    if (e.code === "KeyV") {
+      e.preventDefault();
+      navigator.clipboard.readText().then(
+        (text) => text && term.paste(text),
+        (err) => console.warn("Paste failed", err),
+      );
+      return true;
+    }
+    return false;
+  };
+}
 
 /**
  * THEME, with any color set as --term-<name> on <html> in its place (the
@@ -117,7 +161,7 @@ export function TerminalView({
     if (active && ready) termRef.current?.focus();
   }, [active, ready]);
 
-  // xterm instance: one per mount.
+  // Terminal instance: one per mount.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -131,28 +175,26 @@ export function TerminalView({
       } catch {
         // fall through with whatever font is available
       }
+      try {
+        await loadGhostty();
+      } catch (e) {
+        if (!disposed) setError(`Couldn't start the terminal: ${errorMessage(e)}`);
+        return;
+      }
       if (disposed) return;
 
       const term = new Terminal({
         fontFamily: FONT_FAMILY,
         fontSize: 13,
-        lineHeight: 1.15,
         cursorBlink: true,
         scrollback: 10_000,
         theme: currentTheme(),
         allowTransparency: false,
-        macOptionIsMeta: true,
       });
       const fit = new FitAddon();
       term.loadAddon(fit);
       term.open(el);
-      try {
-        const webgl = new WebglAddon();
-        webgl.onContextLoss(() => webgl.dispose());
-        term.loadAddon(webgl);
-      } catch (e) {
-        console.info("WebGL renderer unavailable, using DOM renderer", e);
-      }
+      term.attachCustomKeyEventHandler(clipboardKeys(term));
       fit.fit();
 
       const onData = term.onData((data) => {
@@ -183,7 +225,9 @@ export function TerminalView({
         const key = JSON.stringify(theme);
         if (key === themeKey) return;
         themeKey = key;
-        term.options.theme = theme;
+        // ghostty-web doesn't apply options.theme after open(); repaint through the renderer.
+        term.renderer?.setTheme(theme);
+        if (term.wasmTerm) term.renderer?.render(term.wasmTerm, true, term.viewportY, term);
       });
       themes.observe(document.documentElement, { attributes: true, attributeFilter: ["style"] });
 
@@ -227,7 +271,10 @@ export function TerminalView({
     try {
       ch = peer.openTerminal(processId ?? threadId, {
         onOpen: () => ch.sendControl({ t: "attach", cols: term.cols, rows: term.rows }),
-        onOutput: (bytes) => term.write(bytes),
+        // ghostty-web 0.4 throws on an empty write.
+        onOutput: (bytes) => {
+          if (bytes.length) term.write(bytes);
+        },
         onControl: (msg) => {
           switch (msg.t) {
             case "writer": {
@@ -302,7 +349,7 @@ export function TerminalView({
         </Banner>
       )}
       <div className="relative min-h-0 flex-1" onMouseDown={() => termRef.current?.focus()}>
-        <div ref={containerRef} className="absolute inset-0 overflow-hidden" />
+        <div ref={containerRef} className="absolute inset-0 overflow-hidden pt-2 pl-2.5 outline-none" />
         {exited && processId && (
           <div className="absolute inset-x-0 bottom-0 border-t bg-sidebar/95 px-3 py-1.5 text-center text-xs text-muted-foreground backdrop-blur-sm">
             Ended{exitCode !== null && exitCode >= 0 ? ` with code ${exitCode}` : ""}
@@ -327,7 +374,7 @@ export function TerminalView({
             onInteract?.();
             sendKeys(data);
           }}
-          applicationCursor={() => !!termRef.current?.modes.applicationCursorKeysMode}
+          applicationCursor={() => !!termRef.current?.wasmTerm?.getMode(APPLICATION_CURSOR)}
         />
       )}
     </div>
@@ -335,10 +382,10 @@ export function TerminalView({
 }
 
 /**
- * xterm doesn't scroll on touch. One-finger drags move through scrollback, or,
- * when an app owns the screen (mouse tracking, alternate buffer), become wheel
- * events that xterm forwards to it. A flick keeps going and slows down like
- * native scrolling. Taps still reach xterm and bring up the keyboard.
+ * The terminal doesn't scroll on touch. One-finger drags move through
+ * scrollback, or, when an app owns the screen (alternate buffer), become wheel
+ * events, which ghostty-web turns into arrow keys for it. A flick keeps going and slows down like
+ * native scrolling. Taps still reach the terminal and bring up the keyboard.
  */
 function touchScroll(term: Terminal, el: HTMLElement): () => void {
   // iOS's normal deceleration: velocity keeps this fraction per millisecond.
@@ -356,7 +403,7 @@ function touchScroll(term: Terminal, el: HTMLElement): () => void {
   let carry = 0; // what was left of a fling when a new touch caught it
 
   const scrollBy = (dy: number) => {
-    if (term.buffer.active.type === "normal" && term.modes.mouseTrackingMode === "none") {
+    if (term.buffer.active.type === "normal") {
       const rowHeight = el.clientHeight / term.rows;
       pending += dy;
       const lines = Math.trunc(pending / rowHeight);

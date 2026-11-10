@@ -2,7 +2,6 @@
 @import "tw-animate-css";
 @import "@fontsource-variable/ibm-plex-sans";
 @import "@fontsource-variable/jetbrains-mono";
-@import "@xterm/xterm/css/xterm.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -135,7 +134,7 @@
 
 /*
  * iOS zooms into any focused field under 16px. Unlayered so it beats the
- * text-size utilities; includes xterm's hidden input textarea.
+ * text-size utilities; includes the terminal's hidden input textarea.
  */
 @media (pointer: coarse) {
   input,
@@ -165,10 +164,3 @@
   }
 }
 
-.xterm {
-  padding: 8px 0 0 10px;
-  height: 100%;
-}
-.xterm .xterm-viewport {
-  background-color: var(--terminal) !important;
-}
