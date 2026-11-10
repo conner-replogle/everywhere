@@ -181,7 +181,10 @@ function CustomInstructions() {
         {result && (
           <ul className="grid gap-0.5 text-xs">
             {Object.keys(result).length === 0 && (
-              <li className="text-muted-foreground">Saved. No device is connected; each gets them when it connects.</li>
+              <li className="text-muted-foreground">
+                Saved. No connected device takes them yet: devices get them when they connect running everywhere
+                0.30.1 or later.
+              </li>
             )}
             {Object.entries(result).map(([id, r]) => (
               <li key={id} className={cn(r === "ok" ? "text-muted-foreground" : "text-warn")}>
