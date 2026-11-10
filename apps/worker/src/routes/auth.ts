@@ -96,12 +96,9 @@ async function revokeSessions(env: Env, userId: string, sessionIds: string[]): P
   await closeSockets(env, userId, sessionIds);
 }
 
-/** Closes the hub and assistant sockets that sessions opened. */
+/** Closes the hub sockets that sessions opened. */
 async function closeSockets(env: Env, userId: string, sessionIds: string[]): Promise<void> {
-  await Promise.all([
-    env.HUB.get(env.HUB.idFromName(userId)).revokeSessions(sessionIds),
-    env.ASSISTANT.get(env.ASSISTANT.idFromName(userId)).revokeSessions(sessionIds),
-  ]);
+  await env.HUB.get(env.HUB.idFromName(userId)).revokeSessions(sessionIds);
 }
 
 async function otherSessionIds(env: Env, userId: string, keep: string): Promise<string[]> {

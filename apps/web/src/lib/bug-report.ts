@@ -6,8 +6,6 @@ import type { AgentEvent } from "@everywhere/protocol";
 import type { DeviceContextValue } from "@/components/device-context";
 import type { Device } from "@/lib/api";
 import { readAgent } from "./agent-read";
-import { assistantSync } from "./assistant/sync";
-import { micInputs } from "./assistant/mic";
 import { consoleEntries } from "./console-log";
 import { desktop } from "./desktop";
 import { hub } from "./hub";
@@ -107,36 +105,15 @@ async function threadReport(entries: ReadonlyMap<string, DeviceContextValue>, wi
   return out;
 }
 
-async function assistantReport() {
-  const s = assistantSync.getSnapshot();
-  const extra = await attempt(async () => {
-    const [{ assistantRunner, modelId }, { voice }] = await Promise.all([import("./assistant/agent"), import("./assistant/voice")]);
-    // turn: this tab's agent (runner, above, is the connection running a turn).
-    return { model: modelId(), turn: assistantRunner.getSnapshot(), voice: { ...voice.getSnapshot(), ...voice.debug() } };
-  });
-  return {
-    status: s.status,
-    synced: s.synced,
-    me: s.me,
-    runner: s.runner,
-    entries: s.entries.length,
-    lastSeq: s.entries.at(-1)?.seq ?? null,
-    live: s.live ? { activity: s.live.activity, textChars: s.live.text.length } : null,
-    feedHidden: localStorage.getItem("ew.assistant.feedHidden") === "1",
-    ...extra,
-  };
-}
-
 export async function collectBugReport(
   devices: Device[] | undefined,
   entries: ReadonlyMap<string, DeviceContextValue>,
   opts: BugReportOptions,
 ): Promise<Record<string, unknown>> {
   const script = document.querySelector<HTMLScriptElement>('script[type="module"][src]')?.src ?? null;
-  const [deviceReports, thread, assistant] = await Promise.all([
+  const [deviceReports, thread] = await Promise.all([
     Promise.all((devices ?? []).map((d) => deviceReport(d, entries.get(d.id)))),
     threadReport(entries, opts.threadMessages),
-    assistantReport(),
   ]);
   return {
     report: "everywhere bug report",
@@ -157,13 +134,8 @@ export async function collectBugReport(
       uptimeMs: Math.round(performance.now()),
     },
     hub: { ...hub.getSnapshot(), online: [...hub.getSnapshot().online] },
-    // The microphones there are (labels are empty until the page has had mic access).
-    mics: await attempt(async () =>
-      (await micInputs()).map((d) => ({ label: d.label, id: d.deviceId.slice(0, 12), group: d.groupId.slice(0, 12) })),
-    ),
     devices: deviceReports,
     thread,
-    assistant,
     console: consoleEntries(),
     screenshot: opts.screenshot ?? null,
   };

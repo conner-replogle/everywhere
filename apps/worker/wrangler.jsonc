@@ -21,23 +21,22 @@
       "migrations_dir": "migrations"
     }
   ],
-  // Workers AI, for speech to text, prompt rewrites and the assistant.
+  // Workers AI, for speech to text and prompt rewrites.
   "ai": { "binding": "AI" },
   "durable_objects": {
     "bindings": [
-      { "name": "HUB", "class_name": "AccountHub" },
-      { "name": "ASSISTANT", "class_name": "Assistant" }
+      { "name": "HUB", "class_name": "AccountHub" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["AccountHub"] },
-    { "tag": "v2", "new_sqlite_classes": ["Assistant"] }
+    { "tag": "v2", "new_sqlite_classes": ["Assistant"] },
+    // The assistant is gone; this deletes its objects (conversations, sealed OpenAI keys).
+    { "tag": "v3", "deleted_classes": ["Assistant"] }
   ],
   // Per-location limits on unauthenticated auth endpoints (brute-force defense).
   "ratelimits": [
-    { "name": "AUTH_LIMITER", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } },
-    // The assistant's model and speech calls: a turn makes several.
-    { "name": "ASSISTANT_LIMITER", "namespace_id": "1002", "simple": { "limit": 300, "period": 60 } }
+    { "name": "AUTH_LIMITER", "namespace_id": "1001", "simple": { "limit": 10, "period": 60 } }
   ],
   "vars": {
     // Where browsers and daemons reach this Worker. Override locally in .dev.vars

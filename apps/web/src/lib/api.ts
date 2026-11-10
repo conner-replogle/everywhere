@@ -26,7 +26,6 @@ export interface Device {
   lastSeenAt: number | null;
 }
 
-export type OpenAIKeyInfo = { set: false } | { set: true; hint: string; setAt: number };
 
 export type LoginResult = { user: User; mfaRequired?: undefined } | { mfaRequired: true; challenge: string };
 
@@ -210,14 +209,6 @@ export const api = {
   /** Sets it, sending it to every connected device; devices maps each to "ok" or what went wrong. */
   setClaudeToken: (token: string) => request<ClaudeTokenResult>("PUT", "/api/claude/token", { token }),
   removeClaudeToken: () => request<ClaudeTokenResult>("DELETE", "/api/claude/token"),
-
-  /** The account's OpenAI API key (GPT-Live, the assistant's voice), as far as the app sees it. */
-  openaiKey: () => request<OpenAIKeyInfo>("GET", "/api/assistant/openai-key"),
-  setOpenAIKey: (key: string) => request<OpenAIKeyInfo>("PUT", "/api/assistant/openai-key", { key }),
-  removeOpenAIKey: () => request<OpenAIKeyInfo>("DELETE", "/api/assistant/openai-key"),
-  /** Starts a GPT-Live session: the Worker passes the offer to OpenAI and returns its answer. */
-  startLive: (body: { sdp: string; instructions: string; input: { role: "user" | "assistant"; text: string }[] }) =>
-    request<{ id: string | null; sdp: string }>("POST", "/api/assistant/live", body),
 
   /** A clearer version of a composer draft, given the thread's recent messages. */
   rewritePrompt: (draft: string, context: { role: "user" | "claude"; text: string }[]) =>

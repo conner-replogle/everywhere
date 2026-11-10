@@ -190,19 +190,6 @@ export function AgentView({
   // Rolling back puts the prompt back in the composer once the device has done it.
   const [rewindTo, setRewindTo] = useState<UserEvent | null>(null);
   const rewound = useRef<UserEvent | null>(null);
-  // How tall the composer is, for the assistant's buttons on a phone to sit above it.
-  const composerRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const el = composerRef.current;
-    if (!el) return;
-    const root = document.documentElement.style;
-    const ro = new ResizeObserver(() => root.setProperty("--composer-height", `${el.offsetHeight}px`));
-    ro.observe(el);
-    return () => {
-      ro.disconnect();
-      root.removeProperty("--composer-height");
-    };
-  }, []);
   const onRewind = useCallback((prompt: UserEvent) => setRewindTo(prompt), []);
   useEffect(() => {
     const prompt = rewound.current;
@@ -341,13 +328,8 @@ export function AgentView({
         }}
       />
 
-      {/* The composer sits a little above the bottom edge, where it's easier to see. On the right it
-          keeps clear of the assistant's mic (--assistant-dock, desktop only) when the pane's own margin
-          beside it is too small; a pane narrower than the composer has no margin, so that counts as 0. */}
-      <div
-        ref={composerRef}
-        className="shrink-0 bg-background pr-[max(0px,calc(var(--assistant-dock,0px)_-_max(0px,(100cqw_-_48rem)/2)))]"
-      >
+      {/* The composer sits a little above the bottom edge, where it's easier to see. */}
+      <div className="shrink-0 bg-background">
         {archived ? (
           <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-3 px-4 pt-1 pb-5 @min-[48rem]:pb-8">
             <p className="min-w-0 flex-1 text-[13px] text-muted-foreground">

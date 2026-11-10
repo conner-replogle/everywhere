@@ -108,7 +108,7 @@ export function BugReport() {
             <DialogTitle>Report a bug</DialogTitle>
             <DialogDescription>
               Collects what the app, its connections and your devices were doing: browser details, each device's connection
-              and recent daemon log, this page's console, the assistant's state{thread && threadMessages ? ", and this thread's recent messages" : ""}.
+              and recent daemon log, this page's console{thread && threadMessages ? ", and this thread's recent messages" : ""}.
               It stays on this computer until you share it, so look it over first.
             </DialogDescription>
           </DialogHeader>

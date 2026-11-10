@@ -1,5 +1,5 @@
 import { createFileRoute, Link, Outlet } from "@tanstack/react-router";
-import { AudioLinesIcon, MonitorIcon, PaletteIcon, PlugZapIcon, PuzzleIcon, ShieldIcon } from "lucide-react";
+import { MonitorIcon, PaletteIcon, PlugZapIcon, PuzzleIcon, ShieldIcon } from "lucide-react";
 import { pluginSettings } from "@/plugins/registry";
 import type { SettingsSection } from "@/plugins/types";
 
@@ -10,7 +10,6 @@ export const Route = createFileRoute("/_app/_workspace/settings")({
 // The core's pages; plugins add theirs (Claude, Notifications, GitHub…).
 const CORE: SettingsSection[] = [
   { to: "/settings/devices", label: "Devices", icon: MonitorIcon, order: 10 },
-  { to: "/settings/assistant", label: "Assistant", icon: AudioLinesIcon, order: 30 },
   { to: "/settings/appearance", label: "Appearance", icon: PaletteIcon, order: 40 },
   { to: "/settings/security", label: "Security", icon: ShieldIcon, order: 60 },
   { to: "/settings/agents", label: "Connected agents", icon: PlugZapIcon, order: 65 },

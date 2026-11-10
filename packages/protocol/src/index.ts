@@ -137,7 +137,6 @@ export const PROC_CHANNEL_PREFIX = "proc:";
 
 export * from "./browser";
 export * from "./desktop";
-export * from "./assistant";
 
 export interface DeviceInfo {
   hostname: string;
