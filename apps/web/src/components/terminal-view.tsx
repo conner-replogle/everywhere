@@ -1,4 +1,5 @@
-import { FitAddon, type ITheme, init as initGhostty, Terminal } from "ghostty-web";
+import { FitAddon, Ghostty, type ITheme, Terminal } from "ghostty-web";
+import ghosttyWasmUrl from "ghostty-web/ghostty-vt.wasm?url";
 import { EyeIcon, RotateCcwIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { applyModifiers, type Modifiers, TerminalKeys, useCoarsePointer } from "@/components/terminal-keys";
@@ -36,10 +37,14 @@ const THEME = {
 /** DEC private mode 1 (DECCKM): arrows send SS3 sequences. */
 const APPLICATION_CURSOR = 1;
 
-/** Loads Ghostty's VT core (WASM, inlined in the bundle) once per page. */
-let ghosttyReady: Promise<void> | null = null;
-function loadGhostty(): Promise<void> {
-  ghosttyReady ??= initGhostty().catch((e) => {
+/**
+ * Loads Ghostty's VT core once per page, from our own origin: ghostty-web's
+ * init() fetches a data: URL, which connect-src 'self' blocks. Compiling it
+ * needs 'wasm-unsafe-eval' in script-src (public/_headers).
+ */
+let ghosttyReady: Promise<Ghostty> | null = null;
+function loadGhostty(): Promise<Ghostty> {
+  ghosttyReady ??= Ghostty.load(ghosttyWasmUrl).catch((e) => {
     ghosttyReady = null;
     throw e;
   });
@@ -175,8 +180,9 @@ export function TerminalView({
       } catch {
         // fall through with whatever font is available
       }
+      let ghostty: Ghostty;
       try {
-        await loadGhostty();
+        ghostty = await loadGhostty();
       } catch (e) {
         if (!disposed) setError(`Couldn't start the terminal: ${errorMessage(e)}`);
         return;
@@ -184,6 +190,7 @@ export function TerminalView({
       if (disposed) return;
 
       const term = new Terminal({
+        ghostty,
         fontFamily: FONT_FAMILY,
         fontSize: 13,
         cursorBlink: true,
