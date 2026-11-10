@@ -60,6 +60,13 @@ export interface DesktopBridge {
   devTools?(): void;
   /** A page's favicon as a data: URL (fetched with the web tabs' cookies), or null. */
   favicon(url: string): Promise<string | null>;
+  /**
+   * Makes a web tab's page a phone's (mobile layout, touch, a phone's user
+   * agent) at this size in CSS pixels, or with null a computer's again; it
+   * reloads when that changes. Resolves with an error message, or null.
+   * Missing in apps from before it.
+   */
+  emulate?(webContentsId: number, mobile: { width: number; height: number } | null): Promise<string | null>;
   /** The app's own updates. Missing in apps from before it. */
   update?: {
     state(): Promise<DesktopUpdateState>;

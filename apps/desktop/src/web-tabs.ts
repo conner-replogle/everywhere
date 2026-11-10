@@ -298,6 +298,53 @@ function shortcut(wc: WebContents, input: Electron.Input): WebShortcut | (() => 
   return null;
 }
 
+// --- device emulation ----------------------------------------------------------
+
+/** Chrome for Android's user agent, from desktop Chrome's (as the daemon's browser tab does). */
+function mobileUA(ua: string): string {
+  return ua.replace(/\([^)]*\)/, "(Linux; Android 10; K)").replace(" Safari/", " Mobile Safari/");
+}
+
+/**
+ * Makes a web tab a phone, as Chrome's device toolbar does, through the
+ * page's debugger: a mobile viewport (meta viewport, no scrollbars), touch
+ * support, and a phone's user agent. Not touch events for the mouse: in a
+ * <webview> they keep hold of the mouse, losing the app's next click. null undoes it all (the
+ * overrides go with the debugger). The size of the page itself is the
+ * <webview>'s, which the app sets.
+ */
+export async function emulateDevice(host: WebContents, id: unknown, mobile: unknown): Promise<string | null> {
+  const wc = typeof id === "number" ? webContents.fromId(id) : undefined;
+  // Only the asking window's own web tabs.
+  if (!wc || wc.getType() !== "webview" || wc.hostWebContents !== host) return "no such tab";
+  const dbg = wc.debugger;
+  const m = mobile as { width?: unknown; height?: unknown } | null;
+  try {
+    if (!m) {
+      if (!dbg.isAttached()) return null;
+      dbg.detach();
+      wc.reload();
+      return null;
+    }
+    const width = Math.round(Number(m.width));
+    const height = Math.round(Number(m.height));
+    if (!(width >= 200 && width <= 3840 && height >= 200 && height <= 3840)) return "bad size";
+    const fresh = !dbg.isAttached();
+    if (fresh) dbg.attach("1.3");
+    await dbg.sendCommand("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 0, mobile: true });
+    if (fresh) {
+      await dbg.sendCommand("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+      await dbg.sendCommand("Emulation.setUserAgentOverride", { userAgent: mobileUA(webSession().getUserAgent()) });
+      // Sites read the user agent and touch support as they load.
+      wc.reload();
+    }
+    return null;
+  } catch (e) {
+    // e.g. the page's own developer tools hold its debugger.
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
 // --- favicons ----------------------------------------------------------------
 
 const favicons = new Map<string, Promise<string | null>>();

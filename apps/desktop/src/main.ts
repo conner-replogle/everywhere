@@ -11,7 +11,7 @@ import { app, BrowserWindow, ipcMain, Menu, type MenuItemConstructorOptions, she
 import { type DesktopTunnelMsg, type DesktopWebEvent, WEBVIEW_DEVICE_PREF } from "@everywhere/protocol";
 import { LoopbackProxy, Tunnels } from "./proxy";
 import { checkNow, installNow, startUpdates, type UpdateState, updateState } from "./updater";
-import { favicon, isWebUrl, setUpWebPage, setUpWebSession, WEB_PARTITION } from "./web-tabs";
+import { emulateDevice, favicon, isWebUrl, setUpWebPage, setUpWebSession, WEB_PARTITION } from "./web-tabs";
 
 const DEFAULT_URL = "https://ai.replogle.dev";
 const argUrl = process.argv.find((a) => a.startsWith("--url="))?.slice("--url=".length);
@@ -256,6 +256,9 @@ if (!app.requestSingleInstanceLock()) {
   ipcMain.on("ew:tunnel-data", (e, id: number, data: Uint8Array) => fromApp(e) && tunnels.data(id, data));
   ipcMain.on("ew:tunnel-closed", (e, id: number, error?: string) => fromApp(e) && tunnels.closed(id, error));
   ipcMain.on("ew:tunnel-pause", (e, id: number, paused: boolean) => fromApp(e) && tunnels.pause(id, !!paused));
+  ipcMain.handle("ew:emulate", (e, id: unknown, mobile: unknown) =>
+    fromApp(e) ? emulateDevice(e.sender, id, mobile) : "not allowed",
+  );
   ipcMain.handle("ew:favicon", (e, url: unknown) => (fromApp(e) && typeof url === "string" ? favicon(url) : null));
   ipcMain.handle("ew:update-state", (e) => (fromApp(e) ? updateState() : null));
   ipcMain.on("ew:devtools", (e) => fromApp(e) && win?.webContents.toggleDevTools());

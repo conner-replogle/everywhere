@@ -9,11 +9,18 @@ import {
   LockIcon,
   MessageSquarePlusIcon,
   RotateCwIcon,
+  SmartphoneIcon,
   TriangleAlertIcon,
   XIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { type BrowserElement, WEBVIEW_DEVICE_PREF, type WebShortcut } from "@everywhere/protocol";
+import {
+  type BrowserClientMsg,
+  type BrowserElement,
+  type BrowserViewportSetting,
+  WEBVIEW_DEVICE_PREF,
+  type WebShortcut,
+} from "@everywhere/protocol";
 import {
   type Annotation,
   AnnotationBar,
@@ -23,10 +30,12 @@ import {
   annotationRect,
   composeAnnotations,
 } from "@/components/browser/annotation-layer";
+import { DeviceBar } from "@/components/browser/device-bar";
 import { CenteredMessage } from "@/components/centered-message";
 import { Button } from "@/components/ui/button";
 import type { ComposerDraft } from "@/lib/composer-inbox";
 import { desktop, onWebview, type WebviewElement } from "@/lib/desktop";
+import { presetById } from "@/lib/browser-presets";
 import { ELEMENT_JS } from "@/lib/page-elements";
 import { addressToUrl, updateWebTab } from "@/lib/web-tabs";
 import { cn, errorMessage } from "@/lib/utils";
@@ -37,6 +46,30 @@ const levelOf = (factor: number) => Math.log(factor) / Math.log(1.2);
 const factorOf = (level: number) => 1.2 ** level;
 
 const isMac = navigator.platform.startsWith("Mac");
+
+/** Room around an emulated device's page. */
+const DEVICE_PAD = 16;
+const DEFAULT_DEVICE = "iphone-12-pro";
+
+/**
+ * The device to emulate after a change from the device bar (the same
+ * messages the browser tab sends its daemon), or null to fill the panel.
+ */
+function nextDevice(m: BrowserClientMsg, current: BrowserViewportSetting | null): BrowserViewportSetting | null {
+  if (m.t !== "viewport" || m.mode === "fill") return null;
+  if (m.mode === "preset") {
+    const p = presetById(m.preset) ?? presetById(DEFAULT_DEVICE)!;
+    const landscape = m.orientation === "landscape";
+    return {
+      mode: "preset",
+      preset: p.id,
+      width: landscape ? p.height : p.width,
+      height: landscape ? p.width : p.height,
+      mobile: p.category !== "Desktop",
+    };
+  }
+  return { mode: "freeform", width: m.width ?? current?.width ?? 1280, height: m.height ?? current?.height ?? 800, mobile: false };
+}
 
 export interface WebViewProps {
   deviceId: string;
@@ -140,6 +173,8 @@ function DesktopWebView({
   const [crashed, setCrashed] = useState(false);
   const [find, setFind] = useState<{ text: string; match: number; matches: number } | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // A phone's or a fixed size, as Chrome's device toolbar; null fills the panel.
+  const [device, setDevice] = useState<BrowserViewportSetting | null>(null);
 
   // Callbacks change every render; the page's events use the latest.
   const latest = useRef({ onOpenTab, onNewTab, onClose, editing });
@@ -417,9 +452,45 @@ function DesktopWebView({
     }
   };
 
+  // An emulated device's page: its size, shrunk to fit and centred, as Chrome draws it.
+  const fit =
+    device && hostSize.width > 0
+      ? Math.max(
+          0.1,
+          Math.min(1, (hostSize.width - 2 * DEVICE_PAD) / device.width, (hostSize.height - 2 * DEVICE_PAD) / device.height),
+        )
+      : 1;
+  const frame = device
+    ? {
+        left: Math.max(0, Math.round((hostSize.width - device.width * fit) / 2)),
+        top: DEVICE_PAD,
+        width: device.width * fit,
+        height: device.height * fit,
+      }
+    : { left: 0, top: 0, width: hostSize.width, height: hostSize.height };
+
+  useEffect(() => {
+    const el = viewRef.current;
+    if (!el) return;
+    el.style.cssText = device
+      ? `position:absolute;display:flex;left:${frame.left}px;top:${frame.top}px;width:${device.width}px;height:${device.height}px;` +
+        `transform:scale(${fit});transform-origin:0 0;box-shadow:0 0 0 1px rgb(0 0 0/.25),0 6px 24px rgb(0 0 0/.35)`
+      : "position:absolute;inset:0;display:flex";
+  }, [device, fit, frame.left, frame.top]);
+
+  // The phone parts (mobile layout, touch, user agent) are the desktop app's to do.
+  const mobileSize = device?.mobile ? `${device.width}x${device.height}` : "";
+  useEffect(() => {
+    if (wcId === null || !bridge.emulate) return;
+    const [w, h] = mobileSize.split("x").map(Number);
+    void bridge.emulate(wcId, mobileSize ? { width: w!, height: h! } : null).then((err) => {
+      if (err) setNotice(`Couldn't emulate the device: ${err}`);
+    });
+  }, [bridge, wcId, mobileSize]);
+
   const noteIndex = annotations.findIndex((a) => a.id === editingNote);
   const note = noteIndex >= 0 ? annotations[noteIndex] : undefined;
-  const scale = still && still.width ? hostSize.width / still.width : 1;
+  const scale = still && still.width ? frame.width / still.width : 1;
 
   const secure = /^https:/i.test(url);
   const local = /^http:\/\/(localhost|127\.|\[::1\]|[^/]+\.localhost)/i.test(url);
@@ -501,6 +572,17 @@ function DesktopWebView({
           </Button>
         )}
         <Button
+          variant={device ? "secondary" : "ghost"}
+          size="icon-sm"
+          aria-label="Device toolbar"
+          aria-pressed={!!device}
+          title={device ? "Fill the panel" : "Phone and screen sizes"}
+          disabled={annotating}
+          onClick={() => setDevice(device ? null : nextDevice({ t: "viewport", mode: "preset", preset: DEFAULT_DEVICE }, null))}
+        >
+          <SmartphoneIcon />
+        </Button>
+        <Button
           variant={annotating ? "secondary" : "ghost"}
           size="icon-sm"
           aria-label="Annotate"
@@ -527,10 +609,13 @@ function DesktopWebView({
           </div>
         )}
       </div>
-      <div ref={hostRef} tabIndex={-1} className="relative min-h-0 flex-1 bg-white outline-none">
+      {device && (
+        <DeviceBar viewport={device} scale={fit} send={(m) => !annotating && setDevice((d) => nextDevice(m, d))} />
+      )}
+      <div ref={hostRef} tabIndex={-1} className={cn("relative min-h-0 flex-1 outline-none", device ? "overflow-hidden bg-muted/40" : "bg-white")}>
         {still && (
           // Over the page, so nothing reaches it while annotating.
-          <div className="absolute inset-0 z-[2] bg-background">
+          <div className="absolute z-[2] bg-background" style={frame}>
             <img src={still.src} alt="" draggable={false} className="pointer-events-none absolute inset-0 size-full select-none" />
             <AnnotationCanvas
               width={still.width}
@@ -551,8 +636,8 @@ function DesktopWebView({
                 annotation={note}
                 n={noteIndex + 1}
                 left={annotationRect(note).x * scale}
-                top={Math.min((annotationRect(note).y + annotationRect(note).height) * scale + 8, hostSize.height - 130)}
-                maxWidth={hostSize.width}
+                top={Math.min((annotationRect(note).y + annotationRect(note).height) * scale + 8, frame.height - 130)}
+                maxWidth={frame.width}
                 onChange={(comment) => setAnnotations((as) => as.map((a) => (a.id === note.id ? { ...a, comment } : a)))}
                 onDelete={() => {
                   setAnnotations((as) => as.filter((a) => a.id !== note.id));

@@ -33,6 +33,9 @@ const bridge: DesktopBridge = {
   favicon(url) {
     return ipcRenderer.invoke("ew:favicon", url) as Promise<string | null>;
   },
+  emulate(webContentsId, mobile) {
+    return ipcRenderer.invoke("ew:emulate", webContentsId, mobile) as Promise<string | null>;
+  },
   update: {
     state: () => ipcRenderer.invoke("ew:update-state") as Promise<DesktopUpdateState>,
     onChange(fn) {
