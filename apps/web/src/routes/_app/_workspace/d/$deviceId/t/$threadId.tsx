@@ -89,7 +89,7 @@ function ThreadPage() {
   // Built-ins' tab kinds, and other agents' (drawn with the agent view).
   const kinds = useMemo(() => [...tabKinds(plugins), ...agentViewKinds(info.data?.plugins)], [plugins, info.data?.plugins]);
   const kindOf = (kind: TabKind): TabKindDef => kinds.find((k) => k.kind === kind) ?? builtinTabKind(kind) ?? unknownKind(kind);
-  // One tab per kind, except kinds that are several things by nature (web pages).
+  // One tab per kind, except kinds a thread wants several of (web pages, terminals).
   const multipleKinds = new Set(kinds.filter((k) => k.multiple).map((k) => k.kind));
 
   // Daemons from before tabs still have their project's browser, as a fixed tab.
@@ -243,11 +243,14 @@ function ThreadPage() {
     setError(null);
     try {
       const extra = (await kindOf(kind).createParams?.()) ?? {};
+      // Another of a kind the thread has: numbered, so the tabs tell apart (Terminal 2).
+      const have = (thread?.kind === kind ? 1 : 0) + (tabs.data?.filter((t) => t.kind === kind).length ?? 0);
+      const name = opts.name ?? (have > 0 ? `${kindOf(kind).title} ${have + 1}` : undefined);
       const t = await peer.call("tabs.create", {
         threadId,
         kind,
         ...extra,
-        ...(opts.name ? { name: opts.name } : {}),
+        ...(name ? { name } : {}),
         ...(opts.input ? { input: opts.input } : {}),
       });
       if (opts.state) await peer.call("tabs.setState", { id: t.id, state: opts.state });

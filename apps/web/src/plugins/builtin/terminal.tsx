@@ -13,12 +13,14 @@ const TerminalView = lazy(() => import("@/components/terminal-view").then((m) =>
 export const terminal = definePlugin({
   id: "terminal",
   title: "Terminal",
-  // Every daemon has terminals.
+  // Every daemon has terminals, as many as a thread wants.
   tabs: [
     {
       kind: "terminal",
       title: "Terminal",
       icon: SquareTerminalIcon,
+      // Several side by side: a server in one, a shell in another.
+      multiple: true,
       capture: "keys",
       render: (ctx) =>
         ctx.archived && ctx.pane.id === ctx.threadId ? (

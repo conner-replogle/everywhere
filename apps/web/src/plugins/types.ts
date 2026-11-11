@@ -140,7 +140,7 @@ export interface TabKindDef {
   icon: LucideIcon;
   /** A thread has at most one, as with every kind unless it's multiple (the daemon's manifest can say so too). */
   single?: boolean;
-  /** A thread can have several (web pages: each its own link). Others open the one it has. */
+  /** A thread can have several (web pages: each its own link; terminals). Others open the one it has. */
   multiple?: boolean;
   /** Which input in it keeps the thread's tab: keys only (a terminal), or pointer too. */
   capture?: "keys" | "all";
