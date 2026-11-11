@@ -689,6 +689,8 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
           data-local-keys
           className={cn(
             "flex h-9 shrink-0 items-center gap-0.5 border-b bg-sidebar px-1.5 pointer-coarse:h-11",
+            // As a page the toolbar runs to the corner: room for the bug button, fixed there.
+            !tab && "pr-9",
             fullscreen &&
               "-translate-y-full transition-transform group-focus-within:translate-y-0 group-hover:translate-y-0",
           )}
