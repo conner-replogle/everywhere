@@ -39,6 +39,10 @@ type Server struct {
 	// SetAgents changes it (from a browser over WebRTC only).
 	AgentsEnabled func() bool
 	SetAgents     func(on bool) error
+	// AutoUpdate reports whether the daemon updates itself when idle;
+	// SetAutoUpdate changes it.
+	AutoUpdate    func() bool
+	SetAutoUpdate func(on bool) error
 
 	store   *store.Store
 	plugins *plugin.Registry

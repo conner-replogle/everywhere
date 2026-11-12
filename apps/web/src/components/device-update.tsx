@@ -3,7 +3,7 @@ import { LoaderIcon } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { useDevice } from "@/components/device-context";
-import { errorMessage } from "@/lib/utils";
+import { errorMessage, timeAgo } from "@/lib/utils";
 
 const UPDATE_TIMEOUT_MS = 3 * 60_000; // download + verify on a slow link
 const RECHECK_MS = 15 * 60_000;
@@ -17,6 +17,10 @@ export interface UpdateCheck {
   checking: boolean;
   /** force skips the daemon's cached lookup of the latest release. */
   check: (force?: boolean) => void;
+  /** The daemon can update itself when idle (feature autoUpdate). */
+  autoSupported: boolean;
+  /** Turns updating when idle on or off. */
+  setAuto: (on: boolean) => Promise<void>;
 }
 
 /**
@@ -26,6 +30,7 @@ export interface UpdateCheck {
 export function useUpdateCheck(): UpdateCheck {
   const { peer, conn, info } = useDevice();
   const supported = info.data?.features?.includes("update") ?? false;
+  const autoSupported = info.data?.features?.includes("autoUpdate") ?? false;
   const enabled = supported && conn.state === "connected";
   const [data, setData] = useState<UpdateInfo>();
   const [error, setError] = useState<string | null>(null);
@@ -61,7 +66,32 @@ export function useUpdateCheck(): UpdateCheck {
     };
   }, [enabled, conn.generation, check]);
 
-  return { supported, data, error, checking, check };
+  const setAuto = useCallback(
+    async (on: boolean) => {
+      try {
+        setData(await peer.call("device.setAutoUpdate", { enabled: on }));
+        setError(null);
+      } catch (e) {
+        setError(errorMessage(e));
+      }
+    },
+    [peer],
+  );
+
+  return { supported, data, error, checking, check, autoSupported, setAuto };
+}
+
+/**
+ * What the device menu says under "Update when idle": what an available
+ * update waits for, or the last update the daemon made by itself (for a week).
+ */
+export function autoStatus(update: UpdateCheck, now = Date.now()): string | undefined {
+  const u = update.data;
+  if (!u?.auto) return undefined;
+  if (u.available && u.waiting?.length) return `${u.latest} waits: ${u.waiting.join(", ")}`;
+  if (u.available) return `${u.latest} installs at the next quiet moment`;
+  if (u.lastAuto && now - u.lastAuto.at < 7 * 86_400_000) return `Updated itself to ${u.lastAuto.to} ${timeAgo(u.lastAuto.at, now)}`;
+  return undefined;
 }
 
 /** What the device menu says about the daemon's version, for its "Check for updates" item. */

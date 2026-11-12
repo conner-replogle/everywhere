@@ -44,6 +44,7 @@ Usage:
   everywhere status                              show enrollment and service status
   everywhere service install|uninstall           manage the background service
   everywhere update                              install the latest release
+  everywhere update --auto on|off|status         update by itself when idle (on by default)
   everywhere desktop enable|disable|status       allow remote desktop of this machine's screen
   everywhere agents enable|disable|status        let connected agents (MCP) reach this machine's threads
   everywhere plugin list|install|enable|disable|remove   manage plugins installed on this machine
@@ -73,7 +74,11 @@ func main() {
 	case "service":
 		err = serviceCmd(args)
 	case "update":
-		err = selfUpdate()
+		if len(args) > 0 {
+			err = autoUpdateCmd(args)
+		} else {
+			err = selfUpdate()
+		}
 	case "desktop":
 		err = desktopCmd(args)
 	case "agents":
@@ -164,7 +169,7 @@ func daemon(args []string) error {
 	hostname, _ := os.Hostname()
 	home, _ := os.UserHomeDir()
 	// The core's features; plugins add theirs.
-	features := []string{protocol.FeatureUpdate, protocol.FeatureArchive, protocol.FeatureTabs, protocol.FeatureIcons, protocol.FeatureMkdir, protocol.FeatureAgents}
+	features := []string{protocol.FeatureUpdate, protocol.FeatureArchive, protocol.FeatureTabs, protocol.FeatureIcons, protocol.FeatureMkdir, protocol.FeatureAgents, protocol.FeatureAutoUpdate}
 	manager, installed := external.Load(config.PluginsDir(), config.PluginEnabled, config.SetPluginEnabled)
 	all := append(append(builtin.Plugins(), manager), installed...)
 	srv := peer.NewServer(st, protocol.DeviceInfo{
@@ -177,6 +182,8 @@ func daemon(args []string) error {
 	srv.PluginEnabled = config.PluginEnabled
 	srv.AgentsEnabled = config.AgentsEnabled
 	srv.SetAgents = config.SetAgents
+	srv.AutoUpdate = config.AutoUpdate
+	srv.SetAutoUpdate = config.SetAutoUpdate
 	srv.ICEServers = (&ice.Provider{Server: cfg.Server, Credential: credential}).Servers
 	go srv.ICEServers() // warm the cache so the first connection doesn't wait
 
@@ -197,6 +204,7 @@ func daemon(args []string) error {
 		restart.Store(true)
 		stop()
 	}
+	go srv.RunAutoUpdate(ctx)
 	if exe, err := executable(); err == nil {
 		update.Cleanup(exe)
 		// The updater that installed this binary was the last release's, so
@@ -382,4 +390,34 @@ func executable() (string, error) {
 		return "", err
 	}
 	return filepath.EvalSymlinks(exe)
+}
+
+// autoUpdateCmd turns updating when idle on or off: `update --auto on|off|status`.
+func autoUpdateCmd(args []string) error {
+	usage := errors.New("usage: everywhere update [--auto on|off|status]")
+	if len(args) != 2 || args[0] != "--auto" {
+		return usage
+	}
+	switch args[1] {
+	case "on":
+		if err := config.SetAutoUpdate(true); err != nil {
+			return err
+		}
+		fmt.Println("This device updates itself when idle: no agent working or waiting, no process or")
+		fmt.Println("command in a terminal running, no remote desktop, and no thread used for 15 minutes.")
+	case "off":
+		if err := config.SetAutoUpdate(false); err != nil {
+			return err
+		}
+		fmt.Println("This device won't update itself. `everywhere update` or the app still can.")
+	case "status":
+		if config.AutoUpdate() {
+			fmt.Println("Updating when idle: on")
+		} else {
+			fmt.Println("Updating when idle: off (turn it on with `everywhere update --auto on`)")
+		}
+	default:
+		return usage
+	}
+	return nil
 }

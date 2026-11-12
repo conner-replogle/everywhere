@@ -40,7 +40,7 @@ import { ConfirmDialog } from "@/components/confirm-dialog";
 import { DeviceContext, type DeviceContextValue, useDevice } from "@/components/device-context";
 import { ClaudeSignIn, signedOut, useClaudeAuth } from "@/components/claude-auth";
 import { ClaudeUpdate, useClaudeUpdateCheck } from "@/components/claude-update";
-import { DeviceUpdate, updateStatus, useUpdateCheck } from "@/components/device-update";
+import { autoStatus, DeviceUpdate, updateStatus, useUpdateCheck } from "@/components/device-update";
 import { useFleet } from "@/components/fleet";
 import { HubStatus } from "@/components/hub-status";
 import { AppVersion } from "@/components/app-version";
@@ -1191,6 +1191,24 @@ function DeviceRow({
                     )}
                   </span>
                 </DropdownMenuItem>
+                {update.autoSupported && update.data && !update.data.reason && (
+                  <DropdownMenuCheckboxItem
+                    checked={!!update.data.auto}
+                    // Stays open, so the result shows.
+                    onSelect={(e) => e.preventDefault()}
+                    onCheckedChange={(on) => void update.setAuto(on)}
+                  >
+                    <span className="grid">
+                      Update when idle
+                      <span className="text-xs text-muted-foreground">
+                        {autoStatus(update) ??
+                          (update.data.auto
+                            ? "When no agent, process, terminal command or remote desktop is busy"
+                            : "Off: updates only when you choose")}
+                      </span>
+                    </span>
+                  </DropdownMenuCheckboxItem>
+                )}
                 <DropdownMenuSeparator />
               </>
             )}

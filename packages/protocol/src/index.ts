@@ -341,7 +341,8 @@ export interface PluginKind {
  * Thread.pinnedAt and seenAt, threads.pin and threads.seen. search:
  * threads.search over an index of prompts, replies and tool calls, with
  * SearchHit's thread details, role and score, and its projectId and
- * includeArchived.
+ * includeArchived. autoUpdate: updating when idle (UpdateInfo.auto,
+ * waiting, lastAuto; device.setAutoUpdate).
  */
 export type DeviceFeature =
   | "plugins"
@@ -366,7 +367,8 @@ export type DeviceFeature =
   | "claudeToken"
   | "agents"
   | "pin"
-  | "search";
+  | "search"
+  | "autoUpdate";
 
 /**
  * What desktop.start captures: a monitor by name, or a window by id
@@ -399,6 +401,12 @@ export interface UpdateInfo {
   available: boolean;
   /** Why this daemon can't update itself (e.g. a dev build). */
   reason?: string;
+  /** autoUpdate: the daemon updates itself when idle. */
+  auto?: boolean;
+  /** autoUpdate: while an update is available and auto is on, what it's waiting for. */
+  waiting?: string[];
+  /** autoUpdate: the last update the daemon made by itself. */
+  lastAuto?: { from: string; to: string; at: number };
 }
 
 /** agent.claudeVersion: the device's Claude Code and the newest release. */
@@ -811,6 +819,8 @@ export interface RpcMethods {
   "device.checkUpdate": [{ force?: boolean }, UpdateInfo];
   /** Installs the latest release, answers, then restarts into it (the connection drops). */
   "device.update": [Record<string, never>, { version: string }];
+  /** autoUpdate: turns updating when idle on or off (not from the hub). */
+  "device.setAutoUpdate": [{ enabled: boolean }, UpdateInfo];
   /** agents: whether connected agents can reach this device. */
   "device.agents": [Record<string, never>, AgentsInfo];
   /** agents: turns that on or off; only from a browser, never over the hub. */

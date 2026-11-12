@@ -192,6 +192,13 @@ func (m *Manager) AddCandidate(id string, c webrtc.ICECandidateInit) {
 }
 
 // Stop ends the session with this id (the viewer left).
+// Viewing reports whether someone is viewing the desktop now.
+func (m *Manager) Viewing() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.sess != nil
+}
+
 func (m *Manager) Stop(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

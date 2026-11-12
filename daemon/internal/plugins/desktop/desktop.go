@@ -82,6 +82,12 @@ func (p *Plugin) Start(h plugin.Host) error {
 	})
 	plugin.Subscribe(h.Bus(), plugin.ClientRevoked, p.m.CloseClient)
 
+	h.HoldRestart(func() string {
+		if p.m != nil && p.m.Viewing() {
+			return "the remote desktop is in use"
+		}
+		return ""
+	})
 	h.HandleSession("desktop", plugin.SessionHandler{
 		Open: func(_ context.Context, s plugin.Session, offer string, raw json.RawMessage) (string, error) {
 			var ps startParams

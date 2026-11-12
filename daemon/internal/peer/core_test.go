@@ -59,7 +59,7 @@ func TestMethodsAndRemoteAccess(t *testing.T) {
 		"tabs.list", "tabs.create", "tabs.close", "tabs.setState", "fs.listDirs", "fs.list", "fs.mkdir",
 		"git.status", "git.fetch", "git.pull", "git.updateDefault", "git.info",
 		"telemetry.catalog", "telemetry.query", "telemetry.events", "telemetry.deleteRun", "threads.get",
-		"debug.peer", "debug.logs", "device.update", "device.setAgents", "agent.read", "agent.send", "agent.interrupt", "agent.configure", "agent.file", "desktop.info", "desktop.start", "desktop.candidate", "desktop.stop", "rtc.open", "rtc.candidate", "rtc.close",
+		"debug.peer", "debug.logs", "device.update", "device.setAutoUpdate", "device.setAgents", "agent.read", "agent.send", "agent.interrupt", "agent.configure", "agent.file", "desktop.info", "desktop.start", "desktop.candidate", "desktop.stop", "rtc.open", "rtc.candidate", "rtc.close",
 	}
 	remote := []string{"projects.clone", "device.agents"}
 	remoteOnly := []string{"agent.setToken", "plugins.setAccountSettings"}
@@ -70,7 +70,7 @@ func TestMethodsAndRemoteAccess(t *testing.T) {
 			registered[r] = true
 		}
 	}
-	core := []string{"device.info", "device.checkUpdate", "device.update", "device.agents", "device.setAgents", "debug.peer", "debug.logs", "projects.list", "projects.create", "projects.rename",
+	core := []string{"device.info", "device.checkUpdate", "device.update", "device.setAutoUpdate", "device.agents", "device.setAgents", "debug.peer", "debug.logs", "projects.list", "projects.create", "projects.rename",
 		"projects.icon", "projects.delete", "threads.list", "threads.get", "threads.create", "threads.rename", "threads.archive", "threads.delete",
 		"threads.workdir", "tabs.list", "tabs.create", "tabs.close", "tabs.setState", "fs.listDirs", "fs.mkdir", "rtc.open", "rtc.candidate", "rtc.close",
 		"plugins.setAccountSettings"}

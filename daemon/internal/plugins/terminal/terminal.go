@@ -4,6 +4,7 @@ package terminal
 
 import (
 	"context"
+	"fmt"
 	"os"
 
 	"github.com/pion/webrtc/v4"
@@ -38,6 +39,16 @@ func (p *Plugin) Start(h plugin.Host) error {
 	p.h = h
 	p.terms = term.NewManager(shells{h}, h.Threads().Changed)
 	h.Export(plugin.ServiceTerminal, service{p.terms})
+	h.HoldRestart(func() string {
+		switch n := p.terms.Busy(); n {
+		case 0:
+			return ""
+		case 1:
+			return "a terminal is running a command"
+		default:
+			return fmt.Sprintf("%d terminals are running commands", n)
+		}
+	})
 	h.AddKind(plugin.KindHandler{
 		Kind: plugin.Kind{Kind: protocol.ThreadTerminal, Thread: true},
 		Created: func(t protocol.Thread, c plugin.CreateParams) error {

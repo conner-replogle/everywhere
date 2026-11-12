@@ -616,6 +616,19 @@ func (s *Store) SetThreadDone(id string, done bool) error {
 WHERE id = (SELECT COALESCE(parent_id, id) FROM threads WHERE id = ?2)`, at, id)
 }
 
+// ListLiveThreads lists every thread and tab that isn't archived.
+func (s *Store) ListLiveThreads() ([]protocol.Thread, error) {
+	return s.queryThreads("SELECT " + threadCols + " FROM threads WHERE archived_at IS NULL")
+}
+
+// LastActivity is when someone last used any thread (a prompt, keys typed,
+// or opening it), in Unix milliseconds; 0 if never.
+func (s *Store) LastActivity() (int64, error) {
+	var at sql.NullInt64
+	err := s.db.QueryRow(`SELECT MAX(MAX(COALESCE(last_opened_at, 0), COALESCE(seen_at, 0))) FROM threads`).Scan(&at)
+	return at.Int64, err
+}
+
 // SetThreadPinned pins a thread, or unpins it: for a tab, the thread it
 // belongs to. A pinned thread is always listed, whatever its age or doneAt.
 func (s *Store) SetThreadPinned(id string, pinned bool) error {

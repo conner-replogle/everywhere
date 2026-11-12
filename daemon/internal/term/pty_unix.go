@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/proc"
 )
@@ -24,6 +25,27 @@ type unixTTY struct {
 
 func (t *unixTTY) Resize(cols, rows uint16) error {
 	return pty.Setsize(t.File, &pty.Winsize{Cols: cols, Rows: rows})
+}
+
+// RunningCommand reports whether something other than the shell has the
+// terminal: a command it runs in the foreground (a build, an editor, ssh).
+// The shell leads its own process group, so at its prompt the terminal's
+// foreground group is the shell's pid.
+func (t *unixTTY) RunningCommand() (bool, error) {
+	// Through SyscallConn: Fd() would put the PTY in blocking mode.
+	rc, err := t.File.SyscallConn()
+	if err != nil {
+		return false, err
+	}
+	var pgrp int
+	var ioErr error
+	if err := rc.Control(func(fd uintptr) { pgrp, ioErr = unix.IoctlGetInt(int(fd), unix.TIOCGPGRP) }); err != nil {
+		return false, err
+	}
+	if ioErr != nil {
+		return false, ioErr
+	}
+	return pgrp != t.cmd.Process.Pid, nil
 }
 
 func (t *unixTTY) Wait() int {

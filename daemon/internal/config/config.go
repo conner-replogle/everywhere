@@ -25,6 +25,9 @@ type Config struct {
 	// `everywhere plugin install|enable`, or from the app for registry
 	// plugins that need no local consent.
 	Plugins []string `json:"plugins,omitempty"`
+	// AutoUpdateOff stops the daemon updating itself when idle (on unless
+	// turned off: `everywhere update --auto off`, or the app).
+	AutoUpdateOff bool `json:"autoUpdateOff,omitempty"`
 }
 
 // ErrNotEnrolled is returned by Load when the device has never been enrolled.
@@ -125,6 +128,23 @@ func SetAgents(on bool) error {
 		return err
 	}
 	cfg.Agents = on
+	return Save(cfg, cred)
+}
+
+// AutoUpdate reads the config on each call: whether the daemon updates
+// itself when idle.
+func AutoUpdate() bool {
+	cfg, _, err := Load()
+	return err == nil && !cfg.AutoUpdateOff
+}
+
+// SetAutoUpdate turns updating when idle on or off.
+func SetAutoUpdate(on bool) error {
+	cfg, cred, err := Load()
+	if err != nil {
+		return err
+	}
+	cfg.AutoUpdateOff = !on
 	return Save(cfg, cred)
 }
 

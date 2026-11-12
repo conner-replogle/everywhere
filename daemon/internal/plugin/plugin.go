@@ -122,6 +122,10 @@ type Host interface {
 	// DecorateThread fills a thread's live fields (running, counts) when
 	// it's listed.
 	DecorateThread(fn func(t *protocol.Thread))
+	// HoldRestart reports why the daemon shouldn't restart itself now (for
+	// an automatic update): what a restart would lose, such as a command
+	// running in a terminal, or "" when nothing.
+	HoldRestart(fn func() string)
 
 	// Export makes a service available to other plugins under name.
 	Export(name string, svc any)

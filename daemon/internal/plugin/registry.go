@@ -51,6 +51,7 @@ type Registry struct {
 	tooldefs []toolReg
 	agent    []contribReg
 	decor    []decorReg
+	holds    []holdReg
 	services map[string]serviceReg
 
 	sessMu   sync.Mutex
@@ -86,6 +87,11 @@ type toolReg struct {
 type contribReg struct {
 	plugin string
 	fn     func(AgentLaunch) AgentContribution
+}
+
+type holdReg struct {
+	plugin string
+	fn     func() string
 }
 
 type decorReg struct {
@@ -327,6 +333,7 @@ func (r *Registry) remove(id string) {
 	r.tooldefs = slices.DeleteFunc(r.tooldefs, func(t toolReg) bool { return t.plugin == id })
 	r.agent = slices.DeleteFunc(r.agent, func(c contribReg) bool { return c.plugin == id })
 	r.decor = slices.DeleteFunc(r.decor, func(d decorReg) bool { return d.plugin == id })
+	r.holds = slices.DeleteFunc(r.holds, func(d holdReg) bool { return d.plugin == id })
 	for k, s := range r.services {
 		if s.plugin == id {
 			delete(r.services, k)
@@ -425,6 +432,28 @@ func (r *Registry) Decorate(t *protocol.Thread) {
 	for _, d := range decor {
 		d.fn(t)
 	}
+}
+
+// Service finds a plugin's exported service, as Host.Service does.
+func (r *Registry) Service(name string) (any, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	s, ok := r.services[name]
+	return s.svc, ok
+}
+
+// RestartHolds lists what plugins say a restart would lose now.
+func (r *Registry) RestartHolds() []string {
+	r.mu.RLock()
+	holds := slices.Clone(r.holds)
+	r.mu.RUnlock()
+	var out []string
+	for _, h := range holds {
+		if why := h.fn(); why != "" {
+			out = append(out, why)
+		}
+	}
+	return out
 }
 
 // AgentContributions collects every plugin's contribution to a claude launch.
@@ -607,6 +636,12 @@ func (h *host) DecorateThread(fn func(*protocol.Thread)) {
 	h.r.mu.Lock()
 	defer h.r.mu.Unlock()
 	h.r.decor = append(h.r.decor, decorReg{plugin: h.id, fn: fn})
+}
+
+func (h *host) HoldRestart(fn func() string) {
+	h.r.mu.Lock()
+	defer h.r.mu.Unlock()
+	h.r.holds = append(h.r.holds, holdReg{plugin: h.id, fn: fn})
 }
 
 func (h *host) Export(name string, svc any) {

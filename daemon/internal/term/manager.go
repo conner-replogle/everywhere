@@ -83,6 +83,29 @@ func (m *Manager) Running(threadID string) bool {
 	return ok
 }
 
+// Busy counts the shells running a command: one in the foreground in place
+// of the shell's prompt. A shell that can't tell (Windows) counts as busy.
+func (m *Manager) Busy() int {
+	m.mu.Lock()
+	all := make([]*session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		all = append(all, s)
+	}
+	m.mu.Unlock()
+	n := 0
+	for _, s := range all {
+		f, ok := s.tty.(interface{ RunningCommand() (bool, error) })
+		if !ok {
+			n++
+			continue
+		}
+		if busy, err := f.RunningCommand(); busy || err != nil {
+			n++
+		}
+	}
+	return n
+}
+
 // Attach connects c to the thread, spawning its shell at cols x rows if it
 // isn't running. c receives the scrollback, then live output. The first
 // client to attach becomes the writer.

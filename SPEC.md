@@ -140,7 +140,23 @@ everywhere enroll --server URL --token T   exchange token for credential, write 
 everywhere daemon                          run (what systemd starts)
 everywhere add [path] [--name N]           register a project (writes SQLite directly)
 everywhere status | version | update | uninstall
+everywhere update --auto on|off|status     update by itself when idle (on by default)
 ```
+
+**Updating when idle** (feature `autoUpdate`): unless the config's
+`autoUpdateOff` is set (`everywhere update --auto off`, or "Update when idle"
+in the device's menu: `device.setAutoUpdate`, not from the hub), the daemon
+looks for a release 10 minutes after starting and then hourly (+0–25 %
+jitter). Once one is found it waits for a quiet moment, looking every 5
+minutes, and installs it as `device.update` does. It waits while an agent is
+working, starting or waiting on the user; a process runs; any thread was used
+(a prompt, keys, or opened) in the last 15 minutes; or a plugin holds the
+restart (`Host.HoldRestart`): a terminal running a command (its foreground
+process group isn't the shell's, so a shell at its prompt doesn't hold; on
+Windows any live shell does) or the remote desktop being viewed. Shells at
+their prompt are restarted fresh. `device.checkUpdate` reports `auto`, what an
+available update is `waiting` for, and `lastAuto` (from, to, at), kept in
+`plugin_kv` (plugin "core"). Development builds never update themselves.
 
 ### Files
 

@@ -98,7 +98,16 @@ func (s *Server) registerCore(h plugin.Host) {
 
 	rpc("device.info", func(plugin.RPCContext, coreParams) (any, error) { return s.Info(), nil })
 	rpc("device.checkUpdate", func(_ plugin.RPCContext, p coreParams) (any, error) { return s.checkUpdate(p.Force) }, plugin.Slow())
-	rpc("device.update", func(plugin.RPCContext, coreParams) (any, error) { return s.applyUpdate() }, plugin.Slow())
+	rpc("device.update", func(plugin.RPCContext, coreParams) (any, error) { return s.applyUpdate(false) }, plugin.Slow())
+	rpc("device.setAutoUpdate", func(c plugin.RPCContext, p coreParams) (any, error) {
+		if c.Remote || s.SetAutoUpdate == nil {
+			return nil, errors.New("updating when idle can only be turned on or off from the app or on the device")
+		}
+		if err := s.SetAutoUpdate(p.Enabled); err != nil {
+			return nil, err
+		}
+		return s.checkUpdate(false)
+	}, plugin.Slow())
 	// Connected agents' switch on this device. Reading it is open to the
 	// Worker (so it can say why a device can't be reached); setting it only
 	// to a browser over WebRTC, never the hub.

@@ -164,6 +164,9 @@ const (
 	FeatureDone       = "done"        // Thread.doneAt, threads.done and the thread_done tool
 	FeatureToken      = "claudeToken" // agent.setToken and ClaudeAuth.token
 	FeaturePin        = "pin"         // Thread.pinnedAt and seenAt, threads.pin and threads.seen
+	// FeatureAutoUpdate: updating when idle; UpdateInfo.auto, waiting and
+	// lastAuto, and device.setAutoUpdate.
+	FeatureAutoUpdate = "autoUpdate"
 	// FeatureSearch: threads.search over an index of prompts, replies and
 	// tool calls, with SearchHit's thread details, roles and scores.
 	FeatureSearch = "search"
@@ -229,6 +232,20 @@ type UpdateInfo struct {
 	Available bool   `json:"available"`
 	// Reason says why this daemon can't update itself (e.g. a dev build).
 	Reason string `json:"reason,omitempty"`
+	// Auto: the daemon updates itself when idle (feature autoUpdate).
+	Auto bool `json:"auto"`
+	// Waiting, while an update is available and Auto is on, says what it's
+	// waiting for (a command running in a terminal, …).
+	Waiting []string `json:"waiting,omitempty"`
+	// LastAuto is the last update the daemon made by itself.
+	LastAuto *AutoUpdated `json:"lastAuto,omitempty"`
+}
+
+// AutoUpdated is an update the daemon made by itself, when idle.
+type AutoUpdated struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+	At   int64  `json:"at"`
 }
 
 // ClaudeVersion is the result of agent.claudeVersion: the device's Claude

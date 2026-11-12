@@ -47,12 +47,18 @@ func (s *Server) checkUpdate(force bool) (protocol.UpdateInfo, error) {
 	}
 	info.Latest = latest
 	info.Available = info.Reason == "" && update.Newer(latest, version.Version)
+	info.Auto = s.AutoUpdate != nil && s.AutoUpdate()
+	if info.Available && info.Auto {
+		info.Waiting = s.restartHolds(time.Now())
+	}
+	info.LastAuto = s.lastAutoUpdate()
 	return info, nil
 }
 
 // applyUpdate installs the latest release over the running binary, then
-// restarts into it once the response has gone out.
-func (s *Server) applyUpdate() (protocol.UpdateResult, error) {
+// restarts into it once the response has gone out. auto: the daemon chose
+// to, being idle; it's recorded for the app to say so.
+func (s *Server) applyUpdate(auto bool) (protocol.UpdateResult, error) {
 	if !s.updating.CompareAndSwap(false, true) {
 		return protocol.UpdateResult{}, errors.New("an update is already in progress")
 	}
@@ -83,6 +89,9 @@ func (s *Server) applyUpdate() (protocol.UpdateResult, error) {
 	slog.Info("updating", "from", info.Current, "to", info.Latest, "binary", exe)
 	if err := update.Latest(exe); err != nil {
 		return protocol.UpdateResult{}, fmt.Errorf("installing %s: %w", info.Latest, err)
+	}
+	if auto {
+		s.recordAutoUpdate(protocol.AutoUpdated{From: info.Current, To: info.Latest, At: time.Now().UnixMilli()})
 	}
 	restarting = true
 	plugin.Publish(s.plugins.Bus(), plugin.DaemonUpdating, struct{}{})
