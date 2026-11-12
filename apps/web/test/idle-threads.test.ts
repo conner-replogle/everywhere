@@ -1,6 +1,6 @@
 import type { Thread } from "@everywhere/protocol";
 import { describe, expect, test } from "bun:test";
-import { IDLE_AFTER_MS, isBusy, isDone, isIdle, lastTouched, SCRATCH_IDLE_AFTER_MS } from "../src/lib/idle-threads";
+import { capThreads, IDLE_AFTER_MS, isBusy, isDone, isIdle, lastTouched, SCRATCH_IDLE_AFTER_MS } from "../src/lib/idle-threads";
 
 const NOW = Date.UTC(2026, 9, 6);
 const DAY = 24 * 60 * 60 * 1000;
@@ -100,4 +100,19 @@ test("being opened on another device (seenAt) counts as a touch", () => {
   const old = NOW - 30 * DAY;
   expect(isIdle(thread({ createdAt: old, lastOpenedAt: old, seenAt: NOW - DAY }), NOW)).toBe(false);
   expect(lastTouched({ createdAt: old, lastOpenedAt: old, seenAt: NOW - DAY })).toBe(NOW - DAY);
+});
+
+describe("a project's working set", () => {
+  const rows = [1, 2, 3, 4, 5, 6, 7].map((n) => ({ n, at: n * 10, pinned: n === 1 }));
+  const opts = { cap: 3, keep: (r: (typeof rows)[0]) => r.pinned, touched: (r: (typeof rows)[0]) => r.at };
+  test("pinned first in, then the most recently touched, in the list's order", () => {
+    const { shown, more } = capThreads(rows, opts);
+    expect(shown.map((r) => r.n)).toEqual([1, 6, 7]);
+    expect(more.map((r) => r.n)).toEqual([2, 3, 4, 5]);
+  });
+  test("short lists aren't cut, and kept ones show past the cap", () => {
+    expect(capThreads(rows.slice(0, 3), opts).more).toEqual([]);
+    const all = capThreads(rows, { ...opts, keep: (r) => r.n <= 4 });
+    expect(all.shown.map((r) => r.n)).toEqual([1, 2, 3, 4]);
+  });
 });

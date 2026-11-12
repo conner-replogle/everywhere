@@ -10,6 +10,7 @@ import { git } from "./builtin/git";
 import { installed } from "./builtin/installed";
 import { pin } from "./builtin/pin";
 import { processes } from "./builtin/processes";
+import { recent } from "./builtin/recent";
 import { scratch } from "./builtin/scratch";
 import { done, github, push, share } from "./builtin/small";
 import { telemetry } from "./builtin/telemetry";
@@ -33,6 +34,7 @@ export const BUILTIN: readonly WebPlugin[] = [
   share,
   done,
   pin,
+  recent,
   github,
   push,
   installed,

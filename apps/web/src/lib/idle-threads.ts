@@ -105,3 +105,25 @@ if (typeof window !== "undefined") {
 export function useThreadTouches(): Readonly<Record<string, number>> {
   return useSyncExternalStore(subscribe, () => touches);
 }
+
+// --- a project's working set --------------------------------------------------
+
+/** How many threads a project lists before the rest go under "N more". */
+export const PROJECT_CAP = 5;
+
+/**
+ * Splits a project's listed threads into those shown and those under its
+ * "N more" row: pinned and open ones always show, then the most recently
+ * touched up to cap. Shown ones keep the order they came in.
+ */
+export function capThreads<T>(rows: T[], opts: { cap?: number; keep: (r: T) => boolean; touched: (r: T) => number }): {
+  shown: T[];
+  more: T[];
+} {
+  const cap = opts.cap ?? PROJECT_CAP;
+  if (rows.length <= cap) return { shown: rows, more: [] };
+  const kept = new Set(rows.filter(opts.keep));
+  const rest = rows.filter((r) => !kept.has(r)).sort((a, b) => opts.touched(b) - opts.touched(a));
+  for (const r of rest.slice(0, Math.max(0, cap - kept.size))) kept.add(r);
+  return { shown: rows.filter((r) => kept.has(r)), more: rows.filter((r) => !kept.has(r)) };
+}

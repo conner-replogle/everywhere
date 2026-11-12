@@ -923,7 +923,12 @@ its tabs), its `seenAt` (opened on any device: `threads.seen`, feature
 **Pinned** threads (`threads.pin`, "Pin" in a thread's menu or the pin in
 its header; `pinnedAt`, on the daemon so every device agrees) are listed
 first and never tucked away, idle or done. Daemons without `pin` keep the
-older per-browser "Keep in list". A thread is never tucked away while it's open, running (live
+older per-browser "Keep in list". With tucking on, each project lists at most
+5 threads (pinned and open ones always, then the most recently touched, in
+the list's order); the rest go under an "N more" row. Above Scratch, a
+**Recent** section lists the 5 threads most recently opened in this browser
+(the thread page's tabs), across projects and devices, each with its project
+(and device); it shows once there are two, and folds like the others. A thread is never tucked away while it's open, running (live
 shell or claude process), working, starting, waiting on the user, or has
 processes running, or when it has no usable timestamp. Opening an idle thread,
 or its "Keep in list" action, puts it back; "Hide done and idle threads" in

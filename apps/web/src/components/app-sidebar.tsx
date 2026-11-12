@@ -7,6 +7,7 @@ import {
   ArrowUpCircleIcon,
   BugIcon,
   ChevronRightIcon,
+  ChevronsDownIcon,
   ChevronsUpDownIcon,
   FolderIcon,
   FolderPlusIcon,
@@ -66,10 +67,12 @@ import {
 import { auth, useAuth } from "@/lib/auth";
 import { useDeviceOnline } from "@/lib/hub";
 import {
+  capThreads,
   IDLE_AFTER_MS,
   isDone,
   isIdle,
   lastTouched,
+  PROJECT_CAP,
   touchKey,
   touchThread,
   useThreadTouches,
@@ -492,7 +495,14 @@ export function AppSidebar({
   function renderProject({ entry, project: p, threads: all }: ProjectRow, showDevice: boolean) {
     const key = projectKey(entry.deviceId, p.id);
     const isCollapsed = collapsed.has(key);
-    const { listed: threads, ...part } = splitIdle(all, (thread) => ({ entry, thread }));
+    const { listed, ...part } = splitIdle(all, (thread) => ({ entry, thread }));
+    // The project's working set: pinned, open and recently touched; the rest under "N more".
+    const { shown: threads, more } = view.hideIdle
+      ? capThreads(listed, {
+          keep: (t) => !!t.pinnedAt || isActive(entry, t),
+          touched: (t) => lastTouched(t, touches[touchKey(entry.deviceId, t.id)]) ?? 0,
+        })
+      : { shown: listed, more: [] as Thread[] };
     const live = connected(entry);
     const claude = hasFeature(entry, "claude");
     return (
@@ -589,6 +599,13 @@ export function AppSidebar({
                 actions={threadActions(entry, t)}
               />
             ))}
+            {more.length > 0 && (
+              <TuckedThreads kind="more" count={more.length} open={idleOpen.has(`more:${key}`)} onToggle={() => toggleIdle(`more:${key}`)} />
+            )}
+            {idleOpen.has(`more:${key}`) &&
+              more.map((t) => (
+                <ThreadRow key={t.id} deviceId={entry.deviceId} thread={t} active={isActive(entry, t)} actions={threadActions(entry, t)} />
+              ))}
             {tucked(key, part, (t) => (
               <ThreadRow
                 key={t.id}
@@ -1287,7 +1304,7 @@ function TuckedThreads({
   onToggle,
   flat,
 }: {
-  kind: "done" | "idle";
+  kind: "done" | "idle" | "more";
   /** idle: after how many days untouched. */
   days?: number;
   count: number;
@@ -1295,7 +1312,7 @@ function TuckedThreads({
   onToggle: () => void;
   flat?: boolean;
 }) {
-  const Icon = kind === "done" ? CircleCheckIcon : HistoryIcon;
+  const Icon = kind === "done" ? CircleCheckIcon : kind === "more" ? ChevronsDownIcon : HistoryIcon;
   return (
     <li>
       <button
@@ -1303,7 +1320,9 @@ function TuckedThreads({
         onClick={onToggle}
         aria-expanded={open}
         title={
-          kind === "done"
+          kind === "more"
+            ? `In use, but not among the ${PROJECT_CAP} most recently touched. Pin one to keep it in view.`
+            : kind === "done"
             ? "Their work is done, said Claude (or you). Nothing in them is stopped or deleted; writing in one, or Reopen, puts it back in the list."
             : `Untouched for ${days === 1 ? "a day" : `${days} days`} or more. Nothing in them is stopped or deleted; opening one puts it back in the list.`
         }
