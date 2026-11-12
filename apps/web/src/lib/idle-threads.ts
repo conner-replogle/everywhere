@@ -1,7 +1,7 @@
 // Threads nobody has touched in a while drop out of the sidebar's default
 // view. Only what the sidebar shows changes: the thread, its history and
 // anything running in it are left alone, and it comes back the moment it's
-// touched again (or from the sidebar's "idle" row).
+// touched again (or from the sidebar's "idle" row). Pinned threads never go.
 
 import type { Thread } from "@everywhere/protocol";
 import { useSyncExternalStore } from "react";
@@ -13,11 +13,11 @@ export const SCRATCH_IDLE_AFTER_MS = 24 * 60 * 60 * 1000;
 
 /**
  * When the thread was last touched: a prompt sent or keys typed (the daemon's
- * lastOpenedAt, also bumped by its tabs), opened in this browser, or else
- * created. Undefined when none of those is a usable time.
+ * lastOpenedAt, also bumped by its tabs), opened on any device (seenAt) or
+ * in this browser, or else created. Undefined when none of those is a usable time.
  */
-export function lastTouched(t: Pick<Thread, "lastOpenedAt" | "createdAt">, local?: number): number | undefined {
-  const times = [t.lastOpenedAt, t.createdAt, local].filter(
+export function lastTouched(t: Pick<Thread, "lastOpenedAt" | "createdAt" | "seenAt">, local?: number): number | undefined {
+  const times = [t.lastOpenedAt, t.seenAt, t.createdAt, local].filter(
     (v): v is number => typeof v === "number" && Number.isFinite(v) && v > 0,
   );
   return times.length ? Math.max(...times) : undefined;
@@ -36,7 +36,7 @@ export function isBusy(t: Pick<Thread, "running" | "agentStatus" | "processes">)
 
 /** Whether the sidebar hides the thread by default. A thread with no usable time is never hidden. */
 export function isIdle(t: Thread, now: number, local?: number, after = IDLE_AFTER_MS): boolean {
-  if (t.archivedAt || isBusy(t)) return false;
+  if (t.archivedAt || t.pinnedAt || isBusy(t)) return false;
   const at = lastTouched(t, local);
   return at !== undefined && now - at >= after;
 }
@@ -48,7 +48,7 @@ export function isIdle(t: Thread, now: number, local?: number, after = IDLE_AFTE
  * running (a dev server for the user) doesn't keep it out either.
  */
 export function isDone(t: Thread): boolean {
-  if (t.archivedAt || !t.doneAt) return false;
+  if (t.archivedAt || t.pinnedAt || !t.doneAt) return false;
   return t.agentStatus !== "working" && t.agentStatus !== "starting" && t.agentStatus !== "waiting";
 }
 

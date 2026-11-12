@@ -8,6 +8,7 @@ import { desktop } from "./builtin/desktop";
 import { files } from "./builtin/files";
 import { git } from "./builtin/git";
 import { installed } from "./builtin/installed";
+import { pin } from "./builtin/pin";
 import { processes } from "./builtin/processes";
 import { scratch } from "./builtin/scratch";
 import { done, github, push, share } from "./builtin/small";
@@ -31,6 +32,7 @@ export const BUILTIN: readonly WebPlugin[] = [
   git,
   share,
   done,
+  pin,
   github,
   push,
   installed,

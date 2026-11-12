@@ -21,6 +21,8 @@ import {
   MoreHorizontalIcon,
   PencilIcon,
   PinIcon,
+  PinOffIcon,
+  SearchIcon,
   PuzzleIcon,
   PlusIcon,
   RotateCcwIcon,
@@ -46,6 +48,7 @@ import { NewProjectDialog } from "@/components/new-project-dialog";
 import { PresenceDot } from "@/components/presence-dot";
 import { RenameDialog } from "@/components/rename-dialog";
 import { scratchProject } from "@/components/scratch";
+import { useOpenSearch } from "@/components/search-overlay";
 import { ClaudeIcon, KindIcon, pluginLogoIcon } from "@/components/kind-icon";
 import { BUILTIN, devicePlugins } from "@/plugins/registry";
 import { Button } from "@/components/ui/button";
@@ -75,6 +78,7 @@ import { useInstallApp } from "@/lib/pwa";
 import { getPrefs } from "@/lib/prefs";
 import { useProjectIcon } from "@/lib/project-icons";
 import { retainThread, visitThread } from "@/lib/recent-threads";
+import { formatShortcut, useSearchShortcut } from "@/lib/shortcut";
 import { cn, errorMessage } from "@/lib/utils";
 
 type Entry = DeviceContextValue;
@@ -358,7 +362,10 @@ export function AppSidebar({
     const listed: R[] = [];
     const done: R[] = [];
     const idle: R[] = [];
-    if (!view.hideIdle) return { listed: rows, done, idle };
+    // Pinned threads come first, in the order the list is otherwise in.
+    const pinnedFirst = (rs: R[]) =>
+      rs.filter((r) => of(r).thread.pinnedAt).concat(rs.filter((r) => !of(r).thread.pinnedAt));
+    if (!view.hideIdle) return { listed: pinnedFirst(rows), done, idle };
     for (const r of rows) {
       const { entry, thread } = of(r);
       const local = touches[touchKey(entry.deviceId, thread.id)];
@@ -366,7 +373,7 @@ export function AppSidebar({
       else if (isDone(thread)) done.push(r);
       else (isIdle(thread, now, local, after) ? idle : listed).push(r);
     }
-    return { listed, done, idle };
+    return { listed: pinnedFirst(listed), done, idle };
   };
   /** The "done" and "idle" rows under a list, and the threads they show when open. */
   const tucked = <R,>(
@@ -417,9 +424,25 @@ export function AppSidebar({
     return at === undefined ? undefined : { days: Math.floor((now - at) / DAY_MS), at };
   };
 
+  async function setPinned(entry: Entry, thread: Thread, pinned: boolean) {
+    await run(async () => {
+      await entry.peer.call("threads.pin", { id: thread.id, pinned });
+      entry.threads.refetch();
+    });
+  }
+
   const threadActions = (entry: Entry, t: Thread, idle = false) => (
     <>
-      {idle && !isDone(t) && (
+      {hasFeature(entry, "pin") && (
+        <>
+          <DropdownMenuItem disabled={!connected(entry)} onSelect={() => setPinned(entry, t, !t.pinnedAt)}>
+            {t.pinnedAt ? <PinOffIcon /> : <PinIcon />}
+            {t.pinnedAt ? "Unpin" : "Pin"}
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+        </>
+      )}
+      {idle && !isDone(t) && !hasFeature(entry, "pin") && (
         <>
           <DropdownMenuItem onSelect={() => touchThread(entry.deviceId, t.id)}>
             <PinIcon />
@@ -610,6 +633,7 @@ export function AppSidebar({
         <span className="ml-auto min-w-0">
           <HubStatus />
         </span>
+        <SearchButton />
       </div>
       {sidebarSections().map(({ component: Section }, i) => (
         <Section
@@ -1215,8 +1239,11 @@ function ThreadRow({
       >
         <KindIcon kind={t.kind} deviceId={deviceId} className={cn("size-3.5 shrink-0", active ? "text-primary" : "text-muted-foreground")} />
         <span className="grid min-w-0">
-          <span className={cn("truncate", !active && (idle ? "text-muted-foreground" : "text-foreground/85"))}>
-            {t.name}
+          <span className="flex min-w-0 items-center gap-1">
+            <span className={cn("truncate", !active && (idle ? "text-muted-foreground" : "text-foreground/85"))}>
+              {t.name}
+            </span>
+            {t.pinnedAt && <PinIcon aria-label="Pinned" className="size-3 shrink-0 text-muted-foreground" />}
           </span>
           {detail && <span className="truncate text-[11px] text-muted-foreground">{detail}</span>}
         </span>
@@ -1463,5 +1490,23 @@ function SidebarSkeleton() {
         <li key={w} className="h-3 rounded bg-muted-foreground/10" style={{ width: `${w}%` }} />
       ))}
     </ul>
+  );
+}
+
+/** Opens the search overlay; its title says the shortcut. */
+function SearchButton() {
+  const openSearch = useOpenSearch();
+  const shortcut = formatShortcut(useSearchShortcut());
+  return (
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      className="-mr-1.5 shrink-0 pointer-coarse:size-8"
+      onClick={openSearch}
+      aria-label="Search threads"
+      title={`Search every thread (${shortcut})`}
+    >
+      <SearchIcon />
+    </Button>
   );
 }

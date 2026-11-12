@@ -1,6 +1,15 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { CheckIcon } from "lucide-react";
+import { useState } from "react";
 import { Section } from "@/components/settings-section";
+import { Button } from "@/components/ui/button";
+import {
+  DEFAULT_SEARCH_SHORTCUT,
+  formatShortcut,
+  recordShortcut,
+  setSearchShortcut,
+  useSearchShortcut,
+} from "@/lib/shortcut";
 import { DEFAULT_THEME, OMARCHY, type Palette, setTheme, THEMES, useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 
@@ -55,6 +64,12 @@ function AppearanceSettings() {
             />
           ))}
         </div>
+      </Section>
+      <Section
+        title="Search shortcut"
+        description="Opens search over every thread on every device, from anywhere in the app (terminals and remote desktops included). Kept in this browser."
+      >
+        <ShortcutRecorder />
       </Section>
     </div>
   );
@@ -112,5 +127,43 @@ function Swatch({ colors }: { colors?: Palette }) {
         ))}
       </span>
     </span>
+  );
+}
+
+/** Click, then press the keys: a key with Ctrl, Alt or Cmd/Super (Shift optional). Esc cancels. */
+function ShortcutRecorder() {
+  const shortcut = useSearchShortcut();
+  const [recording, setRecording] = useState(false);
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <button
+        type="button"
+        data-shortcut-recorder
+        onClick={() => setRecording(true)}
+        onBlur={() => setRecording(false)}
+        onKeyDownCapture={(e) => {
+          if (!recording) return;
+          e.preventDefault();
+          e.stopPropagation();
+          if (e.key === "Escape") return setRecording(false);
+          const s = recordShortcut(e.nativeEvent);
+          if (s) {
+            setSearchShortcut(s);
+            setRecording(false);
+          }
+        }}
+        className={cn(
+          "h-8 min-w-36 rounded-md border px-3 font-mono text-sm focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none",
+          recording && "border-primary text-muted-foreground",
+        )}
+      >
+        {recording ? "Press keys…" : formatShortcut(shortcut)}
+      </button>
+      {shortcut !== DEFAULT_SEARCH_SHORTCUT && (
+        <Button variant="ghost" size="sm" onClick={() => setSearchShortcut(null)}>
+          Reset to {formatShortcut(DEFAULT_SEARCH_SHORTCUT)}
+        </Button>
+      )}
+    </div>
   );
 }

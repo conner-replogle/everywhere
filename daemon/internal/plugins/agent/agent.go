@@ -22,6 +22,7 @@ import (
 	"github.com/conner-replogle/everywhere/daemon/internal/harness"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugin"
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
+	"github.com/conner-replogle/everywhere/daemon/internal/store"
 )
 
 // Plugin is the agent plugin.
@@ -39,7 +40,7 @@ func (p *Plugin) Manifest() plugin.Manifest {
 		ID: "agent", Title: "Agents", API: plugin.API, Builtin: true,
 		Permissions: []string{plugin.PermExec, plugin.PermFSWrite, plugin.PermAgentTools, plugin.PermRemote},
 		Features: []string{protocol.FeatureClaude, protocol.FeatureWorktrees, protocol.FeatureAttachments, protocol.FeatureHistory,
-			protocol.FeatureRewind, protocol.FeatureClaudeUpdate, protocol.FeatureClaudeAuth, protocol.FeatureToken},
+			protocol.FeatureRewind, protocol.FeatureClaudeUpdate, protocol.FeatureClaudeAuth, protocol.FeatureToken, protocol.FeatureSearch},
 	}
 }
 
@@ -155,10 +156,17 @@ func (p *Plugin) Start(h plugin.Host) error {
 	}, plugin.RemoteOnly())
 
 	h.HandleRPC("threads.search", plugin.Params(func(_ plugin.RPCContext, s struct {
-		Query string `json:"query"`
-		Limit int    `json:"limit"`
+		Query     string `json:"query"`
+		Limit     int    `json:"limit"`
+		ProjectID string `json:"projectId"`
+		// IncludeArchived defaults to true: search finds every thread there is.
+		IncludeArchived *bool `json:"includeArchived"`
 	}) (any, error) {
-		return h.Store().SearchAgentEvents(s.Query, min(max(s.Limit, 1), 50))
+		return h.Store().SearchThreads(s.Query, store.SearchOptions{
+			Limit:        min(max(s.Limit, 1), 100),
+			ProjectID:    s.ProjectID,
+			SkipArchived: s.IncludeArchived != nil && !*s.IncludeArchived,
+		})
 	}), plugin.Agent())
 	p.registerConnected(h)
 

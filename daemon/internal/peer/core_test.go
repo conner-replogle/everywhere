@@ -52,7 +52,7 @@ func TestMethodsAndRemoteAccess(t *testing.T) {
 		"device.info", "agent.info", "agent.claudeVersion", "agent.updateClaude", "agent.auth", "agent.login",
 		"agent.loginCode", "agent.loginCancel", "device.checkUpdate",
 		"projects.list", "projects.create", "projects.rename", "projects.icon", "projects.delete", "clones.list",
-		"threads.list", "threads.create", "threads.rename", "threads.done", "threads.archive", "threads.delete", "threads.workdir",
+		"threads.list", "threads.create", "threads.rename", "threads.done", "threads.pin", "threads.seen", "threads.archive", "threads.delete", "threads.workdir",
 		"threads.search", "threads.promote", "threads.continueIn", "scratch.usage",
 		"processes.list", "processes.start", "processes.stop", "processes.restart", "processes.remove",
 		"processes.dashboard", "processes.output", "processes.file", "processes.dashboardError", "processes.setState",

@@ -153,8 +153,10 @@ projects (id, name, path UNIQUE, created_at)                -- home project seed
           is_home, is_scratch                               -- Scratch seeded too (see Scratch)
 threads  (id, project_id, kind, name, created_at, last_opened_at, had_session BOOL,
           agent_session_id, agent_model, agent_permission_mode)
-           parent_id (tabs), tab_state, scratch_dir
+           parent_id (tabs), tab_state, scratch_dir, done_at, pinned_at, seen_at
 agent_events (thread_id, seq, at, event JSON)               -- claude thread log
+search_docs (id, thread_id, seq, at, role, text)            -- see Search; triggers on agent_events
+search_fts  FTS5 over search_docs.text, trigram tokenizer
 processes (id, thread_id, agent_thread_id, name, command, cwd, spec JSON,
            status, exit_code, started_at, ended_at, snapshot JSON, prev JSON)
            UNIQUE (thread_id, name)                         -- see Processes
@@ -591,6 +593,46 @@ whose `dashboard` names it (`process_start`, a report, or the process's
   `useDashboardState` (`processes.setState`, in the project's
   `dashboard_state`), so every device shows the same.
 
+### Search
+
+Every thread on a device, archived ones included, by name and by what was
+said and done in it. Feature `search`.
+
+- **Index**: `search_docs` holds the text of each prompt, reply and tool call
+  (`<tool>: ` and its command, path, pattern, URL, query or description) of
+  every claude thread and tab, kept in step with `agent_events` by triggers
+  (appends add, rewinds and deletes remove), and built from the existing log
+  by the migration that adds it. `search_fts` is an FTS5 index over it with
+  the trigram tokenizer (diacritics folded): any substring of three or more
+  characters is found, as grep would, and matches rank by bm25. Terminal
+  output isn't kept, so terminal threads are found by name only.
+- **Query**: words and "quoted phrases", case-insensitive, every one in the
+  same message (or all in the thread's name). Terms of 3+ characters go
+  through the index; shorter ones are LIKE checks (alone, a scan of the
+  newest messages). At most 3000 matching messages are ranked.
+- **Ranking**, per thread (a tab's messages count as its thread's): 0.6 ×
+  relevance (the best message's bm25 over the best of the search, tool calls
+  × 0.7, or 1 / 0.8 for a name that starts with / contains the terms) +
+  0.25 × recency (1 / (1 + days/14)) + 0.15 × how many messages matched
+  (log, up to 10), +0.1 when both name and text match. Scores are about
+  0–1, so clients merge devices' results by them.
+- **RPC**: `threads.search {query, limit? (≤100), projectId?,
+  includeArchived? (default true)}` → hits with the thread's name, kind,
+  project, archived/done/pinned, the snippet and its role (user | assistant
+  | tool | name), the tab and `seq` it's in, the match count and score.
+- **Web app**: a full-screen overlay, opened from anywhere by a shortcut (⌘K
+  on Apple devices, Ctrl+Shift+F elsewhere, where Ctrl+K is the shell's;
+  changed in Settings → Appearance, per browser; caught before terminals and
+  remote desktops see it) or the sidebar's search button. It asks every
+  connected device at once and merges by score; offline devices are named.
+  Device chips and an Archived toggle narrow it; ↑/↓ (or Ctrl+N/P) and
+  Enter open a result, in the tab the match is in. Empty, it lists the 30
+  most recent threads, as a switcher. Daemons from before the index get the
+  old `threads.search` (filled in from their thread list), and ones without
+  it a name match.
+- Semantic search (embeddings) is not done: it needs a model on every device
+  or text sent off it. The index and scores leave room to blend one in.
+
 ### Scratch
 
 General computer work outside any project: diagnosing a problem with the
@@ -630,8 +672,9 @@ machine, a quick task, some files. Feature `scratch`.
   folder (up to 200 000 entries). `tabs.create {kind: "terminal", input}`
   types input into the new shell without running it.
 - **Web app**: Scratch and home leave the Projects list (on daemons that have
-  Scratch). The sidebar's Scratch section lists each device with its newest
-  Scratch threads and a + menu; device names link to the device page. The
+  Scratch). The sidebar's Scratch section lists the Scratch threads in use on every
+  device (pinned, then newest), an "N earlier" row that opens the done and
+  idle ones in place, and a + menu; device names link to the device page. The
   device page (`/d/$deviceId`) has a Scratch composer, what Claude can do there (Auto, no root, screen
   access), Scratch threads with file counts, search across the device's
   threads, archived ones, the folder's size and path, home (with "Terminal
@@ -875,8 +918,12 @@ The sidebar tucks threads untouched for 3 days under a per-project "N idle"
 row (or one for the whole list when ungrouped). This is display only: nothing
 is archived, stopped or deleted. "Touched" is the latest of the thread's
 `lastOpenedAt` (the daemon bumps it on a prompt or keystroke, in the thread or
-its tabs), its `createdAt`, and when it was last opened or "kept in list" in
-this browser. A thread is never tucked away while it's open, running (live
+its tabs), its `seenAt` (opened on any device: `threads.seen`, feature
+`pin`), its `createdAt`, and when it was last opened in this browser.
+**Pinned** threads (`threads.pin`, "Pin" in a thread's menu or the pin in
+its header; `pinnedAt`, on the daemon so every device agrees) are listed
+first and never tucked away, idle or done. Daemons without `pin` keep the
+older per-browser "Keep in list". A thread is never tucked away while it's open, running (live
 shell or claude process), working, starting, waiting on the user, or has
 processes running, or when it has no usable timestamp. Opening an idle thread,
 or its "Keep in list" action, puts it back; "Hide done and idle threads" in

@@ -337,7 +337,11 @@ export interface PluginKind {
  * agent.auth, agent.login, agent.loginCode, agent.loginCancel, claude.auth
  * and the signedOut turn kind. done: Thread.doneAt, threads.done and the
  * agent's thread_done tool. agents: device.agents and device.setAgents
- * (connected agents' switch on the device) and the user event's via.
+ * (connected agents' switch on the device) and the user event's via. pin:
+ * Thread.pinnedAt and seenAt, threads.pin and threads.seen. search:
+ * threads.search over an index of prompts, replies and tool calls, with
+ * SearchHit's thread details, role and score, and its projectId and
+ * includeArchived.
  */
 export type DeviceFeature =
   | "plugins"
@@ -360,7 +364,9 @@ export type DeviceFeature =
   | "claudeAuth"
   | "done"
   | "claudeToken"
-  | "agents";
+  | "agents"
+  | "pin"
+  | "search";
 
 /**
  * What desktop.start captures: a monitor by name, or a window by id
@@ -500,6 +506,10 @@ export interface Thread {
   scratchDir?: string;
   /** done: when its agent said the work was done (thread_done), until someone works in it again. */
   doneAt?: number;
+  /** pin: set while pinned: always listed, never tucked away as idle or done. */
+  pinnedAt?: number;
+  /** pin: when it was last opened, on any device. */
+  seenAt?: number;
 }
 
 /** scratch.usage: what the Scratch folders hold, in all and per thread folder (by path). */
@@ -834,6 +844,10 @@ export interface RpcMethods {
   "threads.archive": [{ id: string; archived: boolean }, Thread];
   /** done: mark a thread done (put away in the sidebar), or reopen it. */
   "threads.done": [{ id: string; done: boolean }, Thread];
+  /** pin: pins a thread (for a tab, its thread), or unpins it. */
+  "threads.pin": [{ id: string; pinned: boolean }, Thread];
+  /** pin: records the thread (for a tab, its thread) being opened, for idle threads on every device. */
+  "threads.seen": [{ id: string }, Record<string, never>];
   /**
    * keepWorktree: leave a claude thread's worktree on disk (its branch is always kept).
    * removeScratch (scratch): also delete a Scratch thread's folder, which otherwise stays.
@@ -841,7 +855,12 @@ export interface RpcMethods {
   "threads.delete": [{ id: string; keepWorktree?: boolean; removeScratch?: boolean }, Record<string, never>];
   "threads.workdir": [{ id: string }, Workdir];
   /** scratch: threads whose name, or one of whose claude prompts or replies, contains every word of query, newest match first. */
-  "threads.search": [{ query: string; limit?: number }, SearchHit[]];
+  /**
+   * Threads whose name, prompts, replies or tool calls contain every term
+   * (a word or "quoted phrase", as a substring), best first. With feature
+   * search: projectId narrows it; includeArchived (default true).
+   */
+  "threads.search": [{ query: string; limit?: number; projectId?: string; includeArchived?: boolean }, SearchHit[]];
   /**
    * scratch: makes a Scratch thread's folder a project (named name, else the
    * thread's name) and moves the thread there, still working in the same folder.
@@ -1059,9 +1078,29 @@ export interface AgentFile {
 
 export interface SearchHit {
   threadId: string;
-  /** Around the newest matching message; absent when only the name matched. */
+  /** Around the best matching message; absent when only the name matched. */
   snippet?: string;
+  /** When it last matched, or was last active. */
   at: number;
+  // The rest with feature search.
+  name?: string;
+  kind?: ThreadKind;
+  projectId?: string;
+  projectName?: string;
+  scratch?: boolean;
+  archivedAt?: number;
+  doneAt?: number;
+  pinnedAt?: number;
+  /** What the snippet is from; "name" when only the name matched. */
+  role?: "user" | "assistant" | "tool" | "name";
+  /** The tab the snippet's message is in, when not the thread itself. */
+  tabId?: string;
+  /** That message's place in its log. */
+  seq?: number;
+  /** How many of its messages matched. */
+  matches?: number;
+  /** Higher is better, about 0 to 1; comparable across devices. */
+  score?: number;
 }
 
 export interface RpcRequest<M extends RpcMethod = RpcMethod> {

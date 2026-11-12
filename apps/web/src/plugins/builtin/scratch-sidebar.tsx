@@ -1,11 +1,12 @@
 // The Scratch section of the sidebar: the Scratch threads in use, on every
-// device, newest first, and a + to start one on a device. Idle and done
-// ones are on each device's page.
+// device, pinned then newest first, and a + to start one on a device. Idle
+// and done ones are under an "N earlier" row that opens in place (and on
+// each device's page).
 
 import type { ThreadKind } from "@everywhere/protocol";
 import { useNavigate } from "@tanstack/react-router";
-import { ChevronRightIcon, PlusIcon } from "lucide-react";
-import { Fragment } from "react";
+import { ChevronRightIcon, HistoryIcon, PlusIcon } from "lucide-react";
+import { Fragment, useState } from "react";
 import { canScratch, deviceName, scratchProject, scratchThreads, startScratch, threadRecency } from "@/components/scratch";
 import { Button } from "@/components/ui/button";
 import {
@@ -25,6 +26,7 @@ const OPEN_KEY = "scratch:open";
 
 export function ScratchSection({ entries, collapsed, toggle, threadRow, split, newThreadItems, onError }: SidebarSectionProps) {
   const navigate = useNavigate();
+  const [earlierOpen, setEarlierOpen] = useState(false);
   const devices = entries.filter((e) => !!scratchProject(e)).sort((a, b) => deviceName(a).localeCompare(deviceName(b)));
   if (devices.length === 0) return null;
   const startable = devices.filter(canScratch);
@@ -40,11 +42,16 @@ export function ScratchSection({ entries, collapsed, toggle, threadRow, split, n
     }
   }
 
-  // Only what's in use: not done, not idle a while.
-  const active = devices
-    .flatMap((entry) => split(entry, scratchThreads(entry), SCRATCH_IDLE_AFTER_MS).listed.map((t) => ({ entry, t })))
+  // What's in use (pinned, or neither done nor idle a while), and the rest, tucked under "earlier".
+  const parts = devices.map((entry) => ({ entry, ...split(entry, scratchThreads(entry), SCRATCH_IDLE_AFTER_MS) }));
+  const active = parts
+    .flatMap(({ entry, listed }) => listed.map((t) => ({ entry, t })))
+    .sort((a, b) => Number(!!b.t.pinnedAt) - Number(!!a.t.pinnedAt) || threadRecency(b.t) - threadRecency(a.t));
+  const earlier = parts
+    .flatMap(({ entry, done, idle }) => [...done, ...idle].map((t) => ({ entry, t })))
     .sort((a, b) => threadRecency(b.t) - threadRecency(a.t));
   const sectionCollapsed = !collapsed.has(OPEN_KEY);
+  const detail = (entry: DeviceContextValue) => (devices.length > 1 ? deviceName(entry) : undefined);
 
   return (
     <div className="max-h-[40%] shrink-0 overflow-y-auto border-b px-1.5 pt-1 pb-1.5">
@@ -83,8 +90,26 @@ export function ScratchSection({ entries, collapsed, toggle, threadRow, split, n
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
-      {!sectionCollapsed && active.length > 0 && (
-        <ul className="flex flex-col gap-px">{active.map(({ entry, t }) => threadRow(entry, t, { flat: true, detail: devices.length > 1 ? deviceName(entry) : undefined }))}</ul>
+      {!sectionCollapsed && (active.length > 0 || earlier.length > 0) && (
+        <ul className="flex flex-col gap-px">
+          {active.map(({ entry, t }) => threadRow(entry, t, { flat: true, detail: detail(entry) }))}
+          {earlier.length > 0 && (
+            <li>
+              <button
+                type="button"
+                onClick={() => setEarlierOpen((o) => !o)}
+                aria-expanded={earlierOpen}
+                title="Done, or untouched for a day or more. Nothing in them is stopped or deleted; Pin one to keep it listed."
+                className="flex h-6 w-full items-center gap-1.5 rounded-md pr-2 pl-2 text-xs text-muted-foreground hover:bg-accent/60 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none pointer-coarse:h-9"
+              >
+                <HistoryIcon className="size-3.5 shrink-0" />
+                <span className="tabular-nums">{earlier.length} earlier</span>
+                <ChevronRightIcon className={cn("ml-auto size-3 shrink-0 transition-transform", earlierOpen && "rotate-90")} />
+              </button>
+            </li>
+          )}
+          {earlierOpen && earlier.map(({ entry, t }) => threadRow(entry, t, { flat: true, idle: true, detail: detail(entry) }))}
+        </ul>
       )}
     </div>
   );

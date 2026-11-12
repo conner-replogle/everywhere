@@ -163,6 +163,10 @@ const (
 	FeatureClaudeAuth = "claudeAuth"  // agent.auth, agent.login*, claude.auth and kind signedOut
 	FeatureDone       = "done"        // Thread.doneAt, threads.done and the thread_done tool
 	FeatureToken      = "claudeToken" // agent.setToken and ClaudeAuth.token
+	FeaturePin        = "pin"         // Thread.pinnedAt and seenAt, threads.pin and threads.seen
+	// FeatureSearch: threads.search over an index of prompts, replies and
+	// tool calls, with SearchHit's thread details, roles and scores.
+	FeatureSearch = "search"
 	// FeatureAgents: device.agents and device.setAgents, connected agents'
 	// switch on this device; AgentEvent.Via.
 	FeatureAgents = "agents"
@@ -330,6 +334,11 @@ type Thread struct {
 	// DoneAt is when the thread's agent said its work was done (thread_done),
 	// until someone works in it again.
 	DoneAt *int64 `json:"doneAt,omitempty"`
+	// PinnedAt is set while the thread is pinned: always listed in the
+	// sidebar, never tucked away as idle or done.
+	PinnedAt *int64 `json:"pinnedAt,omitempty"`
+	// SeenAt is when the thread was last opened, on any device.
+	SeenAt *int64 `json:"seenAt,omitempty"`
 }
 
 // ScratchUsage is the result of scratch.usage: how much the Scratch

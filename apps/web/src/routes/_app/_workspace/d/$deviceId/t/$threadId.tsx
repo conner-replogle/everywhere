@@ -188,13 +188,18 @@ function ThreadPage() {
   const savedRatio = useMemo(() => loadLayout(deviceId, threadId)?.ratio, [deviceId, threadId]);
   // Opening a thread gives it a tab along the top (the preview tab, unless it
   // has one already), and counts as touching it, for the sidebar's idle threads.
+  // The daemon hears of it too (feature pin), so every device's sidebar agrees.
   const threadName = thread?.name;
   const threadKind = thread?.kind;
+  const canSee = features.includes("pin") && conn.state === "connected" && !!threadName;
   useEffect(() => {
     if (!threadName || !threadKind) return;
     visitThread(deviceId, threadId, { name: threadName, kind: threadKind });
     touchThread(deviceId, threadId);
   }, [deviceId, threadId, threadName, threadKind]);
+  useEffect(() => {
+    if (canSee) void peer.call("threads.seen", { id: threadId }).catch(() => {});
+  }, [peer, threadId, canSee]);
   // Doing something in the thread keeps its tab, so opening another thread doesn't replace it.
   const keep = () => retainThread(deviceId, threadId);
   // No push notifications about the thread on screen.

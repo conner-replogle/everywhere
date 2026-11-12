@@ -136,6 +136,60 @@ CREATE TABLE plugin_kv (
 );
 CREATE INDEX plugin_kv_scope ON plugin_kv (scope);
 `,
+	// Pinned threads (always listed, never tucked away), and when a thread
+	// was last opened on any device (seen_at, which unlike last_opened_at
+	// leaves done_at alone: reading the result isn't working in it).
+	`
+ALTER TABLE threads ADD COLUMN pinned_at INTEGER;
+ALTER TABLE threads ADD COLUMN seen_at INTEGER;
+`,
+	// Search: the text of every prompt, reply and tool call (its command,
+	// path, pattern or URL) in search_docs, kept in step with agent_events by
+	// triggers, and a trigram index over it, so any substring of three or
+	// more characters is found (as grep would), ranked by bm25.
+	`
+CREATE TABLE search_docs (
+  id        INTEGER PRIMARY KEY,
+  thread_id TEXT NOT NULL,
+  seq       INTEGER NOT NULL,
+  at        INTEGER NOT NULL,
+  role      TEXT NOT NULL,
+  text      TEXT NOT NULL,
+  UNIQUE (thread_id, seq)
+);
+CREATE VIRTUAL TABLE search_fts USING fts5(
+  text, content='search_docs', content_rowid='id', tokenize='trigram remove_diacritics 1'
+);
+CREATE TRIGGER search_docs_ai AFTER INSERT ON search_docs BEGIN
+  INSERT INTO search_fts(rowid, text) VALUES (new.id, new.text);
+END;
+CREATE TRIGGER search_docs_ad AFTER DELETE ON search_docs BEGIN
+  INSERT INTO search_fts(search_fts, rowid, text) VALUES ('delete', old.id, old.text);
+END;
+CREATE VIEW search_source AS
+SELECT thread_id, seq, at,
+  json_extract(event, '$.type') AS role,
+  CASE json_extract(event, '$.type')
+    WHEN 'tool' THEN json_extract(event, '$.name') || ': ' || COALESCE(
+      json_extract(event, '$.input.command'), json_extract(event, '$.input.file_path'),
+      json_extract(event, '$.input.pattern'), json_extract(event, '$.input.url'),
+      json_extract(event, '$.input.query'), json_extract(event, '$.input.description'), '')
+    ELSE json_extract(event, '$.text')
+  END AS text
+FROM agent_events
+WHERE json_extract(event, '$.type') IN ('user', 'assistant', 'tool');
+CREATE TRIGGER agent_events_search_ai AFTER INSERT ON agent_events
+WHEN json_extract(new.event, '$.type') IN ('user', 'assistant', 'tool') BEGIN
+  INSERT OR REPLACE INTO search_docs (thread_id, seq, at, role, text)
+  SELECT thread_id, seq, at, role, text FROM search_source
+  WHERE thread_id = new.thread_id AND seq = new.seq AND COALESCE(text, '') != '';
+END;
+CREATE TRIGGER agent_events_search_ad AFTER DELETE ON agent_events BEGIN
+  DELETE FROM search_docs WHERE thread_id = old.thread_id AND seq = old.seq;
+END;
+INSERT INTO search_docs (thread_id, seq, at, role, text)
+SELECT thread_id, seq, at, role, text FROM search_source WHERE COALESCE(text, '') != '';
+`,
 }
 
 type Store struct {
@@ -321,13 +375,13 @@ func (s *Store) DeleteProject(id string) error {
 
 // --- threads ----------------------------------------------------------------
 
-const threadCols = "id, project_id, kind, name, created_at, last_opened_at, agent_worktree, archived_at, parent_id, tab_state, scratch_dir, done_at"
+const threadCols = "id, project_id, kind, name, created_at, last_opened_at, agent_worktree, archived_at, parent_id, tab_state, scratch_dir, done_at, pinned_at, seen_at"
 
 func scanThread(sc interface{ Scan(...any) error }) (protocol.Thread, error) {
 	var t protocol.Thread
-	var opened, archived, done sql.NullInt64
+	var opened, archived, done, pinned, seen sql.NullInt64
 	var worktree, parent, state, scratch sql.NullString
-	err := sc.Scan(&t.ID, &t.ProjectID, &t.Kind, &t.Name, &t.CreatedAt, &opened, &worktree, &archived, &parent, &state, &scratch, &done)
+	err := sc.Scan(&t.ID, &t.ProjectID, &t.Kind, &t.Name, &t.CreatedAt, &opened, &worktree, &archived, &parent, &state, &scratch, &done, &pinned, &seen)
 	t.Worktree, t.ParentID, t.TabState, t.ScratchDir = worktree.String, parent.String, state.String, scratch.String
 	if opened.Valid {
 		t.LastOpenedAt = &opened.Int64
@@ -337,6 +391,12 @@ func scanThread(sc interface{ Scan(...any) error }) (protocol.Thread, error) {
 	}
 	if done.Valid {
 		t.DoneAt = &done.Int64
+	}
+	if pinned.Valid {
+		t.PinnedAt = &pinned.Int64
+	}
+	if seen.Valid {
+		t.SeenAt = &seen.Int64
 	}
 	return t, err
 }
@@ -554,6 +614,25 @@ func (s *Store) SetThreadDone(id string, done bool) error {
 	}
 	return s.execOne(`UPDATE threads SET done_at = ?1
 WHERE id = (SELECT COALESCE(parent_id, id) FROM threads WHERE id = ?2)`, at, id)
+}
+
+// SetThreadPinned pins a thread, or unpins it: for a tab, the thread it
+// belongs to. A pinned thread is always listed, whatever its age or doneAt.
+func (s *Store) SetThreadPinned(id string, pinned bool) error {
+	var at any
+	if pinned {
+		at = now()
+	}
+	return s.execOne(`UPDATE threads SET pinned_at = ?1
+WHERE id = (SELECT COALESCE(parent_id, id) FROM threads WHERE id = ?2)`, at, id)
+}
+
+// SeeThread records a thread (or the thread a tab belongs to) being opened
+// on some device, for the sidebar's idle threads. Unlike TouchThread it
+// leaves doneAt alone: reading the result isn't working in it.
+func (s *Store) SeeThread(id string) error {
+	return s.execOne(`UPDATE threads SET seen_at = ?1
+WHERE id = (SELECT COALESCE(parent_id, id) FROM threads WHERE id = ?2)`, now(), id)
 }
 
 // ReplaceThreadName renames a thread only if its name is still from, so a
@@ -825,84 +904,323 @@ func (s *Store) DeleteAgentEvents(threadID string, fromSeq, toSeq int64) error {
 	return err
 }
 
-// SearchHit is a thread whose name or claude messages contain a query.
+// SearchHit is a thread whose name, or one of whose prompts, replies or tool
+// calls (in the thread or its tabs), matches a query.
 type SearchHit struct {
 	ThreadID string `json:"threadId"`
-	// Snippet is the newest matching message, around the match; empty when
+	// Snippet is the best matching message, around the match; empty when
 	// only the name matched.
 	Snippet string `json:"snippet,omitempty"`
-	At      int64  `json:"at"`
+	// At is when the thread last matched, or was last active when only its
+	// name matched.
+	At int64 `json:"at"`
+
+	Name        string `json:"name"`
+	Kind        string `json:"kind"`
+	ProjectID   string `json:"projectId"`
+	ProjectName string `json:"projectName"`
+	Scratch     bool   `json:"scratch,omitempty"`
+	ArchivedAt  *int64 `json:"archivedAt,omitempty"`
+	DoneAt      *int64 `json:"doneAt,omitempty"`
+	PinnedAt    *int64 `json:"pinnedAt,omitempty"`
+	// Role is what the snippet is: user | assistant | tool, or name.
+	Role string `json:"role"`
+	// TabID is the tab the snippet's message is in, when not the thread
+	// itself; Seq is that message's place in its log.
+	TabID string `json:"tabId,omitempty"`
+	Seq   int64  `json:"seq,omitempty"`
+	// Matches counts the thread's matching messages (up to the scan's limit).
+	Matches int `json:"matches"`
+	// Score orders hits, from any device: higher is better, about 0 to 1.
+	Score float64 `json:"score"`
 }
 
-// SearchAgentEvents finds up to limit threads whose name, or one of whose
-// prompts or replies (in the thread or its claude tabs), contains every word
-// of query (case-insensitive, in any order), most recently matched first.
-// Tabs aren't hits of their own.
-func (s *Store) SearchAgentEvents(query string, limit int) ([]SearchHit, error) {
-	words := strings.Fields(query)
-	if len(words) == 0 {
+// SearchOptions narrows a search.
+type SearchOptions struct {
+	Limit int
+	// ProjectID, when set, keeps to one project's threads.
+	ProjectID string
+	// SkipArchived leaves archived threads out.
+	SkipArchived bool
+}
+
+// searchTerms splits a query into terms: "quoted phrases" and words. At
+// most 16.
+func searchTerms(query string) []string {
+	var out []string
+	for len(out) < 16 {
+		query = strings.TrimLeft(query, " \t\n\r")
+		if query == "" {
+			break
+		}
+		var term string
+		if query[0] == '"' {
+			end := strings.IndexByte(query[1:], '"')
+			if end < 0 {
+				term, query = query[1:], ""
+			} else {
+				term, query = query[1:end+1], query[end+2:]
+			}
+		} else if i := strings.IndexAny(query, " \t\n\r"); i >= 0 {
+			term, query = query[:i], query[i:]
+		} else {
+			term, query = query, ""
+		}
+		if term = strings.TrimSpace(term); term != "" {
+			out = append(out, term)
+		}
+	}
+	return out
+}
+
+var likeEscape = strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`)
+
+// maxScan is how many matching messages a search ranks.
+const maxScan = 3000
+
+// SearchThreads finds the threads whose name, or one of whose prompts,
+// replies or tool calls (a command, path, pattern or URL), contains every
+// term of query: a word or a "quoted phrase", case-insensitive, as a
+// substring (so "keyr" finds "keyring"). Terms of three characters or more
+// go through the trigram index; shorter ones are checked by LIKE. A tab's
+// messages count as its thread's. Hits are ranked by how well the best
+// message matches (bm25), a match in the name, how many messages match,
+// and how recent the thread is.
+func (s *Store) SearchThreads(query string, o SearchOptions) ([]SearchHit, error) {
+	terms := searchTerms(query)
+	if len(terms) == 0 {
 		return []SearchHit{}, nil
 	}
-	words = words[:min(len(words), 16)]
-	escape := strings.NewReplacer(`\`, `\\`, "%", `\%`, "_", `\_`)
-	var args []any
-	var name, text []string
-	for i, w := range words {
-		args = append(args, "%"+escape.Replace(w)+"%")
-		name = append(name, fmt.Sprintf(`name LIKE ?%d ESCAPE '\'`, i+1))
-		text = append(text, fmt.Sprintf(`json_extract(e.event, '$.text') LIKE ?%d ESCAPE '\'`, i+1))
+	var match []string
+	var likeArgs []any
+	var like []string
+	for _, t := range terms {
+		if len([]rune(t)) >= 3 {
+			match = append(match, `"`+strings.ReplaceAll(t, `"`, `""`)+`"`)
+		} else {
+			likeArgs = append(likeArgs, "%"+likeEscape.Replace(t)+"%")
+			like = append(like, `d.text LIKE ? ESCAPE '\'`)
+		}
 	}
-	rows, err := s.db.Query(`
-SELECT thread_id, at, text FROM (
-  SELECT id AS thread_id, COALESCE(last_opened_at, created_at) AS at, 0 AS seq, '' AS text
-  FROM threads WHERE parent_id IS NULL AND `+strings.Join(name, " AND ")+`
-  UNION ALL
-  -- A claude tab's messages count as its thread's.
-  SELECT COALESCE(t.parent_id, t.id), e.at, e.seq, json_extract(e.event, '$.text')
-  FROM agent_events e JOIN threads t ON t.id = e.thread_id
-  WHERE json_extract(e.event, '$.type') IN ('user', 'assistant')
-    AND `+strings.Join(text, " AND ")+`
-)
-ORDER BY at DESC, seq DESC LIMIT 1000`, args...)
+
+	// Messages that match, best first (or newest first without the index).
+	var q string
+	var args []any
+	if len(match) > 0 {
+		q = `SELECT d.thread_id, d.seq, d.at, d.role, d.text, bm25(search_fts) FROM search_fts
+JOIN search_docs d ON d.id = search_fts.rowid WHERE search_fts MATCH ?`
+		args = append(args, strings.Join(match, " AND "))
+		for _, l := range like {
+			q += " AND " + l
+		}
+		q += " ORDER BY bm25(search_fts), d.at DESC LIMIT ?"
+	} else {
+		q = `SELECT d.thread_id, d.seq, d.at, d.role, d.text, -1.0 FROM search_docs d WHERE ` +
+			strings.Join(like, " AND ") + " ORDER BY d.at DESC LIMIT ?"
+	}
+	args = append(append(args, likeArgs...), maxScan)
+
+	type msg struct {
+		thread string
+		seq    int64
+		at     int64
+		role   string
+		text   string
+		rel    float64 // higher is better
+	}
+	var msgs []msg
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []SearchHit{}
-	seen := map[string]bool{}
 	for rows.Next() {
-		var h SearchHit
-		var text sql.NullString
-		if err := rows.Scan(&h.ThreadID, &h.At, &text); err != nil {
+		var m msg
+		var rank float64
+		if err := rows.Scan(&m.thread, &m.seq, &m.at, &m.role, &m.text, &rank); err != nil {
+			rows.Close()
 			return nil, err
 		}
-		if seen[h.ThreadID] {
+		m.rel = -rank
+		if m.role == "tool" {
+			m.rel *= 0.7 // a command or path is good, words someone wrote better
+		}
+		msgs = append(msgs, m)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Every thread and tab, with its project: few enough to read whole.
+	type info struct {
+		hit    SearchHit
+		parent string
+		active int64
+	}
+	infos := map[string]*info{}
+	rows, err = s.db.Query(`
+SELECT t.id, COALESCE(t.parent_id, ''), t.name, t.kind, t.project_id, p.name, p.is_scratch,
+  t.archived_at, t.done_at, t.pinned_at,
+  MAX(t.created_at, COALESCE(t.last_opened_at, 0), COALESCE(t.seen_at, 0))
+FROM threads t JOIN projects p ON p.id = t.project_id`)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var i info
+		var archived, done, pinned sql.NullInt64
+		if err := rows.Scan(&i.hit.ThreadID, &i.parent, &i.hit.Name, &i.hit.Kind, &i.hit.ProjectID, &i.hit.ProjectName,
+			&i.hit.Scratch, &archived, &done, &pinned, &i.active); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if archived.Valid {
+			i.hit.ArchivedAt = &archived.Int64
+		}
+		if done.Valid {
+			i.hit.DoneAt = &done.Int64
+		}
+		if pinned.Valid {
+			i.hit.PinnedAt = &pinned.Int64
+		}
+		infos[i.hit.ThreadID] = &i
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	root := func(id string) *info {
+		i := infos[id]
+		if i != nil && i.parent != "" {
+			if p := infos[i.parent]; p != nil {
+				return p
+			}
+		}
+		return i
+	}
+	keep := func(i *info) bool {
+		return i != nil && i.parent == "" &&
+			(o.ProjectID == "" || i.hit.ProjectID == o.ProjectID) &&
+			!(o.SkipArchived && i.hit.ArchivedAt != nil)
+	}
+
+	type agg struct {
+		info    *info
+		best    msg
+		rel     float64
+		latest  int64
+		matches int
+		name    float64 // how well the name matched, 0 to 1
+	}
+	byThread := map[string]*agg{}
+	var top float64
+	for _, m := range msgs {
+		i := root(m.thread)
+		if !keep(i) {
 			continue
 		}
-		seen[h.ThreadID] = true
-		h.Snippet = snippet(text.String, query)
-		out = append(out, h)
-		if len(out) == limit {
-			break
+		a := byThread[i.hit.ThreadID]
+		if a == nil {
+			a = &agg{info: i, best: m, rel: m.rel}
+			byThread[i.hit.ThreadID] = a
+		} else if m.rel > a.rel || (m.rel == a.rel && m.at > a.best.at) {
+			a.best, a.rel = m, m.rel
+		}
+		a.matches++
+		a.latest = max(a.latest, m.at)
+		top = max(top, a.rel)
+	}
+	for _, i := range infos {
+		if !keep(i) {
+			continue
+		}
+		lower := strings.ToLower(i.hit.Name)
+		all := true
+		for _, t := range terms {
+			if !strings.Contains(lower, strings.ToLower(t)) {
+				all = false
+				break
+			}
+		}
+		if !all {
+			continue
+		}
+		a := byThread[i.hit.ThreadID]
+		if a == nil {
+			a = &agg{info: i}
+			byThread[i.hit.ThreadID] = a
+		}
+		a.name = 0.8
+		if strings.HasPrefix(lower, strings.ToLower(terms[0])) {
+			a.name = 1
 		}
 	}
-	return out, rows.Err()
+
+	t := now()
+	out := make([]SearchHit, 0, len(byThread))
+	for _, a := range byThread {
+		h := a.info.hit
+		h.Matches = a.matches
+		h.At = max(a.latest, a.info.active)
+		rel := a.name
+		if a.matches > 0 {
+			h.Snippet = snippet(a.best.text, terms)
+			h.Role, h.Seq = a.best.role, a.best.seq
+			if a.best.thread != h.ThreadID {
+				h.TabID = a.best.thread
+			}
+			if top > 0 {
+				rel = max(rel, a.rel/top)
+			} else {
+				rel = max(rel, 0.7)
+			}
+		} else {
+			h.Role = "name"
+		}
+		days := float64(max(0, t-h.At)) / float64(24*time.Hour/time.Millisecond)
+		recency := 1 / (1 + days/14)
+		many := math.Min(1, math.Log1p(float64(a.matches))/math.Log1p(10))
+		h.Score = 0.6*rel + 0.25*recency + 0.15*many
+		if a.name > 0 && a.matches > 0 {
+			h.Score = math.Min(1, h.Score+0.1) // name and text both match
+		}
+		out = append(out, h)
+	}
+	slices.SortFunc(out, func(a, b SearchHit) int {
+		if a.Score != b.Score {
+			if a.Score > b.Score {
+				return -1
+			}
+			return 1
+		}
+		return int(b.At - a.At)
+	})
+	if o.Limit > 0 && len(out) > o.Limit {
+		out = out[:o.Limit]
+	}
+	return out, nil
 }
 
-// snippet is up to about 200 characters of text around query's first match.
-// snippet is the text around the query, or else around its first word.
-func snippet(text, query string) string {
+// SearchAgentEvents is SearchThreads with only a limit, as before.
+func (s *Store) SearchAgentEvents(query string, limit int) ([]SearchHit, error) {
+	return s.SearchThreads(query, SearchOptions{Limit: limit})
+}
+
+// snippet is up to about 200 characters of text around the first term's
+// match (or the first term that matches).
+func snippet(text string, terms []string) string {
 	r := []rune(text)
 	lower := strings.ToLower(text)
-	i := strings.Index(lower, strings.ToLower(strings.TrimSpace(query)))
-	if i < 0 {
-		if w := strings.Fields(query); len(w) > 0 {
-			i = strings.Index(lower, strings.ToLower(w[0]))
+	i := -1
+	// Lowercasing can change byte offsets (a few scripts): then start at the start.
+	if len(lower) == len(text) {
+		for _, t := range terms {
+			if i = strings.Index(lower, strings.ToLower(t)); i >= 0 {
+				break
+			}
 		}
 	}
-	if i < 0 {
-		i = 0
-	}
+	i = max(i, 0)
 	at := len([]rune(text[:i]))
 	start := max(0, at-80)
 	end := min(len(r), at+120)

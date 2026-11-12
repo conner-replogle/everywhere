@@ -89,3 +89,15 @@ test("Scratch threads go idle after a day", () => {
   expect(isIdle(t, NOW)).toBe(false);
   expect(isIdle(t, NOW, undefined, SCRATCH_IDLE_AFTER_MS)).toBe(true);
 });
+
+test("pinned threads are never idle or done", () => {
+  const old = NOW - 30 * DAY;
+  expect(isIdle(thread({ createdAt: old, lastOpenedAt: old, pinnedAt: old }), NOW)).toBe(false);
+  expect(isDone(thread({ doneAt: old, pinnedAt: old }))).toBe(false);
+});
+
+test("being opened on another device (seenAt) counts as a touch", () => {
+  const old = NOW - 30 * DAY;
+  expect(isIdle(thread({ createdAt: old, lastOpenedAt: old, seenAt: NOW - DAY }), NOW)).toBe(false);
+  expect(lastTouched({ createdAt: old, lastOpenedAt: old, seenAt: NOW - DAY })).toBe(NOW - DAY);
+});

@@ -1,6 +1,7 @@
 // Package done is the done plugin: marking a thread done (put away in the
 // sidebar until it's touched again), by the user or by its claude's
-// thread_done tool.
+// thread_done tool; pinning one (always listed); and recording when one was
+// last opened, so every device's sidebar agrees on what's idle.
 package done
 
 import (
@@ -23,10 +24,10 @@ func New() *Plugin { return &Plugin{} }
 
 func (p *Plugin) Manifest() plugin.Manifest {
 	return plugin.Manifest{
-		ID: "done", Title: "Done threads", API: plugin.API, Builtin: true,
+		ID: "done", Title: "Done and pinned threads", API: plugin.API, Builtin: true,
 		Optional:    []string{"agent"},
 		Permissions: []string{plugin.PermAgentTools},
-		Features:    []string{protocol.FeatureDone},
+		Features:    []string{protocol.FeatureDone, protocol.FeaturePin},
 	}
 }
 
@@ -41,6 +42,25 @@ func (p *Plugin) Start(h plugin.Host) error {
 		}
 		h.Threads().Changed()
 		return h.Threads().Live(r.ID)
+	}))
+	h.HandleRPC("threads.pin", plugin.Params(func(_ plugin.RPCContext, r struct {
+		ID     string `json:"id"`
+		Pinned bool   `json:"pinned"`
+	}) (any, error) {
+		if err := h.Store().SetThreadPinned(r.ID, r.Pinned); err != nil {
+			return nil, err
+		}
+		h.Threads().Changed()
+		return h.Threads().Live(r.ID)
+	}))
+	h.HandleRPC("threads.seen", plugin.Params(func(_ plugin.RPCContext, r struct {
+		ID string `json:"id"`
+	}) (any, error) {
+		if err := h.Store().SeeThread(r.ID); err != nil {
+			return nil, err
+		}
+		h.Threads().Changed()
+		return plugin.Empty{}, nil
 	}))
 	if _, ok := h.Service(plugin.ServiceAgent); ok {
 		for _, t := range p.tools() {

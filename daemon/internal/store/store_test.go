@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -300,8 +301,8 @@ func TestSearchAgentEvents(t *testing.T) {
 	if err != nil || len(hits) != 1 || hits[0].ThreadID != b.ID {
 		t.Fatalf("hits = %+v, %v", hits, err)
 	}
-	if hits[0].Snippet != "The frobnicator takes 100%_ of CPU" {
-		t.Errorf("snippet = %q (want the newest match)", hits[0].Snippet)
+	if hits[0].Matches != 3 || hits[0].Role == "name" || hits[0].Snippet == "" || hits[0].Name == "" || hits[0].ProjectName == "" {
+		t.Errorf("hit = %+v", hits[0])
 	}
 	// Every word, in any order, within one message.
 	if hits, _ := s.SearchAgentEvents("cpu FROBNICATOR takes", 10); len(hits) != 1 || hits[0].ThreadID != b.ID {
@@ -310,7 +311,7 @@ func TestSearchAgentEvents(t *testing.T) {
 	if hits, _ := s.SearchAgentEvents("slow cpu", 10); len(hits) != 0 {
 		t.Errorf("words from two messages matched: %+v", hits)
 	}
-	if hits, _ := s.SearchAgentEvents("deploy", 10); len(hits) != 1 || hits[0].ThreadID != a.ID || hits[0].Snippet != "" {
+	if hits, _ := s.SearchAgentEvents("deploy", 10); len(hits) != 1 || hits[0].ThreadID != a.ID || hits[0].Snippet != "" || hits[0].Role != "name" {
 		t.Errorf("name search = %+v", hits)
 	}
 	// A claude tab's messages find its thread.
@@ -321,7 +322,7 @@ func TestSearchAgentEvents(t *testing.T) {
 	if _, err := s.AppendAgentEvent(tab.ID, json.RawMessage(`{"type":"assistant","id":"4","text":"zebra crossing"}`)); err != nil {
 		t.Fatal(err)
 	}
-	if hits, _ := s.SearchAgentEvents("zebra", 10); len(hits) != 1 || hits[0].ThreadID != a.ID {
+	if hits, _ := s.SearchAgentEvents("zebra", 10); len(hits) != 1 || hits[0].ThreadID != a.ID || hits[0].TabID != tab.ID || hits[0].Seq != 1 {
 		t.Errorf("tab search = %+v", hits)
 	}
 	// LIKE wildcards in the query are literal.
@@ -330,6 +331,131 @@ func TestSearchAgentEvents(t *testing.T) {
 	}
 	if hits, _ := s.SearchAgentEvents("0_o", 10); len(hits) != 0 {
 		t.Errorf("_ matched as a wildcard: %+v", hits)
+	}
+}
+
+func TestSearchThreads(t *testing.T) {
+	s := open(t)
+	home, _ := s.ListProjects()
+	a, _ := s.CreateThread(home[0].ID, "keyring", protocol.ThreadClaude)
+	b, _ := s.CreateThread(home[0].ID, "other", protocol.ThreadClaude)
+	add := func(id, ev string) {
+		t.Helper()
+		if _, err := s.AppendAgentEvent(id, json.RawMessage(ev)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add(a.ID, `{"type":"user","id":"1","text":"pacman says the keyring is corrupted"}`)
+	add(a.ID, `{"type":"tool","id":"2","name":"Bash","input":{"command":"sudo pacman-key --populate archlinux"}}`)
+	add(b.ID, `{"type":"assistant","id":"3","text":"Ünïcode café and an ok go"}`)
+	add(b.ID, `{"type":"turn","status":"completed","text":"keyring in a turn isn't indexed"}`)
+	ids := func(q string, o SearchOptions) []string {
+		t.Helper()
+		hits, err := s.SearchThreads(q, o)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out := []string{}
+		for _, h := range hits {
+			out = append(out, h.ThreadID)
+		}
+		return out
+	}
+	// Substrings, as grep: part of a word, a tool call's command.
+	if got := ids("keyr", SearchOptions{}); !slices.Equal(got, []string{a.ID}) {
+		t.Errorf("substring = %v", got)
+	}
+	if got := ids("populate", SearchOptions{}); !slices.Equal(got, []string{a.ID}) {
+		t.Errorf("tool command = %v", got)
+	}
+	// A quoted phrase must appear as it is.
+	if got := ids(`"keyring is corrupted"`, SearchOptions{}); !slices.Equal(got, []string{a.ID}) {
+		t.Errorf("phrase = %v", got)
+	}
+	if got := ids(`"corrupted keyring"`, SearchOptions{}); len(got) != 0 {
+		t.Errorf("phrase out of order = %v", got)
+	}
+	// Short terms, diacritics, and case.
+	if got := ids("ok go", SearchOptions{}); !slices.Equal(got, []string{b.ID}) {
+		t.Errorf("short terms = %v", got)
+	}
+	if got := ids("CAFE unicode", SearchOptions{}); !slices.Equal(got, []string{b.ID}) {
+		t.Errorf("diacritics = %v", got)
+	}
+	// The name matching as well as a message ranks first.
+	hits, _ := s.SearchThreads("keyring", SearchOptions{})
+	if len(hits) != 1 || hits[0].Role == "name" || hits[0].Score <= 0 {
+		t.Errorf("name and text = %+v", hits)
+	}
+	// Archived threads are found unless left out; a project narrows it.
+	if _, err := s.SetThreadArchived(a.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := ids("keyr", SearchOptions{SkipArchived: true}); len(got) != 0 {
+		t.Errorf("archived found = %v", got)
+	}
+	if hits, _ := s.SearchThreads("keyr", SearchOptions{}); len(hits) != 1 || hits[0].ArchivedAt == nil {
+		t.Errorf("archived = %+v", hits)
+	}
+	if got := ids("keyr", SearchOptions{ProjectID: "nope"}); len(got) != 0 {
+		t.Errorf("other project = %v", got)
+	}
+	// Rewound and deleted messages leave the index.
+	if err := s.DeleteAgentEvents(a.ID, 2, 3); err != nil {
+		t.Fatal(err)
+	}
+	if got := ids("populate", SearchOptions{}); len(got) != 0 {
+		t.Errorf("rewound = %v", got)
+	}
+	if err := s.DeleteThread(b.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := ids("café", SearchOptions{}); len(got) != 0 {
+		t.Errorf("deleted = %v", got)
+	}
+	var n int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM search_docs").Scan(&n); err != nil || n != 1 {
+		t.Errorf("search_docs = %d, %v", n, err)
+	}
+}
+
+func TestSearchTerms(t *testing.T) {
+	got := searchTerms(`  foo "bar baz"  qux "open`)
+	if want := []string{"foo", "bar baz", "qux", "open"}; !slices.Equal(got, want) {
+		t.Errorf("terms = %q", got)
+	}
+}
+
+func TestPinAndSeen(t *testing.T) {
+	s := open(t)
+	home, _ := s.ListProjects()
+	th, _ := s.CreateThread(home[0].ID, "", protocol.ThreadClaude)
+	tab, _ := s.CreateTab(th.ID, protocol.ThreadTerminal, "")
+	if err := s.SetThreadDone(th.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	// Through a tab, as done: the thread it belongs to.
+	if err := s.SetThreadPinned(tab.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SeeThread(tab.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.GetThread(th.ID)
+	if got.PinnedAt == nil || got.SeenAt == nil {
+		t.Errorf("thread = %+v", got)
+	}
+	if got.DoneAt == nil {
+		t.Error("seeing a thread cleared done")
+	}
+	if err := s.SetThreadPinned(th.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.GetThread(th.ID); got.PinnedAt != nil {
+		t.Error("still pinned")
+	}
+	if err := s.SeeThread("nope"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("missing = %v", err)
 	}
 }
 
