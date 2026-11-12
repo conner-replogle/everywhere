@@ -164,3 +164,13 @@ if (typeof window !== "undefined") {
 export function useRecentThreads(): readonly RecentThread[] {
   return useSyncExternalStore(subscribe, () => recent);
 }
+
+/**
+ * A list that holds still while its members do: keys (newest first) still
+ * in prev keep their places; new ones go on top, newest first; ones no
+ * longer in keys leave.
+ */
+export function stableOrder(prev: readonly string[], keys: readonly string[]): string[] {
+  const kept = prev.filter((k) => keys.includes(k));
+  return [...keys.filter((k) => !kept.includes(k)), ...kept];
+}

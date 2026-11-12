@@ -1,13 +1,16 @@
 // The sidebar's Recent section: the threads you've been switching between,
 // across every project and device, above the projects (which stay grouped).
 // They're the same threads as the tabs along the top of the thread page,
-// most recently opened first, kept in this browser.
+// kept in this browser. The list holds still: opening a thread already in it
+// moves nothing; opening another puts it on top, and the least recently
+// opened one leaves.
 
 import { ChevronRightIcon } from "lucide-react";
 import type { Thread } from "@everywhere/protocol";
+import { useEffect, useMemo, useState } from "react";
 import type { DeviceContextValue } from "@/components/device-context";
 import { deviceName } from "@/components/scratch";
-import { useRecentThreads } from "@/lib/recent-threads";
+import { stableOrder, useRecentThreads } from "@/lib/recent-threads";
 import { cn } from "@/lib/utils";
 import { definePlugin, type SidebarSectionProps } from "../types";
 
@@ -15,18 +18,43 @@ import { definePlugin, type SidebarSectionProps } from "../types";
 export const RECENT_COUNT = 5;
 /** In the sidebar's collapsed set when the section is closed (it starts open). */
 const CLOSED_KEY = "recent:closed";
+/** The section's order, by "device/thread", so it holds still across reloads too. */
+const ORDER_KEY = "ew:recent-order";
+
+function readOrder(): string[] {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(ORDER_KEY) ?? "[]");
+    return Array.isArray(v) ? v.filter((k): k is string => typeof k === "string") : [];
+  } catch {
+    return [];
+  }
+}
 
 function RecentSection({ entries, collapsed, toggle, threadRow }: SidebarSectionProps) {
   const recent = useRecentThreads();
+  const [order, setOrder] = useState<string[]>(readOrder);
   const byDevice = new Map(entries.map((e) => [e.deviceId, e]));
-  const rows: { entry: DeviceContextValue; t: Thread }[] = [];
+  // The most recently opened threads that still exist, newest first.
+  const candidates: { key: string; entry: DeviceContextValue; t: Thread }[] = [];
   for (const r of [...recent].sort((a, b) => b.visitedAt - a.visitedAt)) {
     const entry = byDevice.get(r.deviceId);
     const t = entry?.threads.data?.find((x) => x.id === r.threadId);
     if (!entry || !t || t.archivedAt) continue;
-    rows.push({ entry, t });
-    if (rows.length === RECENT_COUNT) break;
+    candidates.push({ key: `${r.deviceId}/${r.threadId}`, entry, t });
+    if (candidates.length === RECENT_COUNT) break;
   }
+  const keys = candidates.map((c) => c.key);
+  const next = useMemo(() => stableOrder(order, keys), [order.join(), keys.join()]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (next.join() === order.join()) return;
+    setOrder(next);
+    try {
+      localStorage.setItem(ORDER_KEY, JSON.stringify(next));
+    } catch {
+      // storage blocked: the order lasts until reload
+    }
+  }, [next.join()]); // eslint-disable-line react-hooks/exhaustive-deps
+  const rows = next.flatMap((k) => candidates.find((c) => c.key === k) ?? []);
   // Two or fewer isn't switching between threads yet.
   if (rows.length < 2) return null;
   const closed = collapsed.has(CLOSED_KEY);

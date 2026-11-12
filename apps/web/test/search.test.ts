@@ -60,3 +60,13 @@ test("recording takes a key with a modifier, not plain typing", () => {
   expect(recordShortcut(key({ key: "Control", code: "ControlLeft", ctrlKey: true }))).toBeUndefined();
   expect(recordShortcut(key({ key: "P", code: "KeyP", ctrlKey: true, shiftKey: true }))).toBe("Ctrl+Shift+P");
 });
+
+test("Recent holds still: only a thread not in it moves things", () => {
+  const { stableOrder } = require("../src/lib/recent-threads") as typeof import("../src/lib/recent-threads");
+  // Opening C, already listed, moves nothing.
+  expect(stableOrder(["a", "b", "c"], ["c", "a", "b"])).toEqual(["a", "b", "c"]);
+  // Opening D: on top, and the least recently opened (b) leaves.
+  expect(stableOrder(["a", "b", "c"], ["d", "c", "a"])).toEqual(["d", "a", "c"]);
+  // From nothing: newest first.
+  expect(stableOrder([], ["x", "y"])).toEqual(["x", "y"]);
+});
