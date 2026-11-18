@@ -937,11 +937,18 @@ function AgentModeMenu({ state, disabled, onPick }: { state: AgentState; disable
   );
 }
 
-/** What the model button says: for claude's default, the model it stands for. */
-function modelName(m: AgentModel, models: AgentModel[]): string {
+/**
+ * What the model button says: for claude's default, the model it stands for.
+ * The running session's own model wins over the shared model list, whose
+ * description of "default" can come from another claude (another sign-in).
+ */
+function modelName(m: AgentModel, models: AgentModel[], active?: string): string {
   if (m.value !== "default") return m.displayName;
-  const same = m.resolvedModel && models.find((o) => o !== m && o.resolvedModel === m.resolvedModel);
-  return same ? same.displayName : (m.description?.split(" · ")[0] ?? m.displayName);
+  const resolved = active?.replace(/\[.*\]$/, "") || m.resolvedModel;
+  const same = resolved && models.find((o) => o.value !== "default" && o.resolvedModel === resolved);
+  if (same) return same.displayName;
+  if (active) return active;
+  return m.description?.split(" · ")[0] ?? m.displayName;
 }
 
 function ModelMenu({
@@ -957,7 +964,7 @@ function ModelMenu({
 }) {
   const configured = state?.model ?? "";
   const current = models.find((m) => m.value === (configured || "default"));
-  const label = current ? modelName(current, models) : configured || "Default model";
+  const label = current ? modelName(current, models, state?.activeModel) : configured || "Default model";
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   // The menu focuses itself as it opens; the search field takes it after.
