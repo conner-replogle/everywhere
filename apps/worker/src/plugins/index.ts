@@ -9,6 +9,7 @@ import { speech } from "../routes/speech";
 import type { App } from "../types";
 import { agentSettings } from "../agents/keys";
 import { mcp } from "../agents/mcp";
+import { oauth } from "../agents/oauth";
 import { claude } from "./claude";
 import { pluginSettings } from "./plugin-settings";
 import { push } from "./push";
@@ -26,8 +27,15 @@ export const WORKER_PLUGINS: readonly WorkerPlugin[] = [
   // Dictation and prompt rewrites in the composer, on Workers AI.
   { id: "speech", routes: [{ path: "/api/speech", app: speech }] },
   { id: "rewrite", routes: [{ path: "/api/prompt", app: prompt }] },
-  // Connected agents: the MCP endpoint and its keys (off until the user turns it on).
-  { id: "agents", routes: [{ path: "/", app: mcp }, { path: "/api/agents", app: agentSettings }] },
+  // Connected agents: the MCP endpoint, its keys and OAuth (off until the user turns it on).
+  {
+    id: "agents",
+    routes: [
+      { path: "/", app: mcp },
+      { path: "/", app: oauth },
+      { path: "/api/agents", app: agentSettings },
+    ],
+  },
   // The sandboxed frame dashboards (and external plugins' web parts) run in.
   { id: "dashboards", routes: [{ path: "/dashboard", app: dashboardFrame }] },
 ];

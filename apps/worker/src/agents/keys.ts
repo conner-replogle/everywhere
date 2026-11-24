@@ -1,7 +1,9 @@
 // Connected agents' switch and API keys (Settings → Connected agents). The
 // switch is off until the user turns it on with their password; a key, made
 // with the password too, reaches only the devices and scopes ticked for it,
-// and expires. Turning the switch off deletes every key.
+// and expires. Turning the switch off deletes every key. Apps connected over
+// OAuth (oauth.ts) get a key too, made on the consent page, and their tokens
+// act as it.
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { randomId, randomToken, sha256 } from "../crypto";
@@ -14,10 +16,12 @@ import type { App } from "../types";
 export const SCOPES = ["read", "drive", "projects"] as const;
 export type Scope = (typeof SCOPES)[number];
 
-const EXPIRY_DAYS = [7, 30, 90] as const;
-const DAY_MS = 24 * 60 * 60 * 1000;
+export const EXPIRY_DAYS = [7, 30, 90] as const;
+export const DAY_MS = 24 * 60 * 60 * 1000;
 const TOUCH_INTERVAL_MS = 5 * 60 * 1000;
 const KEY_PREFIX = "ewk_";
+/** OAuth access tokens (oauth.ts). */
+export const ACCESS_PREFIX = "ewa_";
 /** Activity older than this is dropped. */
 const ACTIVITY_KEEP_MS = 90 * DAY_MS;
 
@@ -26,7 +30,7 @@ export function parseScopes(s: string | null | undefined): Scope[] {
   return SCOPES.filter((x) => words.has(x));
 }
 
-function parseDevices(s: string): string[] {
+export function parseDevices(s: string): string[] {
   try {
     const v = JSON.parse(s) as unknown;
     return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
@@ -57,19 +61,35 @@ export interface AgentCaller {
   devices: string[];
 }
 
-/** Resolves `Authorization: Bearer ewk_…` to a live key of an account with connected agents on. */
+/**
+ * Resolves `Authorization: Bearer ewk_…` (an API key) or `ewa_…` (an OAuth
+ * access token) to a live key of an account with connected agents on.
+ */
 export async function bearerAgent(c: Context<App>): Promise<AgentCaller | null> {
   const header = c.req.header("authorization") ?? "";
   const token = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-  if (!token.startsWith(KEY_PREFIX) || token.length > 200) return null;
+  if (token.length > 200) return null;
   const now = Date.now();
-  const row = await c.env.DB.prepare(
-    `SELECT k.id, k.user_id, k.name, k.scopes, k.devices, k.last_used_at
-     FROM agent_keys k JOIN users u ON u.id = k.user_id
-     WHERE k.key_hash = ? AND k.expires_at > ? AND u.agents_enabled_at IS NOT NULL`,
-  )
-    .bind(await sha256(token), now)
-    .first<{ id: string; user_id: string; name: string; scopes: string; devices: string; last_used_at: number | null }>();
+  type Row = { id: string; user_id: string; name: string; scopes: string; devices: string; last_used_at: number | null };
+  let row: Row | null = null;
+  if (token.startsWith(KEY_PREFIX)) {
+    row = await c.env.DB.prepare(
+      `SELECT k.id, k.user_id, k.name, k.scopes, k.devices, k.last_used_at
+       FROM agent_keys k JOIN users u ON u.id = k.user_id
+       WHERE k.key_hash = ? AND k.client_id IS NULL AND k.expires_at > ? AND u.agents_enabled_at IS NOT NULL`,
+    )
+      .bind(await sha256(token), now)
+      .first<Row>();
+  } else if (token.startsWith(ACCESS_PREFIX)) {
+    row = await c.env.DB.prepare(
+      `SELECT k.id, k.user_id, k.name, k.scopes, k.devices, k.last_used_at
+       FROM oauth_tokens t JOIN agent_keys k ON k.id = t.key_id JOIN users u ON u.id = k.user_id
+       WHERE t.token_hash = ? AND t.kind = 'access' AND t.expires_at > ? AND k.expires_at > ?
+         AND u.agents_enabled_at IS NOT NULL`,
+    )
+      .bind(await sha256(token), now, now)
+      .first<Row>();
+  }
   if (!row) return null;
   if (!row.last_used_at || now - row.last_used_at > TOUCH_INTERVAL_MS) {
     c.executionCtx.waitUntil(c.env.DB.prepare("UPDATE agent_keys SET last_used_at = ? WHERE id = ?").bind(now, row.id).run());
@@ -123,6 +143,17 @@ interface KeyRow {
   created_at: number;
   expires_at: number;
   last_used_at: number | null;
+  /** For a key made by connecting an app over OAuth: the redirect URIs it registered. */
+  redirect_uris?: string | null;
+}
+
+/** Where an OAuth app said it lives (names are self-reported; hosts are what it redirects to). */
+function appHosts(redirectUris: string): string[] {
+  try {
+    return [...new Set((JSON.parse(redirectUris) as string[]).map((u) => new URL(u).host))];
+  } catch {
+    return [];
+  }
 }
 
 function keyJson(k: KeyRow) {
@@ -135,6 +166,7 @@ function keyJson(k: KeyRow) {
     createdAt: k.created_at,
     expiresAt: k.expires_at,
     ...(k.last_used_at ? { lastUsedAt: k.last_used_at } : {}),
+    ...(k.redirect_uris ? { oauth: { hosts: appHosts(k.redirect_uris) } } : {}),
   };
 }
 
@@ -142,21 +174,36 @@ async function body<T>(c: Context<App>): Promise<Partial<T>> {
   return (await c.req.json().catch(() => ({}))) as Partial<T>;
 }
 
+export type ReauthProblem = { error: string; status: 401 | 429; needsCode?: true };
+
 /**
- * Checks the password, and the second factor when the account has one. A
- * Response when they don't pass.
+ * Checks the password, and the second factor when the account has one. What's
+ * wrong when they don't pass.
  */
-async function reauth(c: Context<App>, password: unknown, code: unknown): Promise<Response | null> {
-  if (await rateLimited(c, `agents-auth:${c.var.user.id}`)) return tooMany(c);
-  const user = await userRow(c.env, c.var.user.id);
+export async function reauthProblem(
+  c: Context<App>,
+  userId: string,
+  password: unknown,
+  code: unknown,
+): Promise<ReauthProblem | null> {
+  if (await rateLimited(c, `agents-auth:${userId}`)) return { error: "too many attempts; wait a minute and try again", status: 429 };
+  const user = await userRow(c.env, userId);
   if (typeof password !== "string" || !(await checkPassword(user.password_hash, password))) {
-    return c.json({ error: "wrong password" }, 401);
+    return { error: "wrong password", status: 401 };
   }
   if (user.totp_secret) {
-    if (typeof code !== "string" || !code.trim()) return c.json({ error: "enter a code from your authenticator app", needsCode: true }, 401);
-    if (!(await verifySecondFactor(c.env, user, code))) return c.json({ error: "that code didn't work", needsCode: true }, 401);
+    if (typeof code !== "string" || !code.trim()) return { error: "enter a code from your authenticator app", status: 401, needsCode: true };
+    if (!(await verifySecondFactor(c.env, user, code))) return { error: "that code didn't work", status: 401, needsCode: true };
   }
   return null;
+}
+
+/** reauthProblem as a JSON Response. */
+async function reauth(c: Context<App>, password: unknown, code: unknown): Promise<Response | null> {
+  const p = await reauthProblem(c, c.var.user.id, password, code);
+  if (!p) return null;
+  if (p.status === 429) return tooMany(c);
+  return c.json({ error: p.error, ...(p.needsCode ? { needsCode: true } : {}) }, p.status);
 }
 
 agentSettings.get("/", async (c) => {
@@ -165,8 +212,9 @@ agentSettings.get("/", async (c) => {
       .bind(c.var.user.id)
       .first<{ agents_enabled_at: number | null }>(),
     c.env.DB.prepare(
-      `SELECT id, name, hint, scopes, devices, created_at, expires_at, last_used_at FROM agent_keys
-       WHERE user_id = ? AND expires_at > ? ORDER BY created_at DESC`,
+      `SELECT k.id, k.name, k.hint, k.scopes, k.devices, k.created_at, k.expires_at, k.last_used_at, c.redirect_uris
+       FROM agent_keys k LEFT JOIN oauth_clients c ON c.id = k.client_id
+       WHERE k.user_id = ? AND k.expires_at > ? ORDER BY k.created_at DESC`,
     )
       .bind(c.var.user.id, Date.now())
       .all<KeyRow>(),
@@ -190,6 +238,7 @@ agentSettings.post("/enable", async (c) => {
 });
 
 agentSettings.post("/disable", async (c) => {
+  // Deleting the keys ends OAuth connections too (their codes and tokens cascade).
   await c.env.DB.batch([
     c.env.DB.prepare("UPDATE users SET agents_enabled_at = NULL WHERE id = ?").bind(c.var.user.id),
     c.env.DB.prepare("DELETE FROM agent_keys WHERE user_id = ?").bind(c.var.user.id),
@@ -240,10 +289,11 @@ agentSettings.post("/keys", async (c) => {
 });
 
 agentSettings.delete("/keys/:id", async (c) => {
-  const res = await c.env.DB.prepare("DELETE FROM agent_keys WHERE id = ? AND user_id = ?")
+  // RETURNING, not meta.changes: D1 counts an OAuth key's cascaded token rows too.
+  const row = await c.env.DB.prepare("DELETE FROM agent_keys WHERE id = ? AND user_id = ? RETURNING id")
     .bind(c.req.param("id"), c.var.user.id)
-    .run();
-  if (res.meta.changes !== 1) return c.json({ error: "not found" }, 404);
+    .first();
+  if (!row) return c.json({ error: "not found" }, 404);
   return c.json({});
 });
 

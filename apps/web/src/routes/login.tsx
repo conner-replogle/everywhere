@@ -13,13 +13,22 @@ import { errorMessage } from "@/lib/utils";
 export const Route = createFileRoute("/login")({
   validateSearch: (search: Record<string, unknown>): { redirect?: string } =>
     typeof search.redirect === "string" ? { redirect: search.redirect } : {},
-  beforeLoad: async () => {
+  beforeLoad: async ({ search }) => {
     const me = await auth.load();
+    // Signed in already: an app's OAuth consent page (served by the Worker) needs a real page load.
+    if (me.user && isOAuth(search.redirect)) {
+      window.location.replace(search.redirect!);
+      return new Promise<never>(() => {});
+    }
     if (me.user) throw redirect({ to: "/" });
     if (me.signupOpen) throw redirect({ to: "/signup" });
   },
   component: Login,
 });
+
+function isOAuth(to: string | undefined) {
+  return !!to?.startsWith("/oauth/");
+}
 
 /** The Worker drops a challenge after this long (or after 5 wrong codes). */
 const CHALLENGE_TTL_MS = 5 * 60_000;
@@ -39,8 +48,10 @@ function Login() {
   const [notice, setNotice] = useState<string | null>(null);
 
   async function done() {
-    // Only follow same-origin paths back.
-    if (to?.startsWith("/") && !to.startsWith("//")) router.history.replace(to);
+    // Only follow same-origin paths back. The OAuth consent page is served
+    // by the Worker, not the app, so it needs a real page load.
+    if (isOAuth(to)) window.location.replace(to!);
+    else if (to?.startsWith("/") && !to.startsWith("//")) router.history.replace(to);
     else await navigate({ to: "/", replace: true });
   }
 

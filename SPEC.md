@@ -744,7 +744,7 @@ device. Connected agents' requests are the one other kind (see below).
 ## Connected agents (MCP)
 
 `POST /mcp` is an MCP server (Streamable HTTP, stateless JSON responses) for
-outside AI apps (Claude Code, Cursor, any MCP client). It reads threads and
+outside AI apps (ChatGPT, Claude Code, Cursor, any MCP client). It reads threads and
 drives agent threads; it never runs commands, reads files outside threads,
 types into terminals or answers permission prompts. `apps/worker/src/agents`.
 
@@ -761,6 +761,20 @@ types into terminals or answers permission prompts. `apps/worker/src/agents`.
   folders), the devices it may reach, and an expiry (7, 30 or 90 days).
   Stored hashed (`agent_keys`). Turning the account switch off, changing the
   password or resetting it deletes every key.
+- **OAuth** (`agents/oauth.ts`), for apps that sign in instead of taking a
+  key (a ChatGPT connector, Claude's custom connectors, the MCP Inspector).
+  `/mcp`'s 401 names the protected resource metadata
+  (`/.well-known/oauth-protected-resource/mcp`, RFC 9728); the server
+  metadata (RFC 8414) offers dynamic client registration (`/oauth/register`,
+  RFC 7591), the authorization code flow with PKCE (S256 only) and
+  `/oauth/token` and `/oauth/revoke`. The consent page (`/oauth/authorize`,
+  behind the normal sign-in) takes a name, scopes, devices and an expiry, plus
+  the password and 2FA code as for a key, and makes a key for the app
+  (`agent_keys.client_id`, no secret anyone holds). Access tokens (`ewa_…`,
+  an hour) and rotating refresh tokens (`ewr_…`) act as that key and never
+  outlive it (`oauth_tokens`); the app is listed with the keys, and deleting
+  it, revoking a token or anything that deletes every key disconnects it.
+  Nothing under `/oauth` or `/.well-known` answers while the switch is off.
 - **Transport.** Tool calls reach daemons as `rpc` messages with `agent` (the
   key's name), on daemons with hub feature `agents`. The daemon serves only
   methods registered with `plugin.Agent()` (`AgentMethods` in

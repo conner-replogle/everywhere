@@ -66,7 +66,7 @@ export interface GithubRepo {
   cloneUrl: string;
 }
 
-/** Connected agents: the account switch, its MCP URL and the API keys made under it. */
+/** Connected agents: the account switch, its MCP URL and the API keys (and OAuth apps) made under it. */
 export interface AgentsStatus {
   enabled: boolean;
   enabledAt?: number;
@@ -91,6 +91,11 @@ export interface AgentKey {
   createdAt: number;
   lastUsedAt?: number;
   expiresAt: number;
+  /** Set for an app connected over OAuth (made on its consent page; it has no secret to show). */
+  oauth?: {
+    /** Where the app sends the user back to, e.g. chatgpt.com. */
+    hosts: string[];
+  };
 }
 
 export interface NewAgentKey {

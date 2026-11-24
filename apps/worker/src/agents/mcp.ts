@@ -1,11 +1,13 @@
 // Connected agents' MCP endpoint (Streamable HTTP, stateless JSON responses).
 // Callers authenticate with an API key from Settings → Connected agents
-// (`Authorization: Bearer ewk_…`); a key sees only the tools its scopes allow
+// (`Authorization: Bearer ewk_…`) or an OAuth access token (oauth.ts, which
+// acts as the key the user made when approving the app); a key sees only the tools its scopes allow
 // and reaches only its devices. While connected agents are off, /mcp is 404.
 import { Hono } from "hono";
 import type { Context } from "hono";
 import type { App } from "../types";
 import { agentsOn, bearerAgent, logActivity } from "./keys";
+import { resourceMetadataUrl } from "./oauth";
 import { type Content, ToolError, type ToolContext, tools } from "./tools";
 
 const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
@@ -25,7 +27,7 @@ const CORS = {
   "access-control-allow-origin": "*",
   "access-control-allow-methods": "POST, GET, DELETE, OPTIONS",
   "access-control-allow-headers": "authorization, content-type, mcp-protocol-version, mcp-session-id, last-event-id",
-  "access-control-expose-headers": "mcp-session-id",
+  "access-control-expose-headers": "mcp-session-id, www-authenticate",
   "access-control-max-age": "86400",
 };
 
@@ -54,7 +56,9 @@ mcp.post("/mcp", async (c) => {
   headers(c);
   const who = await bearerAgent(c);
   if (!who) {
-    return c.json({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "unauthorized: use an API key from Settings → Connected agents" } }, 401);
+    // Where OAuth clients (e.g. ChatGPT) find how to sign in (RFC 9728).
+    c.header("www-authenticate", `Bearer resource_metadata="${resourceMetadataUrl(c.env)}"`);
+    return c.json({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "unauthorized: connect with OAuth, or use an API key from Settings → Connected agents" } }, 401);
   }
   let body: unknown;
   try {

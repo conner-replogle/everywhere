@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { CircleAlertIcon, KeyRoundIcon, PlusIcon, TriangleAlertIcon } from "lucide-react";
+import { CircleAlertIcon, KeyRoundIcon, PlugIcon, PlusIcon, TriangleAlertIcon } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { CopyButton } from "@/components/copy-button";
@@ -108,7 +108,7 @@ function AgentsSettings() {
       <div>
         <h1 className="text-base font-semibold tracking-tight">Connected agents</h1>
         <p className="text-xs text-muted-foreground">
-          Let AI agents read your threads and work in them over MCP, with an API key for the devices you pick.
+          Let AI agents read your threads and work in them over MCP, signed in with OAuth or an API key, on the devices you pick.
         </p>
       </div>
       {error && !status && <p className="text-destructive">Couldn't load connected agents: {error}</p>}
@@ -251,11 +251,14 @@ function AccountSection({ status, onChanged }: { status: AgentsStatus; onChanged
             </code>
             <CopyButton text={status.mcpUrl} />
           </div>
-          <p className="text-xs text-muted-foreground">Create a key below and add it to your MCP client.</p>
+          <p className="text-xs text-muted-foreground">
+            Add this URL to an app that signs in with OAuth (in ChatGPT: Settings → Apps &amp; Connectors → Create,
+            authentication OAuth) and approve it, or create a key below for any other MCP client.
+          </p>
         </div>
       ) : (
         <p className="text-muted-foreground">
-          Turn this on to create API keys for agents. You'll confirm with your password.
+          Turn this on to connect apps like ChatGPT or create API keys for agents. You'll confirm with your password.
         </p>
       )}
       <EnableDialog
@@ -489,8 +492,8 @@ function KeysSection({
 
   return (
     <Section
-      title="API keys"
-      description="Each key works until it expires or you delete it. Threads show its name on the prompts it sends."
+      title="Keys and apps"
+      description="Each key, and each app you connected with OAuth, works until it expires or you delete it. Threads show its name on the prompts it sends."
       aside={
         <Button size="sm" variant="outline" className="shrink-0" onClick={() => setCreating(true)}>
           <PlusIcon />
@@ -498,16 +501,27 @@ function KeysSection({
         </Button>
       }
     >
-      {status.keys.length === 0 && <p className="text-muted-foreground">No keys yet.</p>}
+      {status.keys.length === 0 && <p className="text-muted-foreground">No keys or apps yet.</p>}
       {status.keys.length > 0 && (
         <ul className="-my-2 divide-y">
           {status.keys.map((k) => (
             <li key={k.id} className="flex items-center gap-3 py-2">
-              <KeyRoundIcon className="size-4 shrink-0 text-muted-foreground" />
+              {k.oauth ? (
+                <PlugIcon className="size-4 shrink-0 text-muted-foreground" />
+              ) : (
+                <KeyRoundIcon className="size-4 shrink-0 text-muted-foreground" />
+              )}
               <div className="min-w-0 flex-1">
                 <div className="truncate font-medium">
                   {k.name}
-                  <span className="font-mono text-xs font-normal text-muted-foreground"> …{k.hint}</span>
+                  {k.oauth ? (
+                    <span className="text-xs font-normal text-muted-foreground">
+                      {" "}
+                      · OAuth{k.oauth.hosts.length > 0 ? ` from ${k.oauth.hosts.join(", ")}` : ""}
+                    </span>
+                  ) : (
+                    <span className="font-mono text-xs font-normal text-muted-foreground"> …{k.hint}</span>
+                  )}
                 </div>
                 <div className="text-xs text-muted-foreground">
                   Can {k.scopes.map((s) => SCOPES[s] ?? s).join(", ")} on {deviceNames(k.devices, devices)}
@@ -518,7 +532,7 @@ function KeysSection({
                 </div>
               </div>
               <Button size="sm" variant="ghost" onClick={() => setDeleting(k)}>
-                Delete
+                {k.oauth ? "Disconnect" : "Delete"}
               </Button>
             </li>
           ))}
@@ -528,9 +542,16 @@ function KeysSection({
       <ConfirmDialog
         open={deleting !== null}
         onOpenChange={(o) => !o && setDeleting(null)}
-        title={`Delete ${deleting?.name ?? "key"}?`}
-        confirmLabel="Delete key"
-        description={<p>Agents using it lose access at once. Its activity stays listed below.</p>}
+        title={deleting?.oauth ? `Disconnect ${deleting.name}?` : `Delete ${deleting?.name ?? "key"}?`}
+        confirmLabel={deleting?.oauth ? "Disconnect" : "Delete key"}
+        description={
+          <p>
+            {deleting?.oauth
+              ? "The app loses access at once; to use it again, connect it again."
+              : "Agents using it lose access at once."}{" "}
+            Its activity stays listed below.
+          </p>
+        }
         onConfirm={async () => {
           if (!deleting) return;
           await api.deleteAgentKey(deleting.id);
