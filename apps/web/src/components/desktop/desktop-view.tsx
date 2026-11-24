@@ -14,6 +14,7 @@ import {
   MonitorOffIcon,
   MousePointer2Icon,
   PauseIcon,
+  PictureInPicture2Icon,
   PointerIcon,
   RotateCwIcon,
   SlidersHorizontalIcon,
@@ -70,6 +71,7 @@ import {
   type WorkspaceInfo,
   workspace,
 } from "@/lib/desktop/protocol";
+import { bringBack, focusPopout, popOut, popoutKey, showInPopout, usePoppedOut } from "@/lib/desktop/popout";
 import { type DesktopStats, DesktopStatsSampler } from "@/lib/desktop/stats";
 import { type DevicePeer, useRpc } from "@/lib/peer";
 import { cn, errorMessage } from "@/lib/utils";
@@ -194,6 +196,8 @@ export interface DesktopViewProps {
   onAnnotate?: (draft: ComposerDraft) => boolean;
   /** What the thread's agent opened, for the tab to switch to; at changes with each. */
   show?: { source: DesktopSource; at: number };
+  /** This is the view's own window, popped out of the app: a Put back button closes it. */
+  popout?: boolean;
 }
 
 /**
@@ -203,9 +207,42 @@ export interface DesktopViewProps {
  * Esc) in Chromium.
  */
 export function DesktopView(props: DesktopViewProps) {
-  const { peer, deviceName } = props;
+  const { peer, deviceName, deviceId, tab, show, popout } = props;
   const info = useRpc(peer, "desktop.info", {});
   const ready = info.data?.enabled && info.data.available;
+  const key = popoutKey(deviceId, tab?.id);
+  const poppedOut = usePoppedOut(key) && !popout;
+
+  // What the agent opens goes to the window while the view is out there.
+  const showAt = show?.at;
+  const showRef = useRef(show);
+  showRef.current = show;
+  useEffect(() => {
+    if (poppedOut && showAt && showRef.current) showInPopout(key, showRef.current.source);
+  }, [poppedOut, showAt, key]);
+
+  if (poppedOut) {
+    return (
+      <Message
+        icon={<PictureInPicture2Icon className="size-5 text-muted-foreground" />}
+        title="In its own window"
+        action={
+          <div className="flex gap-2">
+            <Button variant="outline" size="sm" onClick={() => focusPopout(key)}>
+              <AppWindowIcon />
+              Show window
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => bringBack(key)}>
+              <MonitorIcon />
+              Put back here
+            </Button>
+          </div>
+        }
+      >
+        <p>{deviceName}'s desktop is showing in a window of its own. It comes back here when you close that window.</p>
+      </Message>
+    );
+  }
 
   if (!info.data) {
     return (
@@ -244,7 +281,7 @@ export function DesktopView(props: DesktopViewProps) {
   return <DesktopSession {...props} />;
 }
 
-function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnnotate, show }: DesktopViewProps) {
+function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnnotate, show, popout }: DesktopViewProps) {
   const [prefs, setPrefs] = useState(() => loadPrefs(deviceId));
   const updatePrefs = (patch: Partial<Prefs>) =>
     setPrefs((p) => {
@@ -690,7 +727,7 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
           className={cn(
             "flex h-9 shrink-0 items-center gap-0.5 border-b bg-sidebar px-1.5 pointer-coarse:h-11",
             // As a page the toolbar runs to the corner: room for the bug button, fixed there.
-            !tab && "pr-9",
+            !tab && !popout && "pr-9",
             fullscreen &&
               "-translate-y-full transition-transform group-focus-within:translate-y-0 group-hover:translate-y-0",
           )}
@@ -912,6 +949,34 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
           >
             {fullscreen ? <MinimizeIcon /> : <MaximizeIcon />}
           </Button>
+          {!popout ? (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className={cn(iconBtn, "pointer-coarse:hidden")}
+              aria-label="Pop out"
+              title="Open in its own window"
+              onClick={() => {
+                if (!popOut(deviceId, tab && { id: tab.id, state: tabSource.current ? JSON.stringify({ source: tabSource.current }) : tab.state }))
+                  setNotice("The browser blocked the new window. Allow pop-ups for this site and try again.");
+              }}
+            >
+              <PictureInPicture2Icon />
+            </Button>
+          ) : (
+            window.opener && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className={iconBtn}
+                aria-label="Put back"
+                title="Put back in the app"
+                onClick={() => window.close()}
+              >
+                <PictureInPicture2Icon className="rotate-180" />
+              </Button>
+            )
+          )}
         </div>
       </div>
       <div

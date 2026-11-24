@@ -23,8 +23,10 @@ export function useFleet(): Fleet {
   return ctx;
 }
 
-export function FleetProvider({ children }: { children: React.ReactNode }) {
-  const { devices, error } = useDevices();
+/** only: connect to this one device and no other (a popped-out window needs just its own). */
+export function FleetProvider({ children, only }: { children: React.ReactNode; only?: string }) {
+  const { devices: all, error } = useDevices();
+  const devices = useMemo(() => (only ? all?.filter((d) => d.id === only) : all), [all, only]);
   const [reported, setReported] = useState<Record<string, DeviceContextValue>>({});
   const report = useCallback((e: DeviceContextValue) => setReported((r) => ({ ...r, [e.deviceId]: e })), []);
 

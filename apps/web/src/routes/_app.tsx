@@ -1,4 +1,4 @@
-import { createFileRoute, Outlet, redirect, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Outlet, redirect, useLocation, useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { Alerts } from "@/components/alerts";
 import { BugReport } from "@/components/bug-report";
@@ -36,6 +36,18 @@ function AppLayout() {
       stopWatching();
     };
   }, [navigate]);
+
+  // A popped-out window shows one device: it connects to that one alone, and shows nothing but its view.
+  const popout = useLocation({ select: (l) => /^\/popout\/d\/([^/]+)/.exec(l.pathname)?.[1] });
+  if (popout) {
+    return (
+      <main className="h-full min-h-0">
+        <FleetProvider only={decodeURIComponent(popout)}>
+          <Outlet />
+        </FleetProvider>
+      </main>
+    );
+  }
 
   return (
     <main className="h-full min-h-0">
