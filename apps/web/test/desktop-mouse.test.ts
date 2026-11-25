@@ -63,116 +63,89 @@ const channel = () => ({ readyState: "open", sent: [] as ArrayBuffer[], send(b: 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const settle = () => sleep(10);
 
-function setup(mode: "auto" | "game" | "desktop" = "auto") {
+function setup(relative = true) {
   doc.pointerLockElement = null;
   doc.listeners.clear();
   doc.exits = 0;
   const video = new FakeVideo();
   const conn = { control: channel(), input: channel() };
   const fwd = new InputForwarder(video as never, conn as never, { superSubstitute: null, keyTarget: new Target() as never });
-  fwd.setMode(mode);
-  const relative: boolean[] = [];
-  fwd.onRelativeChange = (r) => relative.push(r);
-  return { video, conn, fwd, relative };
+  fwd.setRelative(relative);
+  return { video, conn, fwd };
 }
 
-const click = (video: FakeVideo, pressed: boolean) =>
-  video.fire(pressed ? "pointerdown" : "pointerup", { pointerType: "mouse", button: 0, clientX: 10, clientY: 10, pointerId: 1, preventDefault() {} });
+const pointer = (video: FakeVideo, type: string, extra: object = {}) =>
+  video.fire(type, { pointerType: "mouse", button: 0, clientX: 10, clientY: 10, pointerId: 1, preventDefault() {}, ...extra });
+const click = (video: FakeVideo, pressed: boolean) => pointer(video, pressed ? "pointerdown" : "pointerup");
+const types = (ch: { sent: ArrayBuffer[] }) => ch.sent.map((b) => new DataView(b).getUint8(0));
 
-describe("auto mouse", () => {
+describe("the mouse, as the host's own", () => {
   beforeEach(() => doc.listeners.clear());
 
-  test("a hidden host pointer makes the mouse relative, after a moment; the first capture takes a click", async () => {
-    const { video, fwd, relative } = setup();
-    video.grant = false; // no click yet
-    fwd.setHostCaptured(true);
-    expect(fwd.relative).toBe(false);
-    await sleep(150);
-    expect(fwd.relative).toBe(true);
-    expect(relative).toEqual([true]);
-    await settle();
-    expect(doc.pointerLockElement).toBe(null);
-
-    video.grant = true;
+  test("it does nothing on the host until a click captures it", async () => {
+    const { video, conn } = setup();
+    pointer(video, "pointermove");
+    expect(conn.input.sent.length + conn.control.sent.length).toBe(0);
     click(video, true);
     await settle();
     expect(doc.pointerLockElement).toBe(video);
   });
 
-  test("the pointer coming back lets the mouse go, and hiding again takes it back without a click", async () => {
-    const { video, fwd } = setup();
-    fwd.setHostCaptured(true);
-    await sleep(150);
+  test("the capturing click lands where it was clicked; its release, where the pointer is", async () => {
+    const { video, conn } = setup();
     click(video, true);
     await settle();
-    expect(doc.pointerLockElement).toBe(video);
-
-    fwd.setHostCaptured(false);
-    await sleep(300);
-    expect(fwd.relative).toBe(false);
-    expect(doc.pointerLockElement).toBe(null);
-
-    const before = video.locks;
-    fwd.setHostCaptured(true);
-    await sleep(150);
-    await settle();
-    expect(video.locks).toBe(before + 1);
-    expect(doc.pointerLockElement).toBe(video);
+    expect(types(conn.control)).toEqual([Type.Button]);
+    expect(new DataView(conn.control.sent[0]!).getUint16(3, true)).toBe(Math.round(0.1 * 65535));
+    click(video, false);
+    expect(types(conn.control).slice(1)).toEqual([Type.MoveBy, Type.Button]);
   });
 
-  test("a pointer that flickers doesn't let go", async () => {
-    const { video, fwd } = setup();
-    fwd.setHostCaptured(true);
-    await sleep(150);
+  test("captured, it sends its motion, and buttons press where the pointer is", async () => {
+    const { video, conn } = setup();
     click(video, true);
+    click(video, false);
     await settle();
-    fwd.setHostCaptured(false);
-    await sleep(50);
-    fwd.setHostCaptured(true);
-    await sleep(300);
-    expect(doc.exits).toBe(0);
-    expect(doc.pointerLockElement).toBe(video);
+    conn.control.sent.length = 0;
+    pointer(video, "pointermove", { movementX: 3, movementY: -2 });
+    click(video, true);
+    expect(types(conn.control)).toEqual([Type.MoveBy, Type.Button]);
+    const m = new DataView(conn.control.sent[0]!);
+    expect([m.getFloat32(1, true), m.getFloat32(5, true)]).toEqual([3, -2]);
+    expect(conn.input.sent.length).toBe(0);
   });
 
-  test("after the viewer lets go (Esc), auto waits for a click", async () => {
-    const { video, fwd } = setup();
-    fwd.setHostCaptured(true);
-    await sleep(150);
-    click(video, true);
-    await settle();
-    doc.setLock(null); // the viewer pressed Esc
-    fwd.setHostCaptured(false);
-    await sleep(300);
-    const before = video.locks;
-    fwd.setHostCaptured(true);
-    await sleep(150);
-    await settle();
-    expect(video.locks).toBe(before);
-    click(video, true);
-    await settle();
-    expect(doc.pointerLockElement).toBe(video);
-  });
-
-  test("the capturing click reaches the game where its pointer is", async () => {
+  test("a game that hid the pointer gets the capturing click where its pointer is, with no jump", async () => {
     const { video, conn, fwd } = setup();
-    video.grant = false;
     fwd.setHostCaptured(true);
-    await sleep(150);
     click(video, true);
-    const types = conn.control.sent.map((b) => new DataView(b).getUint8(0));
-    expect(types).toContain(Type.MoveBy);
-    expect(types.indexOf(Type.MoveBy)).toBeLessThan(types.indexOf(Type.Button));
+    expect(types(conn.control)).toEqual([Type.MoveBy, Type.Button]);
+    expect(conn.input.sent.length).toBe(0);
   });
 
-  test("game mode keeps the capturing click, desktop mode ignores the host", async () => {
-    const game = setup("game");
-    game.video.grant = false;
-    click(game.video, true);
-    expect(game.conn.control.sent.some((b) => new DataView(b).getUint8(0) === Type.Button)).toBe(false);
+  test("let go (Esc), the next click captures it again", async () => {
+    const { video } = setup();
+    click(video, true);
+    await settle();
+    doc.setLock(null);
+    click(video, true);
+    await settle();
+    expect(doc.pointerLockElement).toBe(video);
+  });
 
-    const desk = setup("desktop");
-    desk.fwd.setHostCaptured(true);
-    await sleep(150);
-    expect(desk.fwd.relative).toBe(false);
+  test("view only lets it go; without relative motion it points", async () => {
+    const { video, fwd } = setup();
+    click(video, true);
+    await settle();
+    fwd.setViewOnly(true);
+    expect(doc.pointerLockElement).toBe(null);
+
+    const pointing = setup(false);
+    pointer(pointing.video, "pointermove");
+    click(pointing.video, true);
+    await settle();
+    expect(doc.pointerLockElement).toBe(null);
+    expect(types(pointing.conn.input)).toEqual([Type.Move]);
+    expect(types(pointing.conn.control)).toEqual([Type.Button]);
   });
 });

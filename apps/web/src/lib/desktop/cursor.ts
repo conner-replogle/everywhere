@@ -15,7 +15,7 @@ export class CursorRenderer {
   private overlayScale = 1;
   /** Where the host last put the pointer on this picture, 0..1. */
   hostPosition: { x: number; y: number } | null = null;
-  /** The mouse is captured: the overlay is the pointer, wherever the host says it is. */
+  /** The mouse moves the host pointer by motion: the overlay is the pointer, wherever the host says it is. */
   private following = false;
   /** Pinned: the host moved the pointer itself (someone at the machine). */
   onHostMove?: (pos: { x: number; y: number }) => void;
@@ -64,11 +64,17 @@ export class CursorRenderer {
     this.place(pos);
   }
 
-  /** Shows the host pointer where the host puts it, while the mouse is captured and the local cursor hidden. */
+  /**
+   * Shows the host pointer where the host puts it, for a mouse that moves it
+   * by motion: captured (the local cursor hidden), or waiting for the click
+   * that captures it (a plain local arrow, so the two aren't confused).
+   */
   follow(on: boolean) {
+    if (on === this.following) return;
     this.following = on;
     if (on && this.hostPosition) this.place(this.hostPosition);
     else this.overlay.hidden = true;
+    this.render();
   }
 
   /** Marks a held button (a trackpad drag). */
@@ -148,7 +154,7 @@ export class CursorRenderer {
     const url = canvas.toDataURL("image/png");
     const dpr = window.devicePixelRatio || 1;
     const hx = Math.round(img.hotX * cssScale), hy = Math.round(img.hotY * cssScale);
-    this.setCss(`image-set(url("${url}") ${dpr}x) ${hx} ${hy}, url("${url}") ${hx} ${hy}, default`);
+    this.setCss(this.following ? "default" : `image-set(url("${url}") ${dpr}x) ${hx} ${hy}, url("${url}") ${hx} ${hy}, default`);
     // A whole desktop on a phone shrinks the pointer to a speck; one steered
     // by trackpad stays big enough to aim.
     this.overlayScale = this.pinned ? Math.max(cssScale, MIN_PINNED_HEIGHT / img.height) : cssScale;

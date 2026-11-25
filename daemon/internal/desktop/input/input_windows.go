@@ -35,6 +35,7 @@ type Device struct {
 
 	mu      sync.Mutex
 	rest    [2]float64 // MotionBy's fractions of a pixel, carried over
+	wheel   [2]float64 // Scroll's fractions of a wheel delta, carried over
 	keys    map[uint32]bool
 	buttons map[uint32]bool
 }
@@ -49,11 +50,17 @@ func Open(output string, _ ipc.Keymap) (*Device, error) {
 	return &Device{mon: m.Rect, keys: map[uint32]bool{}, buttons: map[uint32]bool{}}, nil
 }
 
-// Motion moves the pointer to x, y in 0..MotionMax across the output.
+// Motion moves the pointer to x, y in 0..MotionMax across the output: the
+// pixel under that fraction of its width and height.
 func (d *Device) Motion(x, y uint16) error {
-	px := float64(d.mon.Left) + float64(x)/MotionMax*float64(d.mon.Width()-1)
-	py := float64(d.mon.Top) + float64(y)/MotionMax*float64(d.mon.Height()-1)
+	px := d.mon.Left + pixel(x, d.mon.Width())
+	py := d.mon.Top + pixel(y, d.mon.Height())
 	return win32.MoveTo(px, py)
+}
+
+// pixel is the pixel of extent under v (0..MotionMax across it).
+func pixel(v uint16, extent int) int32 {
+	return int32(min(int(float64(v)/MotionMax*float64(extent)), extent-1))
 }
 
 // MotionBy moves the pointer by dx, dy pixels, as a mouse does.
@@ -89,12 +96,21 @@ func (d *Device) Button(code uint32, pressed bool) error {
 // touchpad's pixels into wheel turns.
 const pixelsPerNotch = 100
 
-// Scroll turns the wheel: notches, or pixels when continuous.
+// Scroll turns the wheel: notches, or pixels when continuous. What's too
+// small to send (a touchpad's slow scroll) is carried over to the next.
 func (d *Device) Scroll(continuous bool, dx, dy float64) error {
 	if continuous {
 		dx, dy = dx/pixelsPerNotch, dy/pixelsPerNotch
 	}
-	return win32.Wheel(dx, dy)
+	d.mu.Lock()
+	x, y := d.wheel[0]+dx*win32.WheelDelta, d.wheel[1]+dy*win32.WheelDelta
+	ix, iy := math.Trunc(x), math.Trunc(y)
+	d.wheel = [2]float64{x - ix, y - iy}
+	d.mu.Unlock()
+	if ix == 0 && iy == 0 {
+		return nil
+	}
+	return win32.Wheel(int32(ix), int32(iy))
 }
 
 // Key presses or releases a key by its Linux KEY_* code.
@@ -141,7 +157,8 @@ var extended = map[uint32]uint16{
 	102: 0xe047, 103: 0xe048, 104: 0xe049, 105: 0xe04b, 106: 0xe04d, // HOME UP PAGEUP LEFT RIGHT
 	107: 0xe04f, 108: 0xe050, 109: 0xe051, 110: 0xe052, 111: 0xe053, // END DOWN PAGEDOWN INSERT DELETE
 	125: 0xe05b, 126: 0xe05c, 127: 0xe05d, // LEFTMETA RIGHTMETA COMPOSE (menu)
-	117: 0x59, // KPEQUAL
+	117: 0x59,   // KPEQUAL
+	69:  0xe045, // NUMLOCK: SendInput takes 0x45 alone as Pause
 }
 
 var virtualKeys = map[uint32]uint16{
@@ -154,6 +171,7 @@ var virtualKeys = map[uint32]uint16{
 // or, failing that, a virtual-key code.
 func winKey(code uint32) (scancode, vk uint16, ok bool) {
 	switch {
+	case code == 69: // NUMLOCK, below
 	case code >= 1 && code <= 88: // ESC..F12, the numpad, 102ND: set-1 itself
 		return uint16(code), 0, true
 	case code >= 183 && code <= 194: // F13..F24

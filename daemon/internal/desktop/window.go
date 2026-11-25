@@ -102,6 +102,25 @@ func newWindowGeom(c *deskWindow, mon deskMonitor) *windowGeom {
 	}
 }
 
+// clip keeps the part of the window on its monitor: what a capture that
+// crops its monitor's image shows (Windows).
+func (g *windowGeom) clip() {
+	x0, y0 := max(g.At[0], g.MonX), max(g.At[1], g.MonY)
+	x1 := min(g.At[0]+g.Size[0], g.MonX+int(g.MonW))
+	y1 := min(g.At[1]+g.Size[1], g.MonY+int(g.MonH))
+	if x1-x0 >= 2 && y1-y0 >= 2 {
+		g.At, g.Size = [2]int{x0, y0}, [2]int{x1 - x0, y1 - y0}
+	}
+}
+
+// liveWindows is a host whose window streams show the window's part of its
+// monitor, and that can say cheaply where a window is now (Windows).
+type liveWindows interface {
+	// windowBounds is the window's rectangle in layout coordinates; false
+	// if it's gone or minimized.
+	windowBounds(address string) (at, size [2]int, ok bool)
+}
+
 // toMonitor maps a point normalized across the window to one normalized across
 // its monitor.
 func (g *windowGeom) toMonitor(x, y uint16) (uint16, uint16) {

@@ -82,3 +82,18 @@ func TestCursorImageUsable(t *testing.T) {
 		}
 	}
 }
+
+func TestWindowGeomClip(t *testing.T) {
+	// A window hanging off the left and bottom of a 1920x1080 monitor at 1920,0.
+	g := &windowGeom{At: [2]int{1800, 900}, Size: [2]int{400, 300}, MonX: 1920, MonY: 0, MonW: 1920, MonH: 1080}
+	g.clip()
+	if g.At != [2]int{1920, 900} || g.Size != [2]int{280, 180} {
+		t.Fatalf("clipped to %v %v", g.At, g.Size)
+	}
+	// Off the monitor entirely: left as it is.
+	g = &windowGeom{At: [2]int{0, 0}, Size: [2]int{100, 100}, MonX: 1920, MonW: 1920, MonH: 1080}
+	g.clip()
+	if g.Size != [2]int{100, 100} {
+		t.Fatalf("clipped to %v", g.Size)
+	}
+}

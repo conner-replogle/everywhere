@@ -867,8 +867,9 @@ TODO.md items come later.
   a new one takes over and the old viewer is told who.
 - **Media**: `ext-image-copy-capture-v1` straight from Hyprland (no portal,
   no picker on the host) into dmabufs → GStreamer `vapostproc` → VA-API
-  H.264/H.265, no B-frames, bitrate from send-side BWE. Sharp (native, 4–40
-  Mbps), Smooth (≤1080p60) and Low (≤720p30, ≤3 Mbps). The viewer sets
+  H.264/H.265, no B-frames, bitrate from send-side BWE. Sharp (native, 6–60
+  Mbps), Smooth (≤1080p60, 4–30 Mbps) and Low (≤720p30, ≤4 Mbps); Windows
+  hosts (H.264 only) get a quarter more, and a slower, better encoder preset. The viewer sets
   `jitterBufferTarget = 0`; frames carry playout-delay 0.
 - **Worker**: capture, encoding and input injection run in
   `everywhere-desktop` (cgo: Wayland, libgbm, GStreamer, xkbcommon), next to
@@ -885,12 +886,27 @@ TODO.md items come later.
   `apps/web/src/lib/desktop/protocol.ts`): `input` (unordered, no
   retransmits: pointer moves) and `control` (keys by physical code → evdev,
   buttons, scroll, ping, monitor and mode changes, workspace switches and
-  follow, window select/focus, clipboard and clipboard sync; from the host:
-  hello (with the captured window), cursor image and position, monitors,
-  mode info, workspaces, windows, clipboard, relay path, session ended).
+  follow, window select/focus, clipboard and clipboard sync, controller state; from
+  the host: hello (with the captured window), cursor image and position,
+  monitors, mode info, workspaces, windows, clipboard, relay path, rumble,
+  session ended).
 - **Input**: `zwlr_virtual_pointer_v1` bound to the captured monitor and
   `zwp_virtual_keyboard_v1` with the host's XKB keymap. Everything held is
   released when the viewer blurs, leaves or loses the session.
+- **Mouse**: one behavior, as a mouse plugged into the host. A click captures
+  it (pointer lock, raw counts where the browser has `unadjustedMovement`)
+  and lands where it was clicked; from then on its motion goes as `moveBy`
+  and the host's own pointer speed and acceleration apply, on the desktop
+  and in games alike. While not captured the viewer shows the host pointer
+  where it is. Esc or Ctrl+Alt+Shift+Z lets it go. Touch, browsers without
+  pointer lock and hosts without `moveBy` point absolutely instead.
+- **Controllers**: the viewer polls the Gamepad API and sends each
+  controller's state (`gamepad`, as XInput: buttons, triggers, sticks) when
+  it changes. A Windows host plugs in an Xbox 360 controller per viewer
+  controller on the ViGEmBus driver (DeviceIoControl from the daemon, no
+  cgo), for the session rather than the capture; a game's rumble comes back
+  (`rumble`) to the viewer's `vibrationActuator`. Hello says whether the host
+  can; other hosts can't yet.
 - **Monitors and workspaces**: the session starts on the focused monitor and
   follows Hyprland's focus (toggle in the viewer). Picking a monitor focuses
   it. The workspace bar comes from Hyprland's event socket; switching sends

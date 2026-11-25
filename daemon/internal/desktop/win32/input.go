@@ -4,7 +4,6 @@ package win32
 
 import (
 	"fmt"
-	"math"
 	"unicode/utf16"
 	"unsafe"
 )
@@ -73,18 +72,24 @@ func mouse(flags, data uint32) input {
 	return input{Type: inputMouse, Mi: mouseInput{Flags: flags, MouseData: data}}
 }
 
-// MoveTo puts the pointer at a virtual-screen pixel.
-func MoveTo(x, y float64) error {
+// MoveTo puts the pointer on a virtual-screen pixel.
+func MoveTo(x, y int32) error {
 	vs := VirtualScreen()
-	norm := func(v float64, lo int32, extent int) int32 {
-		if extent <= 1 {
-			return 0
-		}
-		return int32(math.Round((v - float64(lo)) * 65535 / float64(extent-1)))
-	}
 	in := mouse(mouseMove|mouseAbsolute|mouseVirtualDesk, 0)
-	in.Mi.Dx, in.Mi.Dy = norm(x, vs.Left, vs.Width()), norm(y, vs.Top, vs.Height())
+	in.Mi.Dx, in.Mi.Dy = absolute(x, vs.Left, vs.Width()), absolute(y, vs.Top, vs.Height())
 	return send(in)
+}
+
+// absolute is the 0..65535 coordinate that lands on pixel v of extent
+// pixels from lo. Windows takes pixel = coordinate × extent / 65536, rounded
+// down, so the coordinate is rounded up: rounding to nearest, as is usual,
+// lands a pixel short on the left and top halves of the screen.
+func absolute(v, lo int32, extent int) int32 {
+	if extent <= 1 {
+		return 0
+	}
+	p := int64(min(max(v-lo, 0), int32(extent-1)))
+	return int32(min((p*65536+int64(extent)-1)/int64(extent), 65535))
 }
 
 // MoveBy moves the pointer by dx, dy pixels, as a mouse does: raw input
@@ -127,14 +132,18 @@ func Button(b int, pressed bool) error {
 	return send(mouse(up, data))
 }
 
-// Wheel scrolls by notches (fractions allowed): dy down, dx right.
-func Wheel(dx, dy float64) error {
+// WheelDelta is one wheel notch, in Wheel's units.
+const WheelDelta = wheelDelta
+
+// Wheel turns the wheel by dx, dy WheelDelta-ths of a notch (smooth-scrolling
+// programs take fractions): dy down, dx right.
+func Wheel(dx, dy int32) error {
 	var ins []input
 	if dy != 0 {
-		ins = append(ins, mouse(mouseWheel, uint32(int32(math.Round(-dy*wheelDelta)))))
+		ins = append(ins, mouse(mouseWheel, uint32(-dy)))
 	}
 	if dx != 0 {
-		ins = append(ins, mouse(mouseHWheel, uint32(int32(math.Round(dx*wheelDelta)))))
+		ins = append(ins, mouse(mouseHWheel, uint32(dx)))
 	}
 	return send(ins...)
 }

@@ -262,6 +262,9 @@ func (w logWriter) Write(p []byte) (int, error) {
 type injector struct {
 	mu  sync.Mutex
 	dev *input.Device
+	// refused counts injections the host refused since refusedLogged.
+	refused       int
+	refusedLogged time.Time
 }
 
 func (in *injector) apply(cmd byte, p []byte) {
@@ -294,9 +297,26 @@ func (in *injector) apply(cmd byte, p []byte) {
 		err = in.dev.ReleaseAll()
 	}
 	if err != nil {
+		in.failed(err)
+	}
+}
+
+// failed handles an injection error. A broken connection to the compositor
+// makes the session view-only. Anything else passes: Windows refuses input
+// while a UAC prompt or the lock screen is up, or (without the elevated
+// worker) when it would reach a program running as administrator, and takes
+// it again after.
+func (in *injector) failed(err error) {
+	if errors.Is(err, input.ErrBroken) {
 		slog.Error("input injection failed; session is now view-only", "err", err)
 		in.dev.Close()
 		in.dev = nil
+		return
+	}
+	in.refused++
+	if time.Since(in.refusedLogged) > 10*time.Second {
+		slog.Warn("input refused", "err", err, "times", in.refused)
+		in.refused, in.refusedLogged = 0, time.Now()
 	}
 }
 
@@ -313,9 +333,7 @@ func (in *injector) typeRune(r rune) byte {
 	case errors.Is(err, input.ErrNoKey):
 		return 1
 	default:
-		slog.Error("input injection failed; session is now view-only", "err", err)
-		in.dev.Close()
-		in.dev = nil
+		in.failed(err)
 		return 1
 	}
 }

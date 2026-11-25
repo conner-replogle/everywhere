@@ -4,7 +4,6 @@ import {
   AppWindowIcon,
   CircleHelpIcon,
   EyeIcon,
-  Gamepad2Icon,
   KeyboardIcon,
   LoaderIcon,
   MaximizeIcon,
@@ -44,7 +43,8 @@ import type { ComposerDraft } from "@/lib/composer-inbox";
 import { useDevice } from "@/components/device-context";
 import { type DesktopConnection, connectDesktop } from "@/lib/desktop/connection";
 import { CursorRenderer } from "@/lib/desktop/cursor";
-import { InputForwarder, type MouseMode } from "@/lib/desktop/input";
+import { GamepadForwarder } from "@/lib/desktop/gamepad";
+import { InputForwarder } from "@/lib/desktop/input";
 import { Trackpad } from "@/lib/desktop/trackpad";
 import {
   type AgentAction,
@@ -89,8 +89,8 @@ interface Prefs {
   touch?: TouchMode;
   /** Nothing reaches the desktop; touch and the mouse zoom the picture instead. */
   viewOnly?: boolean;
-  /** Point at the desktop, capture the mouse for a game, or follow the host (auto, the default). */
-  mouseMode?: MouseMode;
+  /** Pass game controllers through to the desktop (unset: on). */
+  gamepads?: boolean;
 }
 
 type TouchMode = "trackpad" | "direct";
@@ -111,12 +111,8 @@ async function enterFullscreen(el: HTMLElement | null): Promise<void> {
   await kb?.lock?.().catch(() => {});
 }
 
-const NEXT_MOUSE_MODE: Record<MouseMode, MouseMode> = { auto: "game", game: "desktop", desktop: "auto" };
-const MOUSE_MODE_NOTICE: Record<MouseMode, string> = {
-  auto: "Auto mouse: captured while a game hides the pointer, yours again when it shows.",
-  game: "Game mouse: always captured. Click the picture to capture it.",
-  desktop: "Desktop mouse: it points where you point, even in games.",
-};
+const GAMEPADS_UNAVAILABLE =
+  "controllers need a Windows desktop with the ViGEmBus driver (`everywhere desktop status` there says how to install it).";
 
 /** A mouse or touchpad that pointer lock can capture for a game. */
 const canCaptureMouse =
@@ -294,26 +290,23 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
   const touchModeRef = useRef(touchMode);
   touchModeRef.current = touchMode;
   const trackpadRef = useRef<Trackpad | null>(null);
+  const cursorRef = useRef<CursorRenderer | null>(null);
   const viewOnly = !!prefs.viewOnly;
   const viewOnlyRef = useRef(viewOnly);
   viewOnlyRef.current = viewOnly;
   const [mouseLocked, setMouseLocked] = useState(false);
   const forwarderRef = useRef<InputForwarder | null>(null);
   const [hello, setHello] = useState<Hello | null>(null);
-  // Game mode needs a host that takes relative motion (v0.22.1 on).
-  const gameMouse = canCaptureMouse && !!hello?.moveBy;
-  const mouseMode: MouseMode = gameMouse && !viewOnly ? (prefs.mouseMode ?? "auto") : "desktop";
-  const mouseModeRef = useRef(mouseMode);
-  mouseModeRef.current = mouseMode;
-  /** The mouse sends motion now, so a click captures it. */
-  const [mouseRelative, setMouseRelative] = useState(false);
-  const toggleMouseModeRef = useRef(() => {});
-  toggleMouseModeRef.current = () => {
-    if (!gameMouse || viewOnly) return;
-    const next = NEXT_MOUSE_MODE[mouseMode];
-    updatePrefs({ mouseMode: next });
-    setNotice(MOUSE_MODE_NOTICE[next]);
-  };
+  const gamepadsRef = useRef<GamepadForwarder | null>(null);
+  const gamepadsOn = prefs.gamepads !== false && !viewOnly;
+  const gamepadsOnRef = useRef(gamepadsOn);
+  gamepadsOnRef.current = gamepadsOn;
+  // The mouse works as the host's own: captured, sending its motion. That
+  // needs a mouse pointer lock can capture, and a host that takes motion
+  // (v0.22.1 on); otherwise it points.
+  const mouseRelative = canCaptureMouse && !!hello?.moveBy && !viewOnly;
+  const mouseRelativeRef = useRef(mouseRelative);
+  mouseRelativeRef.current = mouseRelative;
 
   const rootRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -364,6 +357,9 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
     let forwarder: InputForwarder | null = null;
     let cursor: CursorRenderer | null = null;
     let trackpad: Trackpad | null = null;
+    let gamepads: GamepadForwarder | null = null;
+    /** The host plugs in controllers, by its Hello. */
+    let hostGamepads = false;
     setStatus({ kind: "connecting" });
 
     // Deferred a tick: React's development double-mount would otherwise start
@@ -393,6 +389,8 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
             trackpad = trackpadRef.current = null;
             forwarder?.dispose();
             forwarder = null;
+            gamepads?.dispose();
+            gamepads = gamepadsRef.current = null;
             setStatus({ kind: "ended", message: reason ? `${reason}.` : "The device ended the session." });
           },
         });
@@ -406,25 +404,32 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
       }
       connRef.current = conn;
       video.srcObject = conn.stream;
-      const cur = (cursor = new CursorRenderer(video));
+      const cur = (cursor = cursorRef.current = new CursorRenderer(video));
+      cur.follow(mouseRelativeRef.current);
       forwarder = forwarderRef.current = new InputForwarder(video, conn, {
         superSubstitute: superSub ? "AltRight" : null,
         keyTarget: stage,
       });
-      forwarder.setMode(mouseModeRef.current);
-      // A game gets every key, as in Moonlight: only fullscreen can take them from the browser and the viewer's desktop.
-      forwarder.beforeCapture = () => (document.fullscreenElement ? Promise.resolve() : enterFullscreen(rootRef.current));
+      forwarder.setRelative(mouseRelativeRef.current);
       forwarder.onLockChange = (locked) => {
         setMouseLocked(locked);
-        cur.follow(locked);
-        if (locked) setNotice("Mouse captured. Ctrl+Alt+Shift+Z lets it go; hold Esc to leave fullscreen.");
-      };
-      setMouseRelative(false);
-      forwarder.onRelativeChange = setMouseRelative;
-      forwarder.onCombo = (combo) => {
-        if (combo === "mode") toggleMouseModeRef.current();
+        cur.follow(locked || mouseRelativeRef.current);
+        if (locked)
+          setNotice(
+            document.fullscreenElement
+              ? "The mouse is the desktop's. Ctrl+Alt+Shift+Z lets it go; hold Esc to leave fullscreen."
+              : "The mouse is the desktop's. Esc or Ctrl+Alt+Shift+Z lets it go.",
+          );
       };
       trackpad = trackpadRef.current = new Trackpad(video, stage, forwarder, cur);
+      const pads = (gamepads = gamepadsRef.current = new GamepadForwarder(conn));
+      pads.onConnect = (id, slot) => {
+        const name = id.replace(/\s*\(.*\)\s*$/, "") || "A controller";
+        if (slot !== null) setNotice(`${name} is plugged into the desktop as controller ${slot + 1}.`);
+        else if (!gamepadsOnRef.current) return;
+        else if (!hostGamepads) setNotice(`${name} can't reach this desktop: ${GAMEPADS_UNAVAILABLE}`);
+        else setNotice(`${name} isn't passed through: the desktop takes four controllers at most.`);
+      };
       trackpad.setEnabled(touchModeRef.current === "trackpad");
       trackpad.setView(viewOnlyRef.current);
       stage.focus({ preventScroll: true });
@@ -440,6 +445,8 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
         switch (msg?.type) {
           case Type.Hello: {
             setHello(msg);
+            hostGamepads = msg.gamepads;
+            gamepads?.setEnabled(hostGamepads && gamepadsOnRef.current);
             const t = connectRef.current.tab;
             const src = sourceOf(msg, tabSource.current?.desktop);
             if (t && JSON.stringify(src) !== JSON.stringify(tabSource.current)) {
@@ -477,6 +484,9 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
           case Type.PeerInfo:
             setPath(msg);
             break;
+          case Type.Rumble:
+            gamepads?.rumble(msg.index, msg.large, msg.small);
+            break;
           case Type.Agent:
             setAgentMark({ ...msg, key: performance.now() });
             break;
@@ -486,6 +496,8 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
             trackpad = trackpadRef.current = null;
             forwarder?.dispose();
             forwarder = null;
+            gamepads?.dispose();
+            gamepads = gamepadsRef.current = null;
             setStatus({
               kind: "ended",
               message:
@@ -530,8 +542,11 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
       trackpadRef.current = null;
       forwarder?.dispose();
       forwarderRef.current = null;
+      gamepads?.dispose();
+      gamepadsRef.current = null;
       setMouseLocked(false);
       cursor?.dispose();
+      cursorRef.current = null;
       connRef.current?.close();
       connRef.current = null;
       video.srcObject = null;
@@ -540,7 +555,12 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
 
   useEffect(() => trackpadRef.current?.setEnabled(touchMode === "trackpad"), [touchMode]);
   useEffect(() => trackpadRef.current?.setView(viewOnly), [viewOnly]);
-  useEffect(() => forwarderRef.current?.setMode(mouseMode), [mouseMode]);
+  useEffect(() => {
+    forwarderRef.current?.setRelative(mouseRelative);
+    cursorRef.current?.follow(mouseRelative || mouseLocked);
+  }, [mouseRelative, mouseLocked]);
+  const hostGamepads = !!hello?.gamepads;
+  useEffect(() => gamepadsRef.current?.setEnabled(hostGamepads && gamepadsOn), [hostGamepads, gamepadsOn]);
 
   const sendControl = useCallback((msg: ArrayBuffer) => {
     const c = connRef.current?.control;
@@ -789,26 +809,6 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
             </span>
           )}
           <div className="flex-1" />
-          {canCaptureMouse && !viewOnly && (
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className={cn(iconBtn, mouseRelative && "text-primary", mouseMode === "desktop" && "opacity-60")}
-              aria-label={`Mouse: ${mouseMode}`}
-              disabled={!gameMouse}
-              title={
-                !gameMouse
-                  ? "The game mouse needs everywhere 0.22.1 or later on this device"
-                  : `${MOUSE_MODE_NOTICE[mouseMode]} Ctrl+Alt+Shift+Z lets a captured mouse go. Click (or Ctrl+Alt+Shift+M) for the ${NEXT_MOUSE_MODE[mouseMode]} mouse.`
-              }
-              onClick={() => {
-                toggleMouseModeRef.current();
-                focusStage();
-              }}
-            >
-              <Gamepad2Icon />
-            </Button>
-          )}
           <Button
             variant="ghost"
             size="icon-sm"
@@ -891,6 +891,14 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
                 }}
               >
                 Share clipboard
+              </DropdownMenuCheckboxItem>
+              <DropdownMenuCheckboxItem
+                checked={prefs.gamepads !== false}
+                disabled={!!hello && !hostGamepads}
+                title={hello && !hostGamepads ? GAMEPADS_UNAVAILABLE : "Your game controllers work on the desktop as Xbox controllers"}
+                onCheckedChange={(on) => updatePrefs({ gamepads: on })}
+              >
+                Pass controllers through
               </DropdownMenuCheckboxItem>
               {hasTouch && (
                 <>
@@ -1101,7 +1109,7 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
         )}
         {mouseRelative && !mouseLocked && !annotating && status.kind === "live" && !notice && (
           <div className="pointer-events-none absolute bottom-2 left-1/2 z-30 max-w-[calc(100%-1rem)] -translate-x-1/2 truncate rounded-md bg-background/90 px-3 py-1.5 text-xs shadow">
-            Click the picture to play: fullscreen, with the mouse and every key · Ctrl+Alt+Shift+Z lets the mouse go · Ctrl+Alt+Shift+M changes the mouse
+            Click the picture to use your mouse on the desktop · Esc or Ctrl+Alt+Shift+Z lets it go · Fullscreen sends every key
           </div>
         )}
         {notice && (

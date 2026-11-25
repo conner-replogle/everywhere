@@ -96,7 +96,7 @@ func (s *session) refreshWM() {
 			// that changed monitor needs a virtual pointer on the new one.
 			if c := resolveWindow(clients, source{Window: md.src.Window}); c != nil {
 				if mon, ok := monitorByID(mons, c.Monitor); ok {
-					g := newWindowGeom(c, mon)
+					g := s.streamGeom(c, mon)
 					restart = g.Monitor != md.win.Monitor
 					md.win = g
 				}

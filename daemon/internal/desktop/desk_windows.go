@@ -117,6 +117,19 @@ func (windowsHost) showWorkspace(int32) error {
 	return errors.New("Windows has no workspaces")
 }
 
+// windowBounds is where window address is now (liveWindows).
+func (windowsHost) windowBounds(address string) (at, size [2]int, ok bool) {
+	h, err := win32.ParseID(address)
+	if err != nil || !win32.Alive(h) || win32.Minimized(h) {
+		return at, size, false
+	}
+	r, err := win32.Bounds(h)
+	if err != nil {
+		return at, size, false
+	}
+	return [2]int{int(r.Left), int(r.Top)}, [2]int{r.Width(), r.Height()}, true
+}
+
 // focusOutput does nothing: Windows gives windows focus, not monitors.
 func (windowsHost) focusOutput(string) error { return nil }
 

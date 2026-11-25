@@ -15,6 +15,7 @@ import (
 	"github.com/pion/rtp/codecs"
 	"github.com/pion/webrtc/v4"
 
+	"github.com/conner-replogle/everywhere/daemon/internal/desktop/gamepad"
 	"github.com/conner-replogle/everywhere/daemon/internal/desktop/ipc"
 	"github.com/conner-replogle/everywhere/daemon/internal/desktop/wire"
 	"github.com/conner-replogle/everywhere/daemon/internal/ice"
@@ -65,8 +66,14 @@ type session struct {
 	clipLast   string // the clipboard text both sides have
 	closed     bool
 	done       chan struct{}
-	connected  bool
-	uninhibit  func()
+	// pads are the viewer's controllers, plugged in on the host as they
+	// first send their state. They outlive captures, so a game keeps them
+	// across a monitor switch; padsTried is when opening them last failed.
+	pads      *gamepad.Bus
+	padsTried time.Time
+	padsErr   error
+	connected bool
+	uninhibit func()
 
 	closeOnce sync.Once
 }
@@ -77,6 +84,7 @@ type media struct {
 	src           source      // what was asked for, to restart it
 	output        string      // the monitor: captured, or the window's
 	win           *windowGeom // the captured window; nil for a monitor
+	winChecked    time.Time   // when win was last brought up to date (liveWindows)
 	codec         ipc.Codec
 	scale         float64
 	width, height int // encoded size
@@ -238,7 +246,7 @@ func (s *session) startMedia(src source) error {
 		if mon, ok = monitorByID(mons, c.Monitor); !ok {
 			return errors.New("the window isn't on a monitor")
 		}
-		md.win = newWindowGeom(c, mon)
+		md.win = s.streamGeom(c, mon)
 		nativeW, nativeH = int(math.Round(float64(c.Size[0])*mon.Scale)), int(math.Round(float64(c.Size[1])*mon.Scale))
 		md.src = source{Window: src.Window}
 	} else {
@@ -451,7 +459,81 @@ func (s *session) input() (*worker, *windowGeom) {
 	if s.media == nil || s.media.cap.InputError() != "" {
 		return nil, nil
 	}
+	if s.media.win != nil {
+		s.refreshWindowLocked(s.media)
+	}
 	return s.media.cap, s.media.win
+}
+
+// streamGeom places window c on mon for a window stream's pointer.
+func (s *session) streamGeom(c *deskWindow, mon deskMonitor) *windowGeom {
+	g := newWindowGeom(c, mon)
+	if _, ok := s.host.(liveWindows); ok {
+		g.clip()
+	}
+	return g
+}
+
+// refreshWindowLocked brings a window stream's geometry up to date where the
+// host can say cheaply where the window is: the pointer follows a window
+// being dragged, rather than catching up at the next poll. Must hold s.mu.
+func (s *session) refreshWindowLocked(md *media) {
+	lw, ok := s.host.(liveWindows)
+	if !ok || time.Since(md.winChecked) < 30*time.Millisecond {
+		return
+	}
+	md.winChecked = time.Now()
+	at, size, ok := lw.windowBounds(md.win.Address)
+	if !ok || (at == md.win.At && size == md.win.Size) {
+		return
+	}
+	g := *md.win // others may hold the old one
+	g.At, g.Size = at, size
+	g.clip()
+	md.win = &g
+}
+
+// gamepad applies the state of one of the viewer's controllers, plugging it
+// in on the host when it first comes, and unplugging it when it goes.
+func (s *session) gamepad(m wire.Gamepad) {
+	if int(m.Index) >= gamepad.MaxPads {
+		return
+	}
+	s.mu.Lock()
+	if s.closed || (s.pads == nil && !m.Connected) {
+		s.mu.Unlock()
+		return
+	}
+	if s.pads == nil {
+		if time.Since(s.padsTried) < 5*time.Second {
+			s.mu.Unlock()
+			return
+		}
+		pads, err := gamepad.Open(func(i int, large, small uint8) {
+			s.sendControl(wire.Rumble{Index: uint8(i), Large: large, Small: small}.Marshal())
+		})
+		if err != nil {
+			s.padsTried = time.Now()
+			s.mu.Unlock()
+			slog.Warn("desktop controllers unavailable", "session", s.id, "err", err)
+			return
+		}
+		s.pads = pads
+	}
+	pads := s.pads
+	s.mu.Unlock()
+	if !m.Connected {
+		pads.Unplug(int(m.Index))
+		return
+	}
+	err := pads.Set(int(m.Index), gamepad.State{Buttons: m.Buttons, LT: m.LT, RT: m.RT, LX: m.LX, LY: m.LY, RX: m.RX, RY: m.RY})
+	s.mu.Lock()
+	report := err != nil && (s.padsErr == nil || s.padsErr.Error() != err.Error())
+	s.padsErr = err
+	s.mu.Unlock()
+	if report {
+		slog.Warn("desktop controller", "session", s.id, "index", m.Index, "err", err)
+	}
 }
 
 func (s *session) setControl(dc *webrtc.DataChannel) {
@@ -520,7 +602,7 @@ func (s *session) sendHostInfoLocked() {
 		return
 	}
 	md := s.media
-	hello := wire.Hello{Width: uint16(md.width), Height: uint16(md.height), Output: md.output}
+	hello := wire.Hello{Width: uint16(md.width), Height: uint16(md.height), Output: md.output, Gamepads: gamepad.Available() == nil}
 	if md.win != nil {
 		hello.Window, hello.Class, hello.Title = md.src.Window, md.win.Class, md.win.Title
 	}
@@ -762,8 +844,12 @@ func (s *session) close(reason string) {
 			s.media.cap.ReleaseAll()
 		}
 		s.stopMedia()
-		wasConnected, uninhibit := s.connected, s.uninhibit
+		wasConnected, uninhibit, pads := s.connected, s.uninhibit, s.pads
+		s.pads = nil
 		s.mu.Unlock()
+		if pads != nil {
+			pads.Close()
+		}
 		// pion's Close waits seconds for a live transport to shut down; don't
 		// make a viewer taking over wait for it.
 		go func() { _ = s.pc.Close() }()

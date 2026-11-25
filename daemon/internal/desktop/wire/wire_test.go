@@ -79,3 +79,22 @@ func TestCursorPositionMarshal(t *testing.T) {
 		t.Fatalf("got %v, want %v", got, want)
 	}
 }
+
+func TestHelloGamepads(t *testing.T) {
+	got := Hello{Gamepads: true}.Marshal()
+	if f := got[len(got)-1]; f != HelloMoveBy|HelloGamepads {
+		t.Fatalf("flags %d", f)
+	}
+}
+
+func TestParseGamepad(t *testing.T) {
+	b := []byte{TypeGamepad, 2, 1, 0x00, 0x10, 255, 7, 0xff, 0x7f, 0x00, 0x80, 1, 0, 0xff, 0xff}
+	got, err := Parse(b)
+	want := Gamepad{Index: 2, Connected: true, Buttons: 0x1000, LT: 255, RT: 7, LX: 32767, LY: -32768, RX: 1, RY: -1}
+	if err != nil || got != want {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	if _, err := Parse(b[:14]); err != ErrShort {
+		t.Fatalf("short: %v", err)
+	}
+}

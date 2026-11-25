@@ -105,6 +105,9 @@ func (c *controller) attach(dc *webrtc.DataChannel) {
 		case wire.SetMode:
 			go c.sess.setMode(m.Mode)
 			return
+		case wire.Gamepad:
+			c.sess.gamepad(m)
+			return
 		}
 		if msg != nil {
 			c.apply(msg)

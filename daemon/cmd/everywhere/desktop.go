@@ -10,6 +10,7 @@ import (
 
 	"github.com/conner-replogle/everywhere/daemon/internal/config"
 	"github.com/conner-replogle/everywhere/daemon/internal/desktop"
+	"github.com/conner-replogle/everywhere/daemon/internal/desktop/gamepad"
 	"github.com/conner-replogle/everywhere/daemon/internal/update"
 	"github.com/conner-replogle/everywhere/daemon/internal/version"
 )
@@ -45,6 +46,9 @@ func desktopCmd(args []string) error {
 				return err
 			}
 		}
+		if runtime.GOOS == "windows" && gamepad.Available() != nil {
+			fmt.Println("To pass game controllers through, " + gamepad.InstallHint + ".")
+		}
 		fmt.Println("Remote desktop is on. Open this device in the web app and choose Remote desktop.")
 		fmt.Println("Anyone signed in to your account can then see and control this screen.")
 	case "disable":
@@ -57,6 +61,13 @@ func desktopCmd(args []string) error {
 			fmt.Println("Remote desktop: on")
 			if st := desktop.ElevatedStatus(); st != "" {
 				fmt.Println("Admin windows:", st)
+			}
+			if runtime.GOOS == "windows" {
+				if err := gamepad.Available(); err != nil {
+					fmt.Printf("Controllers: off: %v; %s\n", err, gamepad.InstallHint)
+				} else {
+					fmt.Println("Controllers: on (ViGEmBus)")
+				}
 			}
 		} else {
 			fmt.Println("Remote desktop: off (turn it on with `everywhere desktop enable`)")

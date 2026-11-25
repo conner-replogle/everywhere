@@ -23,6 +23,7 @@ export const Type = {
   SetClipSync: 0x0e,
   Text: 0x0f,
   MoveBy: 0x10,
+  Gamepad: 0x11,
   // host → viewer
   Hello: 0x80,
   CursorImage: 0x81,
@@ -36,12 +37,13 @@ export const Type = {
   Windows: 0x89,
   HostClipboard: 0x8a,
   Agent: 0x8b,
+  Rumble: 0x8c,
 } as const;
 
 /** Clipboard text is capped both ways; bigger SCTP messages aren't portable. */
 export const MAX_CLIPBOARD = 200 * 1024;
 
-/** Sharp: native size, up to 40 Mbps. Smooth: ≤1080p60. Low: ≤720p30, ≤3 Mbps. */
+/** Sharp: native size, up to 60 Mbps (75 from Windows). Smooth: ≤1080p60. Low: ≤720p30, ≤4 Mbps. */
 export type DesktopMode = "sharp" | "smooth" | "low";
 
 export const MODES: readonly DesktopMode[] = ["sharp", "smooth", "low"];
@@ -66,6 +68,16 @@ export interface Hello {
   title: string;
   /** The host takes moveBy. */
   moveBy: boolean;
+  /** The host plugs in the viewer's game controllers (gamepad). */
+  gamepads: boolean;
+}
+
+/** A game set one of the viewer's controllers' motors, 0..1 each: large is the low-frequency one. */
+export interface Rumble {
+  type: typeof Type.Rumble;
+  index: number;
+  large: number;
+  small: number;
 }
 
 export interface Pong {
@@ -193,7 +205,8 @@ export type HostMessage =
   | Workspaces
   | Windows
   | HostClipboard
-  | AgentAction;
+  | AgentAction
+  | Rumble;
 
 /** Reads a u8-length-prefixed UTF-8 string; returns it and the offset after it. */
 function shortString(data: ArrayBuffer, off: number): [string, number] {
@@ -224,6 +237,40 @@ export function moveBy(dx: number, dy: number): ArrayBuffer {
   b.setUint8(0, Type.MoveBy);
   b.setFloat32(1, dx, true);
   b.setFloat32(5, dy, true);
+  return b.buffer;
+}
+
+/** How many controllers the host takes, as XInput has. */
+export const MAX_GAMEPADS = 4;
+
+/** A controller's state, as an Xbox controller's: XInput button bits, triggers 0..1, sticks -1..1 with up positive. */
+export interface GamepadState {
+  buttons: number;
+  lt: number;
+  rt: number;
+  lx: number;
+  ly: number;
+  rx: number;
+  ry: number;
+}
+
+const axis16 = (v: number) => Math.max(-32768, Math.min(32767, Math.round(v * 32767)));
+const byte = (v: number) => Math.max(0, Math.min(255, Math.round(v * 255)));
+
+/** Controller index's state; state null unplugs it on the host. */
+export function gamepad(index: number, state: GamepadState | null): ArrayBuffer {
+  const b = new DataView(new ArrayBuffer(15));
+  b.setUint8(0, Type.Gamepad);
+  b.setUint8(1, index);
+  if (!state) return b.buffer;
+  b.setUint8(2, 1);
+  b.setUint16(3, state.buttons, true);
+  b.setUint8(5, byte(state.lt));
+  b.setUint8(6, byte(state.rt));
+  b.setInt16(7, axis16(state.lx), true);
+  b.setInt16(9, axis16(state.ly), true);
+  b.setInt16(11, axis16(state.rx), true);
+  b.setInt16(13, axis16(state.ry), true);
   return b.buffer;
 }
 
@@ -372,6 +419,7 @@ export function parseHost(data: ArrayBuffer): HostMessage | null {
         class: cls,
         title,
         moveBy: (flags & 1) !== 0,
+        gamepads: (flags & 2) !== 0,
       };
     }
     case Type.Windows: {
@@ -405,6 +453,9 @@ export function parseHost(data: ArrayBuffer): HostMessage | null {
         label,
       };
     }
+    case Type.Rumble:
+      if (b.byteLength < 4) return null;
+      return { type: Type.Rumble, index: b.getUint8(1), large: b.getUint8(2) / 255, small: b.getUint8(3) / 255 };
     case Type.HostClipboard: {
       if (b.byteLength < 5) return null;
       const len = Math.min(b.getUint32(1, true), b.byteLength - 5);

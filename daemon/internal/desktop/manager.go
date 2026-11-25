@@ -87,9 +87,9 @@ func NewManager(se webrtc.SettingEngine) (*Manager, error) {
 	estimators := make(chan cc.BandwidthEstimator, 1)
 	congestion, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
 		return gcc.NewSendSideBWE(
-			gcc.SendSideBWEInitialBitrate(20_000_000),
+			gcc.SendSideBWEInitialBitrate(30_000_000),
 			gcc.SendSideBWEMinBitrate(300_000),
-			gcc.SendSideBWEMaxBitrate(50_000_000),
+			gcc.SendSideBWEMaxBitrate(100_000_000),
 			gcc.SendSideBWEPacer(gcc.NewNoOpPacer()),
 		)
 	})

@@ -33,6 +33,7 @@ const (
 	TypeSetClipSync  byte = 0x0e // exchange clipboard text or not
 	TypeText         byte = 0x0f // text to type, from a keyboard with no physical keys
 	TypeMoveBy       byte = 0x10 // relative motion, with the mouse captured (control channel)
+	TypeGamepad      byte = 0x11 // one game controller's state (control channel)
 )
 
 // Host → viewer.
@@ -49,6 +50,7 @@ const (
 	TypeWindows        byte = 0x89
 	TypeHostClipboard  byte = 0x8a
 	TypeAgent          byte = 0x8b // an AI agent acted on the desktop
+	TypeRumble         byte = 0x8c // a game set a controller's rumble motors
 )
 
 // MaxClipboard bounds clipboard text in either direction; SCTP messages over
@@ -97,6 +99,31 @@ type Key struct {
 	Code    uint16 // Linux KEY_* code
 	Pressed bool
 }
+
+// MaxGamepads is how many controllers a viewer can pass through, as XInput has.
+const MaxGamepads = 4
+
+// Gamepad is one of the viewer's controllers, as an Xbox 360 controller:
+// u8 index, u8 flags (1 connected), u16 XInput buttons, u8 left and right
+// triggers, i16 left X, left Y, right X, right Y (up is positive). A
+// disconnected one is unplugged from the host.
+type Gamepad struct {
+	Index     uint8
+	Connected bool
+	Buttons   uint16
+	LT, RT    uint8
+	LX, LY    int16
+	RX, RY    int16
+}
+
+// Rumble is what a game set a controller's motors to (0..255): u8 index,
+// u8 large (low-frequency) motor, u8 small (high-frequency) motor.
+type Rumble struct {
+	Index        uint8
+	Large, Small uint8
+}
+
+func (r Rumble) Marshal() []byte { return []byte{TypeRumble, r.Index, r.Large, r.Small} }
 
 type Ping struct {
 	Seq      uint32
@@ -180,7 +207,7 @@ func Parse(b []byte) (any, error) {
 	need := map[byte]int{
 		TypeMove: 7, TypeButton: 7, TypeScroll: 10, TypeKey: 4, TypeReleaseAll: 1, TypePing: 13, TypeSelectOutput: 2,
 		TypeSetMode: 2, TypeWorkspace: 5, TypeSetFollow: 2, TypeSelectWindow: 2, TypeFocusWindow: 2, TypeClipboard: 5,
-		TypeSetClipSync: 2, TypeText: 3, TypeMoveBy: 9,
+		TypeSetClipSync: 2, TypeText: 3, TypeMoveBy: 9, TypeGamepad: 15,
 	}
 	n, known := need[b[0]]
 	if !known {
@@ -194,6 +221,11 @@ func Parse(b []byte) (any, error) {
 		return Move{Seq: le.Uint16(b[1:]), X: le.Uint16(b[3:]), Y: le.Uint16(b[5:])}, nil
 	case TypeMoveBy:
 		return MoveBy{DX: math.Float32frombits(le.Uint32(b[1:])), DY: math.Float32frombits(le.Uint32(b[5:]))}, nil
+	case TypeGamepad:
+		return Gamepad{
+			Index: b[1], Connected: b[2]&1 != 0, Buttons: le.Uint16(b[3:]), LT: b[5], RT: b[6],
+			LX: int16(le.Uint16(b[7:])), LY: int16(le.Uint16(b[9:])), RX: int16(le.Uint16(b[11:])), RY: int16(le.Uint16(b[13:])),
+		}, nil
 	case TypeButton:
 		return Button{Button: b[1], Pressed: b[2] != 0, X: le.Uint16(b[3:]), Y: le.Uint16(b[5:])}, nil
 	case TypeScroll:
@@ -251,10 +283,15 @@ type Hello struct {
 	Width, Height        uint16
 	Output               string
 	Window, Class, Title string
+	// Gamepads: the host can plug in virtual controllers (Gamepad).
+	Gamepads bool
 }
 
-// HelloMoveBy flags a host that takes MoveBy.
-const HelloMoveBy = 1
+// Hello's flags byte, after the strings.
+const (
+	HelloMoveBy   = 1 // the host takes MoveBy
+	HelloGamepads = 2 // the host takes Gamepad
+)
 
 func (h Hello) Marshal() []byte {
 	b := []byte{TypeHello}
@@ -264,7 +301,11 @@ func (h Hello) Marshal() []byte {
 	b = append(b, shortString(h.Window)...)
 	b = append(b, shortString(h.Class)...)
 	b = append(b, shortString(h.Title)...)
-	return append(b, HelloMoveBy)
+	flags := byte(HelloMoveBy)
+	if h.Gamepads {
+		flags |= HelloGamepads
+	}
+	return append(b, flags)
 }
 
 // WindowInfo is one of the host's windows.
