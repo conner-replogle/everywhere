@@ -200,7 +200,7 @@ func (s *Server) registerCore(h plugin.Host) {
 			err = k.Created(t, plugin.CreateParams{PermissionMode: p.PermissionMode, Prompt: p.Prompt})
 		}
 		return t, err
-}, plugin.Agent())
+	}, plugin.Agent())
 	rpc("threads.rename", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		t, err := s.store.RenameThread(p.ID, p.Name)
 		if err == nil {
@@ -208,7 +208,7 @@ func (s *Server) registerCore(h plugin.Host) {
 			s.broadcast(protocol.EventThreadsChanged)
 		}
 		return t, err
-}, plugin.Agent())
+	}, plugin.Agent())
 	rpc("threads.archive", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		t, err := s.store.SetThreadArchived(p.ID, p.Archived)
 		if err != nil {
