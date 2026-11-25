@@ -25,6 +25,9 @@ type SignalData struct {
 	Type      string        `json:"type"`
 	SDP       string        `json:"sdp,omitempty"`
 	Candidate *IceCandidate `json:"candidate,omitempty"`
+	// Restart marks an offer as an ICE restart of the connection with this
+	// sid: a new route for it, with its channels and encryption kept.
+	Restart bool `json:"restart,omitempty"`
 }
 
 // HubToDaemon is a relayed signal from a browser, an error,
@@ -173,6 +176,10 @@ const (
 	// FeatureAgents: device.agents and device.setAgents, connected agents'
 	// switch on this device; AgentEvent.Via.
 	FeatureAgents = "agents"
+	// FeatureICERestart: an offer with restart set gets a new route for the
+	// connection with its sid, which the daemon keeps a while after it goes
+	// quiet.
+	FeatureICERestart = "iceRestart"
 )
 
 // AgentsInfo is the result of device.agents: whether this device lets

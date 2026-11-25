@@ -30,7 +30,7 @@ import {
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "./api";
 import { BrowserChannel, type BrowserHandlers } from "./browser-channel";
-import { hub } from "./hub";
+import { hub, type SignalSink } from "./hub";
 
 export type PeerState = "idle" | "connecting" | "connected" | "failed" | "offline";
 
@@ -82,10 +82,18 @@ function describeCandidate(line: string): string {
 
 const STUN_ONLY: RTCIceServer[] = [{ urls: "stun:stun.cloudflare.com:3478" }];
 const CONNECT_TIMEOUT_MS = 20_000;
-const DISCONNECT_GRACE_MS = 5_000;
+/** How long a connection may stay "disconnected" before it looks for a new route. */
+const DISCONNECT_RESTART_MS = 2_000;
 const RPC_TIMEOUT_MS = 15_000;
-/** How long a liveness probe after coming back to the foreground may take. */
-const PROBE_TIMEOUT_MS = 4_000;
+/**
+ * How long the daemon keeps a connection it no longer hears from
+ * (daemon/internal/peer: keepTimeout, plus the 5 s it takes to notice), less a
+ * margin. Back within it, the connection gets a new route (an ICE restart);
+ * after it, a new connection is made straight away.
+ */
+export const DAEMON_KEEP_MS = 110_000;
+/** How long an ICE restart may take before a new connection is made instead. */
+const RESTART_TIMEOUT_MS = 6_000;
 const UPLOAD_CHUNK = 16 * 1024;
 export const UNREACHABLE_MESSAGE = "Couldn't reach device — direct and relayed connections both failed.";
 /** The offer went out through the hub but the daemon never answered it. */
@@ -150,6 +158,7 @@ export class DevicePeer {
   private pc: RTCPeerConnection | null = null;
   private control: RTCDataChannel | null = null;
   private sid: string | null = null;
+  private sink: SignalSink | null = null;
   private unregister: (() => void) | null = null;
   private remoteDescriptionSet = false;
   private queuedCandidates: RTCIceCandidateInit[] = [];
@@ -157,6 +166,12 @@ export class DevicePeer {
   private disconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectAttempt = 0;
+  /** When the ICE restart under way began; null when there's none. */
+  private restartAt: number | null = null;
+  private restartSent = false;
+  private restartTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The daemon restarts ICE (feature iceRestart); older ones get a new connection instead. */
+  private canRestart = false;
 
   private nextId = 1;
   private pending = new Map<number, PendingCall>();
@@ -217,11 +232,15 @@ export class DevicePeer {
   }
 
   /**
-   * Makes sure the connection still works, e.g. after the app was in the
-   * background: mobile browsers freeze the page and the network can change
-   * underneath it. A dead or failed connection is redone right away.
+   * Makes sure the connection still works when the page comes back after
+   * awayMs, or the network changed (awayMs 0, frozen). A frozen page (mobile
+   * browsers freeze one in the background) can't tell whether the route
+   * survived: a connection the daemon still keeps gets a new route, an older
+   * one is replaced right away, without first waiting for a check that can't
+   * succeed. A page that kept running (a desktop tab) only acts if the
+   * connection says it's in trouble.
    */
-  checkAlive(): void {
+  checkAlive(awayMs: number, frozen: boolean): void {
     if (this.viewers === 0) return;
     const { state } = this.snap;
     if (state === "failed") {
@@ -236,18 +255,97 @@ export class DevicePeer {
       return;
     }
     if (state !== "connected") return;
-    const pc = this.pc;
-    const reconnect = (why: string) => {
-      if (this.pc !== pc) return;
-      this.record("info", `${why}; reconnecting`);
-      this.reconnectAttempt = 0;
-      this.onDrop();
-    };
-    if (pc?.connectionState !== "connected") {
-      reconnect(`connection ${pc?.connectionState ?? "gone"} after resume`);
+    if (!frozen) {
+      const now = this.pc?.connectionState;
+      if (now !== "connected") this.restartIce(`connection ${now ?? "gone"} on return`);
       return;
     }
-    this.call("device.info", {}, PROBE_TIMEOUT_MS).catch(() => reconnect("device stopped answering after resume"));
+    const away = awayMs > 0 ? `back after ${Math.round(awayMs / 1000)} s` : "network changed";
+    if (awayMs >= DAEMON_KEEP_MS) this.reconnectNow(`${away}, longer than the daemon keeps a connection`);
+    else this.restartIce(away);
+  }
+
+  /** Drops the connection and makes a new one now, without the backoff. */
+  private reconnectNow(why: string): void {
+    this.record("info", `${why}; reconnecting`);
+    this.teardown();
+    if (this.viewers === 0) {
+      this.set({ state: "idle", error: null });
+      return;
+    }
+    this.reconnectAttempt = 0;
+    this.set({ state: "connecting", error: null });
+    this.kick();
+  }
+
+  /**
+   * Finds a new route for the connection (an ICE restart) instead of making a
+   * new one: its data channels, the terminals and threads on them, and the
+   * encryption all stay as they are, so nothing reopens or catches up. Used
+   * when the route went quiet or the page comes back from the background. If
+   * the daemon no longer has the connection (it says bye) or no route turns
+   * up in time, a new connection is made.
+   */
+  private restartIce(why: string): void {
+    const pc = this.pc;
+    if (!pc || this.snap.state !== "connected" || this.restartAt !== null) return;
+    if (!this.canRestart) {
+      this.reconnectNow(`${why} (the daemon can't restart ICE)`);
+      return;
+    }
+    this.record("info", `${why}; restarting ICE`);
+    this.restartAt = Date.now();
+    this.restartSent = false;
+    clearTimeout(this.disconnectTimer);
+    clearTimeout(this.restartTimer);
+    this.restartTimer = setTimeout(() => {
+      if (this.pc === pc && this.restartAt !== null) this.reconnectNow("ICE restart timed out");
+    }, RESTART_TIMEOUT_MS);
+    void this.sendRestart();
+  }
+
+  /** Sends the restart's offer once the hub socket is open (onHubChange calls again). */
+  private async sendRestart(): Promise<void> {
+    const { pc, sid, sink } = this;
+    if (!pc || !sid || !sink || this.restartAt === null || this.restartSent) return;
+    if (hub.getSnapshot().status !== "open") return;
+    this.restartSent = true;
+    // A new hub socket forgot the sid; the daemon answers whichever sent the offer.
+    this.unregister?.();
+    this.unregister = hub.register(sid, sink);
+    this.remoteDescriptionSet = false;
+    this.queuedCandidates = [];
+    try {
+      pc.restartIce();
+      const offer = await pc.createOffer({ iceRestart: true });
+      await pc.setLocalDescription(offer);
+      if (this.pc !== pc || this.restartAt === null) return;
+      const sent = hub.send({
+        t: "signal",
+        to: this.deviceId,
+        sid,
+        data: { type: "offer", sdp: offer.sdp ?? "", restart: true },
+      });
+      this.record("signal", sent ? "restart offer sent" : "restart offer dropped (hub not connected)");
+      if (!sent) this.restartSent = false;
+    } catch (e) {
+      if (this.pc === pc) this.reconnectNow(`ICE restart failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  /** The restart's answer is in: it's done once the channel answers again. */
+  private confirmRestart(pc: RTCPeerConnection): void {
+    const at = this.restartAt;
+    if (at === null) return;
+    this.call("device.info", {}, RESTART_TIMEOUT_MS).then(
+      () => {
+        if (this.pc !== pc || this.restartAt !== at) return;
+        clearTimeout(this.restartTimer);
+        this.restartAt = null;
+        this.record("info", `ICE restart done in ${Date.now() - at} ms`);
+      },
+      () => {}, // the restart's timeout makes a new connection
+    );
   }
 
   /** Permanently close (logout). */
@@ -285,6 +383,7 @@ export class DevicePeer {
   private onHubChange = (): void => {
     const h = hub.getSnapshot();
     const { state } = this.snap;
+    if (state === "connected" && this.restartAt !== null) void this.sendRestart();
     if (h.presenceKnown && !h.online.has(this.deviceId)) {
       if (state === "offline") return;
       if (state === "idle" && this.viewers === 0) return;
@@ -345,14 +444,16 @@ export class DevicePeer {
     const alive = () => this.pc === pc;
     const signal = (data: SignalData) => hub.send({ t: "signal", to: this.deviceId, sid, data });
 
-    this.unregister = hub.register(sid, {
+    const sink: SignalSink = {
       onSignal: (data) => {
         if (alive()) void this.onSignal(pc, data);
       },
       onHubError: (code, message) => {
         if (alive()) this.onHubError(code, message);
       },
-    });
+    };
+    this.sink = sink;
+    this.unregister = hub.register(sid, sink);
 
     pc.onicecandidate = (ev) => {
       if (!alive()) return;
@@ -378,11 +479,15 @@ export class DevicePeer {
       if (!alive()) return;
       this.record("ice", `connectionState ${pc.connectionState}`);
       clearTimeout(this.disconnectTimer);
-      if (pc.connectionState === "failed") this.onDrop();
+      // While a restart is under way, its own timeout decides.
+      if (this.restartAt !== null) return;
+      // An established connection looks for a new route; one still being made fails.
+      const lost = (why: string) => (this.snap.state === "connected" ? this.restartIce(why) : this.onDrop());
+      if (pc.connectionState === "failed") lost("connection failed");
       else if (pc.connectionState === "disconnected") {
         this.disconnectTimer = setTimeout(() => {
-          if (alive() && pc.connectionState === "disconnected") this.onDrop();
-        }, DISCONNECT_GRACE_MS);
+          if (alive() && pc.connectionState === "disconnected") lost("connection lost");
+        }, DISCONNECT_RESTART_MS);
       }
     };
 
@@ -396,6 +501,12 @@ export class DevicePeer {
       clearTimeout(this.connectTimer);
       this.reconnectAttempt = 0;
       this.set({ state: "connected", error: null, generation: this.snap.generation + 1 });
+      this.call("device.info", {}).then(
+        (info) => {
+          if (alive()) this.canRestart = info.features?.includes("iceRestart") ?? false;
+        },
+        () => {},
+      );
     };
     control.onclose = () => {
       if (!alive()) return;
@@ -435,6 +546,7 @@ export class DevicePeer {
           const queued = this.queuedCandidates;
           this.queuedCandidates = [];
           for (const c of queued) await pc.addIceCandidate(c);
+          if (this.restartAt !== null) this.confirmRestart(pc);
           return;
         }
         case "candidate": {
@@ -452,7 +564,8 @@ export class DevicePeer {
         }
         case "bye":
           this.record("signal", "bye received");
-          this.onDrop();
+          if (this.restartAt !== null) this.reconnectNow("daemon no longer has this connection");
+          else this.onDrop();
           return;
         case "offer":
           // We're always the offerer; ignore.
@@ -501,6 +614,10 @@ export class DevicePeer {
   }
 
   private teardown(): void {
+    clearTimeout(this.restartTimer);
+    this.restartAt = null;
+    this.canRestart = false;
+    this.sink = null;
     clearTimeout(this.connectTimer);
     clearTimeout(this.disconnectTimer);
     clearTimeout(this.reconnectTimer);
@@ -894,8 +1011,8 @@ export function getPeer(deviceId: string): DevicePeer {
 }
 
 /** Checks every open device connection (see DevicePeer.checkAlive). */
-export function checkPeersAlive(): void {
-  for (const p of peers.values()) p.checkAlive();
+export function checkPeersAlive(awayMs: number, frozen: boolean): void {
+  for (const p of peers.values()) p.checkAlive(awayMs, frozen);
 }
 
 export function disposeAllPeers(): void {

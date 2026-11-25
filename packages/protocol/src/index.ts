@@ -13,7 +13,12 @@ export interface IceCandidate {
 }
 
 export type SignalData =
-  | { type: "offer" | "answer"; sdp: string }
+  | {
+      type: "offer" | "answer";
+      sdp: string;
+      /** An offer that's an ICE restart of the connection with this sid: a new route, its channels kept. */
+      restart?: boolean;
+    }
   | { type: "candidate"; candidate: IceCandidate }
   | { type: "bye" };
 
@@ -368,7 +373,8 @@ export type DeviceFeature =
   | "agents"
   | "pin"
   | "search"
-  | "autoUpdate";
+  | "autoUpdate"
+  | "iceRestart";
 
 /**
  * What desktop.start captures: a monitor by name, or a window by id

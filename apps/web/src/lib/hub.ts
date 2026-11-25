@@ -32,6 +32,11 @@ const PING_INTERVAL_MS = 25_000;
 const PONG_TIMEOUT_MS = 10_000;
 /** After the app comes back to the foreground, a quicker check. */
 const PROBE_TIMEOUT_MS = 4_000;
+/**
+ * Frozen in the background this long, the socket is taken for dead without a
+ * check: iOS drops it, and a new one is quicker than waiting out the probe.
+ */
+const STALE_AFTER_MS = 30_000;
 const BACKOFF_MIN_MS = 500;
 const BACKOFF_MAX_MS = 15_000;
 /** The hub closes a browser socket with this when its session is signed out or expires. */
@@ -219,14 +224,17 @@ class Hub {
   }
 
   /**
-   * Makes sure the socket is alive now, e.g. after the app was in the
-   * background (iOS drops sockets without telling the page). A dead one is
-   * replaced right away rather than after the backoff.
+   * Makes sure the socket is alive now, after the page was frozen in the
+   * background for awayMs (iOS drops sockets without telling the page; 0 for
+   * one that kept running), or the network changed (Infinity). A dead one is
+   * replaced right away rather than after the backoff; one frozen long enough
+   * is replaced without checking.
    */
-  checkAlive(): void {
+  checkAlive(awayMs: number): void {
     if (!this.running) return;
     if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ping(PROBE_TIMEOUT_MS);
+      if (awayMs >= STALE_AFTER_MS) this.replace();
+      else this.ping(PROBE_TIMEOUT_MS);
       return;
     }
     if (this.ws?.readyState === WebSocket.CONNECTING) return;
@@ -245,16 +253,25 @@ class Hub {
       this.pongTimer = undefined;
       if (this.ws !== ws) return;
       console.warn("hub socket stopped answering; reconnecting");
-      // Detach first: a dead socket's close event can take minutes.
-      this.ws = null;
-      ws.onopen = ws.onmessage = ws.onclose = null;
-      ws.close();
-      clearInterval(this.pingTimer);
-      this.sinks.clear();
-      this.update({ ...this.snap, status: "closed", presenceKnown: false });
-      this.attempt = 0;
-      this.connect();
+      this.replace();
     }, timeoutMs);
+  }
+
+  /** Drops the socket, dead or not, and opens a new one now. */
+  private replace(): void {
+    const ws = this.ws;
+    if (!ws) return;
+    // Detach first: a dead socket's close event can take minutes.
+    this.ws = null;
+    ws.onopen = ws.onmessage = ws.onclose = null;
+    ws.close();
+    clearInterval(this.pingTimer);
+    clearTimeout(this.pongTimer);
+    this.pongTimer = undefined;
+    this.sinks.clear();
+    this.update({ ...this.snap, status: "closed", presenceKnown: false });
+    this.attempt = 0;
+    this.connect();
   }
 
   private scheduleReconnect(): void {

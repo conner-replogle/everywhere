@@ -17,6 +17,8 @@ final class WebController: NSObject, ObservableObject {
     @Published var loaded = false
 
     private var downloads: [ObjectIdentifier: URL] = [:]
+    /// The extra time iOS gives the app after it leaves the screen.
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
 
     init(url: URL) {
         origin = url
@@ -56,11 +58,42 @@ final class WebController: NSObject, ObservableObject {
         webView.allowsBackForwardNavigationGestures = false
         webView.isInspectable = true // Safari → Develop, to debug the page
 
+        let center = NotificationCenter.default
+        center.addObserver(self, selector: #selector(didEnterBackground),
+                           name: UIApplication.didEnterBackgroundNotification, object: nil)
+        center.addObserver(self, selector: #selector(willEnterForeground),
+                           name: UIApplication.willEnterForegroundNotification, object: nil)
+
         webView.load(URLRequest(url: url))
     }
 
     deinit {
         webView.configuration.userContentController.removeScriptMessageHandler(forName: "everywhere")
+        endBackgroundTask()
+    }
+
+    // MARK: Background
+
+    /// Leaving the app briefly (answering a message) shouldn't cost the
+    /// connection: ask iOS for the time it allows, about 30 seconds, before it
+    /// suspends the app, so the page's WebRTC connection and hub socket keep
+    /// running. Away longer, the page reconnects when it's back (an ICE
+    /// restart while the daemon still keeps the connection).
+    @objc private func didEnterBackground() {
+        guard backgroundTask == .invalid else { return }
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Keep the connection") { [weak self] in
+            self?.endBackgroundTask()
+        }
+    }
+
+    @objc private func willEnterForeground() {
+        endBackgroundTask()
+    }
+
+    private func endBackgroundTask() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
     }
 
     func retry() {

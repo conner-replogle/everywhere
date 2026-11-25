@@ -7,6 +7,7 @@ package peer
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
@@ -65,22 +66,28 @@ type Server struct {
 type peer struct {
 	s       *Server
 	sid     string
-	from    string
 	pc      *webrtc.PeerConnection
 	started time.Time
 	// ctx ends when the connection closes, and with it every channel's.
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu       sync.Mutex
+	mu sync.Mutex
+	// from is the browser's hub connection; an ICE restart can come from a
+	// new one (iOS drops the socket of an app in the background).
+	from     string
 	control  *webrtc.DataChannel
 	answered bool
 	pending  []protocol.SignalData // local candidates gathered before the answer was sent
 	open     map[string]int        // open channels by label prefix, for debug.peer
 }
 
-func (p *peer) ID() string     { return p.sid }
-func (p *peer) Client() string { return p.from }
+func (p *peer) ID() string { return p.sid }
+func (p *peer) Client() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.from
+}
 
 // Send sends an event on the peer's control channel.
 func (p *peer) Send(event any) {
@@ -104,6 +111,11 @@ func (p *peer) closeChannels() {
 	p.s.plugins.PeerClosed(p)
 }
 
+// keepTimeout is how long a browser's connection is kept after the daemon
+// last heard from it, for an ICE restart to bring back (after the 5 s it takes
+// to call it disconnected). The web app's DAEMON_KEEP_MS is a little less.
+const keepTimeout = 2 * time.Minute
+
 // NewServer serves the store's projects and threads, and hosts plugins;
 // they keep their files under dataDir.
 func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string, plugins ...plugin.Plugin) *Server {
@@ -118,13 +130,23 @@ func NewServer(st *store.Store, info protocol.DeviceInfo, dataDir string, plugin
 		}
 		return true
 	})
+	// Plugins' connections (remote desktop video) give up on a silent peer
+	// soon, so nothing keeps encoding for a viewer that's gone.
 	se.SetICETimeouts(5*time.Second, 15*time.Second, 2*time.Second)
+	// Browsers' own connections are kept for a while instead: a phone that
+	// was in the background or changed networks comes back with an ICE
+	// restart, and its terminals and threads carry on where they were.
+	core := se
+	core.SetICETimeouts(5*time.Second, keepTimeout, 2*time.Second)
+	// After a restart, data sent into the silence goes again within this,
+	// rather than after the default backoff of up to a minute.
+	core.SetSCTPRTOMax(2 * time.Second)
 	s := &Server{
 		store:   st,
 		info:    info,
 		dataDir: dataDir,
 		se:      se,
-		api:     webrtc.NewAPI(webrtc.WithSettingEngine(se)),
+		api:     webrtc.NewAPI(webrtc.WithSettingEngine(core)),
 		peers:   map[string]*peer{},
 	}
 	s.plugins = plugin.NewRegistry(plugin.ToolServerName, version.Version, plugins...)
@@ -182,8 +204,12 @@ func (s *Server) Shutdown() {
 func (s *Server) HandleSignal(from, sid string, data protocol.SignalData) {
 	switch data.Type {
 	case "offer":
-		if err := s.answer(from, sid, data.SDP); err != nil {
-			slog.Warn("answer offer", "sid", sid, "err", err)
+		answer := s.answer
+		if data.Restart {
+			answer = s.restart
+		}
+		if err := answer(from, sid, data.SDP); err != nil {
+			slog.Warn("answer offer", "sid", sid, "restart", data.Restart, "err", err)
 			s.send(from, sid, protocol.SignalData{Type: "bye"})
 		}
 	case "candidate":
@@ -233,8 +259,9 @@ func (s *Server) answer(from, sid, sdp string) error {
 			p.mu.Unlock()
 			return
 		}
+		to := p.from
 		p.mu.Unlock()
-		s.send(from, sid, msg)
+		s.send(to, sid, msg)
 	})
 	pc.OnConnectionStateChange(func(st webrtc.PeerConnectionState) {
 		slog.Info("peer state", "sid", sid, "state", st.String())
@@ -276,24 +303,50 @@ func (s *Server) answer(from, sid, sdp string) error {
 		fn(ctx, plugin.ChannelContext{Peer: p, Label: label, Rest: rest}, dc)
 	})
 
-	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: sdp}); err != nil {
+	return s.reply(p, sdp)
+}
+
+// restart answers an ICE restart: the browser changed networks or was frozen
+// in the background, and wants a new route for a connection this daemon
+// still has. Its channels, and the sessions on them, carry on. One the
+// daemon has already dropped can't come back; the error sends bye, and the
+// browser makes a new connection.
+func (s *Server) restart(from, sid, sdp string) error {
+	p := s.peer(sid)
+	if p == nil {
+		return errors.New("no connection to restart")
+	}
+	p.mu.Lock()
+	p.from = from
+	p.answered = false
+	p.mu.Unlock()
+	slog.Info("peer ICE restart", "sid", sid)
+	return s.reply(p, sdp)
+}
+
+// reply answers p's offer, then sends the candidates gathered meanwhile.
+func (s *Server) reply(p *peer, sdp string) error {
+	if err := p.pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: sdp}); err != nil {
 		return err
 	}
-	ans, err := pc.CreateAnswer(nil)
+	ans, err := p.pc.CreateAnswer(nil)
 	if err != nil {
 		return err
 	}
-	if err := pc.SetLocalDescription(ans); err != nil {
+	if err := p.pc.SetLocalDescription(ans); err != nil {
 		return err
 	}
-	s.send(from, sid, protocol.SignalData{Type: "answer", SDP: ans.SDP})
+	p.mu.Lock()
+	to := p.from
+	p.mu.Unlock()
+	s.send(to, p.sid, protocol.SignalData{Type: "answer", SDP: ans.SDP})
 	p.mu.Lock()
 	p.answered = true
 	pending := p.pending
 	p.pending = nil
 	p.mu.Unlock()
 	for _, c := range pending {
-		s.send(from, sid, c)
+		s.send(to, p.sid, c)
 	}
 	return nil
 }
@@ -311,7 +364,7 @@ func (s *Server) CloseClient(connID string) {
 	s.mu.Lock()
 	var closing []*peer
 	for _, p := range s.peers {
-		if p.from == connID {
+		if p.Client() == connID {
 			closing = append(closing, p)
 		}
 	}

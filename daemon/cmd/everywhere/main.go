@@ -169,7 +169,7 @@ func daemon(args []string) error {
 	hostname, _ := os.Hostname()
 	home, _ := os.UserHomeDir()
 	// The core's features; plugins add theirs.
-	features := []string{protocol.FeatureUpdate, protocol.FeatureArchive, protocol.FeatureTabs, protocol.FeatureIcons, protocol.FeatureMkdir, protocol.FeatureAgents, protocol.FeatureAutoUpdate}
+	features := []string{protocol.FeatureUpdate, protocol.FeatureArchive, protocol.FeatureTabs, protocol.FeatureIcons, protocol.FeatureMkdir, protocol.FeatureAgents, protocol.FeatureAutoUpdate, protocol.FeatureICERestart}
 	manager, installed := external.Load(config.PluginsDir(), config.PluginEnabled, config.SetPluginEnabled)
 	all := append(append(builtin.Plugins(), manager), installed...)
 	srv := peer.NewServer(st, protocol.DeviceInfo{
