@@ -117,6 +117,20 @@ func (windowsHost) showWorkspace(int32) error {
 	return errors.New("Windows has no workspaces")
 }
 
+// showPointer makes Windows draw its pointer for the session when no mouse
+// is plugged in (pointerShower).
+func (windowsHost) showPointer() func() {
+	restore, err := win32.ShowPointer()
+	if err != nil {
+		slog.Warn("desktop: showing the pointer", "err", err)
+		return nil
+	}
+	if restore != nil {
+		slog.Info("desktop: the pointer was hidden (no mouse plugged in?); Mouse Keys is on for the session, which shows it")
+	}
+	return restore
+}
+
 // windowBounds is where window address is now (liveWindows).
 func (windowsHost) windowBounds(address string) (at, size [2]int, ok bool) {
 	h, err := win32.ParseID(address)

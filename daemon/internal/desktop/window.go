@@ -113,6 +113,13 @@ func (g *windowGeom) clip() {
 	}
 }
 
+// pointerShower is a host that may hide its pointer from a session's
+// input (Windows with no mouse plugged in), and can show it for the session.
+type pointerShower interface {
+	// showPointer returns what undoes it, or nil if it changed nothing.
+	showPointer() func()
+}
+
 // liveWindows is a host whose window streams show the window's part of its
 // monitor, and that can say cheaply where a window is now (Windows).
 type liveWindows interface {

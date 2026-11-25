@@ -74,6 +74,7 @@ type session struct {
 	padsErr   error
 	connected bool
 	uninhibit func()
+	unshow    func() // puts the host's pointer back as it was (pointerShower)
 
 	closeOnce sync.Once
 }
@@ -807,6 +808,9 @@ func (s *session) onConnected() {
 	}
 	s.connected = true
 	s.uninhibit = inhibitSleep("Remote desktop session from " + s.viewer.Name)
+	if ps, ok := s.host.(pointerShower); ok {
+		s.unshow = ps.showPointer()
+	}
 	if s.host.isClaude() {
 		s.host.notify("Remote desktop started", s.viewer.Name+" is viewing and controlling Claude's desktop on this computer")
 	} else {
@@ -844,7 +848,7 @@ func (s *session) close(reason string) {
 			s.media.cap.ReleaseAll()
 		}
 		s.stopMedia()
-		wasConnected, uninhibit, pads := s.connected, s.uninhibit, s.pads
+		wasConnected, uninhibit, unshow, pads := s.connected, s.uninhibit, s.unshow, s.pads
 		s.pads = nil
 		s.mu.Unlock()
 		if pads != nil {
@@ -853,6 +857,9 @@ func (s *session) close(reason string) {
 		// pion's Close waits seconds for a live transport to shut down; don't
 		// make a viewer taking over wait for it.
 		go func() { _ = s.pc.Close() }()
+		if unshow != nil {
+			unshow()
+		}
 		if uninhibit != nil {
 			uninhibit()
 		}
