@@ -44,12 +44,16 @@ func setMouseKeys(mk mouseKeys) error {
 
 // ShowPointer makes Windows draw the pointer when it hides it because no
 // mouse is plugged in (input that programs inject doesn't count as one), by
-// turning Mouse Keys on: Windows shows the pointer whenever it's on. It does
-// nothing if the pointer is showing or Mouse Keys is already on. restore
+// turning Mouse Keys on: Windows shows the pointer whenever it's on, and
+// Mouse Keys ignores injected keys, so the viewer's numpad still types. As
+// Sunshine does, it goes by whether Windows says a mouse is present; and
+// since Windows may say so for a mouse that isn't there (a remote desktop
+// one, a port), also by whether it draws the pointer. It does nothing if
+// there's a mouse and its pointer shows, or Mouse Keys is already on. restore
 // puts Mouse Keys back as it was, unless someone changed it since; it is nil
 // when nothing changed.
 func ShowPointer() (restore func(), err error) {
-	if pointerDrawn() {
+	if mousePresent() && pointerDrawn() {
 		return nil, nil
 	}
 	was, err := getMouseKeys()
@@ -81,4 +85,11 @@ func pointerDrawn() bool {
 		return true // can't tell; leave Mouse Keys alone
 	}
 	return ci.Flags&cursorShowing != 0 && ci.Cursor != 0
+}
+
+// mousePresent reports whether Windows says a mouse is plugged in (SM_MOUSEPRESENT).
+func mousePresent() bool {
+	const smMousePresent = 19
+	r, _, _ := procGetSystemMetrics.Call(smMousePresent)
+	return r != 0
 }

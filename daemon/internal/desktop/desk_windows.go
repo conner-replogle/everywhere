@@ -126,7 +126,7 @@ func (windowsHost) showPointer() func() {
 		return nil
 	}
 	if restore != nil {
-		slog.Info("desktop: the pointer was hidden (no mouse plugged in?); Mouse Keys is on for the session, which shows it")
+		slog.Info("desktop: no mouse plugged in, or its pointer isn't drawn; Mouse Keys is on for the session, which shows it")
 	}
 	return restore
 }
