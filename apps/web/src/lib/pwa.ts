@@ -58,6 +58,8 @@ export function useInstallApp(): (() => Promise<void>) | null {
  * which only allows them once the app is on the home screen; or "unsupported".
  */
 export function pushSupport(): "ok" | "install" | "unsupported" {
+  // The iOS app (apps/ios) is a WKWebView, which has no Web Push.
+  if (inIOSApp) return "unsupported";
   const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
   if (ios && !isStandalone()) return "install";
   if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return "unsupported";
@@ -70,6 +72,9 @@ function isStandalone(): boolean {
     (navigator as Navigator & { standalone?: boolean }).standalone === true
   );
 }
+
+/** In the iOS app (apps/ios), which sets window.everywhereIOS before the page loads. */
+export const inIOSApp = "everywhereIOS" in window;
 
 /** The service worker, or null without one (dev, or unsupported). */
 async function registration(): Promise<ServiceWorkerRegistration | null> {
