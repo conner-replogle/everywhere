@@ -52,6 +52,9 @@ type Store interface {
 	SetAgentWorktree(threadID, path, branch string) error
 	SetAgentContinue(threadID string, cont bool) error
 	AgentThreadsToContinue() ([]string, error)
+	SetAgentGoal(threadID string, goal json.RawMessage) error
+	SetAgentWake(threadID string, wake json.RawMessage) error
+	AgentThreadsWithGoal() ([]string, error)
 	SetAgentContext(threadID string, usage json.RawMessage) error
 	SetAgentEffort(threadID, effort string) error
 	SetAgentThinking(threadID string, on bool) error
@@ -87,6 +90,17 @@ type Manager struct {
 	// RefreshRetryWait is the first wait before retrying a turn that lost
 	// the race to renew claude's sign-in (see maxRefreshRetries).
 	RefreshRetryWait time.Duration
+	// GoalDelay is how long a goal waits after a turn ends before starting
+	// the next, giving the user a moment to step in.
+	GoalDelay time.Duration
+	// GoalWaitTimeout is the longest a goal waits on a process before its
+	// next turn starts anyway; 0 means 30 minutes.
+	GoalWaitTimeout time.Duration
+	// GoalMaxTurns is a goal's turn budget when it's set without one; 0
+	// means DefaultGoalMaxTurns.
+	GoalMaxTurns int
+	// wakeMin overrides MinWake, for tests.
+	wakeMin time.Duration
 	// WorktreeDir holds the worktrees of threads that run in one.
 	WorktreeDir string
 	// ThreadArgs, if set, gives a thread's claude process extra CLI flags,
@@ -158,6 +172,7 @@ func NewManager(st Store, dataDir string, onChange func()) *Manager {
 	m := &Manager{
 		IdleTimeout:      30 * time.Minute,
 		RefreshRetryWait: 20 * time.Second,
+		GoalDelay:        3 * time.Second,
 		WorktreeDir:      filepath.Join(dataDir, "worktrees"),
 		attachments:      attachmentStore{root: filepath.Join(dataDir, "attachments")},
 		tokenPath:        filepath.Join(dataDir, "claude-token.json"),
@@ -239,6 +254,10 @@ func (m *Manager) MarkDone(threadID string) (afterTurn bool, err error) {
 	ran := false
 	s.call(func() {
 		ran = true
+		if goalRunning(s.state.Goal) {
+			err = errors.New("this thread has a goal: report it with goal_update (status complete) instead")
+			return
+		}
 		if s.turnActive {
 			s.doneAfterTurn, afterTurn = true, true
 			return
@@ -406,6 +425,69 @@ func (m *Manager) ContinueMarked() {
 		slog.Info("continuing claude thread after restart", "thread", id)
 		s.do(s.continueTurn)
 	}
+	// Goals go on too (a continued turn's end continues its goal), and
+	// wakes are set again.
+	goals, err := m.store.AgentThreadsWithGoal()
+	if err != nil {
+		slog.Warn("listing threads with goals", "err", err)
+		return
+	}
+	for _, id := range goals {
+		s, err := m.session(id)
+		if err != nil {
+			continue
+		}
+		slog.Info("continuing goal after restart", "thread", id)
+		s.do(s.resumeGoal)
+	}
+}
+
+// Goal is a thread's goal, or nil.
+func (m *Manager) Goal(threadID string) (*protocol.AgentGoal, error) {
+	s, err := m.session(threadID)
+	if err != nil {
+		return nil, err
+	}
+	var g *protocol.AgentGoal
+	ran := false
+	s.call(func() { ran, g = true, s.state.Goal })
+	if !ran {
+		return nil, errClosed
+	}
+	return g, nil
+}
+
+// GoalStatus is the status of a loaded thread's goal, or "".
+func (m *Manager) GoalStatus(threadID string) string {
+	m.mu.Lock()
+	s := m.sessions[threadID]
+	m.mu.Unlock()
+	if s == nil {
+		return ""
+	}
+	return s.pub.Load().goal
+}
+
+// UpdateGoal is goal_update, from the thread's agent: status complete,
+// blocked or waiting, with its reason. processes says whether any of the
+// thread's processes runs, which a wait needs (or a wake). It returns what
+// to tell the agent.
+func (m *Manager) UpdateGoal(threadID, status, reason string, processes bool) (string, error) {
+	s, err := m.session(threadID)
+	if err != nil {
+		return "", err
+	}
+	var reply string
+	ran := false
+	s.call(func() {
+		ran = true
+		reply, err = s.agentUpdateGoal(status, reason, processes)
+		s.changed()
+	})
+	if !ran {
+		return "", errClosed
+	}
+	return reply, err
 }
 
 // Shutdown stops every claude process.

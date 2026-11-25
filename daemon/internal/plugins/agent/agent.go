@@ -233,6 +233,18 @@ func (s service) Send(threadID, text string) error {
 
 func (s service) MarkDone(threadID string) (bool, error) { return s.p.m.MarkDone(threadID) }
 
+func (s service) Goal(threadID string) (*protocol.AgentGoal, error) { return s.p.m.Goal(threadID) }
+
+func (s service) GoalStatus(threadID string) string { return s.p.m.GoalStatus(threadID) }
+
+func (s service) UpdateGoal(threadID, status, reason string, processes bool) (string, error) {
+	return s.p.m.UpdateGoal(threadID, status, reason, processes)
+}
+
+func (s service) ScheduleWake(threadID string, in time.Duration, reason string) (time.Time, error) {
+	return s.p.m.ScheduleWake(threadID, in, reason)
+}
+
 func (s service) ShareFiles(threadID, caption string, paths []string) ([]protocol.AgentAttachment, error) {
 	return s.p.m.ShareFiles(threadID, caption, paths)
 }

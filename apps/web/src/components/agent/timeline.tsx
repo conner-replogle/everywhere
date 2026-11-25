@@ -1,6 +1,7 @@
 import type { AgentAttachment, AgentEvent, AgentStreaming } from "@everywhere/protocol";
 import {
   ActivityIcon,
+  AlarmClockIcon,
   BrainIcon,
   CheckIcon,
   ChevronRightIcon,
@@ -10,6 +11,7 @@ import {
   LoaderCircleIcon,
   Minimize2Icon,
   RotateCcwIcon,
+  TargetIcon,
   XIcon,
 } from "lucide-react";
 import { memo, useState } from "react";
@@ -252,6 +254,21 @@ function ItemView({
             <Minimize2Icon className="size-3.5 shrink-0" />
             <span>{e.text}</span>
             <span className="h-px flex-1 bg-border" />
+          </div>
+        );
+      }
+      if (e.kind === "goal" || e.kind === "wake") {
+        const Icon = e.kind === "goal" ? TargetIcon : AlarmClockIcon;
+        return (
+          <div
+            className={cn(
+              "flex items-start justify-center gap-1.5 text-xs text-muted-foreground",
+              e.kind === "goal" && (e.status === "blocked" || e.status === "limited") && "text-warn",
+              e.kind === "goal" && e.status === "complete" && "text-live",
+            )}
+          >
+            <Icon className="mt-px size-3.5 shrink-0" />
+            <span className="line-clamp-4 min-w-0 whitespace-pre-wrap">{e.text}</span>
           </div>
         );
       }

@@ -11,6 +11,7 @@ import (
 	"github.com/conner-replogle/everywhere/daemon/internal/plugins/done"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugins/files"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugins/git"
+	"github.com/conner-replogle/everywhere/daemon/internal/plugins/goal"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugins/processes"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugins/scratch"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugins/share"
@@ -35,6 +36,7 @@ func Plugins() []plugin.Plugin {
 		clone.New(),
 		share.New(),
 		done.New(),
+		goal.New(),
 		tunnel.New(),
 	}
 }

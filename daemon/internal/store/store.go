@@ -190,6 +190,12 @@ END;
 INSERT INTO search_docs (thread_id, seq, at, role, text)
 SELECT thread_id, seq, at, role, text FROM search_source WHERE COALESCE(text, '') != '';
 `,
+	// An agent thread's goal (goal mode), as JSON: a protocol.AgentGoal;
+	// and the wake its agent scheduled, a protocol.AgentWake.
+	`
+ALTER TABLE threads ADD COLUMN agent_goal TEXT;
+ALTER TABLE threads ADD COLUMN agent_wake TEXT;
+`,
 }
 
 type Store struct {
@@ -754,19 +760,23 @@ type AgentThread struct {
 	// SharedWorktree means Worktree is the one of the thread this is a tab
 	// of, so it stays when the tab closes.
 	SharedWorktree bool
+	// Goal is the thread's goal (a protocol.AgentGoal), or nil.
+	Goal json.RawMessage
+	// Wake is the wake its agent scheduled (a protocol.AgentWake), or nil.
+	Wake json.RawMessage
 }
 
 func (s *Store) AgentThread(threadID string) (AgentThread, error) {
 	var a AgentThread
-	var session, resumeAt, model, base, worktree, branch, ctxUsage, effort sql.NullString
+	var session, resumeAt, model, base, worktree, branch, ctxUsage, effort, goal, wake sql.NullString
 	err := s.db.QueryRow(`
 SELECT t.project_id, `+threadDir+`, p.is_scratch, t.kind, t.agent_session_id, t.agent_resume_at, t.agent_model, t.agent_permission_mode,
        t.agent_workspace, t.agent_base_branch, t.agent_worktree, t.agent_branch, t.agent_continue, t.agent_context,
-       t.agent_effort, t.agent_thinking, COALESCE(t.agent_worktree = par.agent_worktree, 0)
+       t.agent_effort, t.agent_thinking, COALESCE(t.agent_worktree = par.agent_worktree, 0), t.agent_goal, t.agent_wake
 FROM threads t JOIN projects p ON p.id = t.project_id LEFT JOIN threads par ON par.id = t.parent_id
 WHERE t.id = ?`, threadID,
 	).Scan(&a.ProjectID, &a.Dir, &a.Scratch, &a.Kind, &session, &resumeAt, &model, &a.PermissionMode,
-		&a.Workspace, &base, &worktree, &branch, &a.Continue, &ctxUsage, &effort, &a.Thinking, &a.SharedWorktree)
+		&a.Workspace, &base, &worktree, &branch, &a.Continue, &ctxUsage, &effort, &a.Thinking, &a.SharedWorktree, &goal, &wake)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
 	}
@@ -776,7 +786,52 @@ WHERE t.id = ?`, threadID,
 	if ctxUsage.Valid {
 		a.Context = json.RawMessage(ctxUsage.String)
 	}
+	if goal.Valid {
+		a.Goal = json.RawMessage(goal.String)
+	}
+	if wake.Valid {
+		a.Wake = json.RawMessage(wake.String)
+	}
 	return a, err
+}
+
+// SetAgentWake saves the wake a thread's agent scheduled; nil removes it.
+func (s *Store) SetAgentWake(threadID string, wake json.RawMessage) error {
+	var v any
+	if wake != nil {
+		v = string(wake)
+	}
+	return s.execOne("UPDATE threads SET agent_wake = ? WHERE id = ?", v, threadID)
+}
+
+// SetAgentGoal saves a thread's goal; nil removes it.
+func (s *Store) SetAgentGoal(threadID string, goal json.RawMessage) error {
+	var v any
+	if goal != nil {
+		v = string(goal)
+	}
+	return s.execOne("UPDATE threads SET agent_goal = ? WHERE id = ?", v, threadID)
+}
+
+// AgentThreadsWithGoal lists the threads whose goal keeps them working
+// (active or waiting) or that have a wake scheduled, of any agent kind.
+func (s *Store) AgentThreadsWithGoal() ([]string, error) {
+	rows, err := s.db.Query(`SELECT id FROM threads
+WHERE archived_at IS NULL AND (agent_wake IS NOT NULL OR
+  (agent_goal IS NOT NULL AND json_extract(agent_goal, '$.status') IN ('active', 'waiting')))`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // SetAgentWorkspace chooses where a thread runs. It's only meant to change

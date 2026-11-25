@@ -7,6 +7,7 @@ import {
   RotateCcwIcon,
   RotateCwIcon,
   SquareIcon,
+  TargetIcon,
   XIcon,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -48,6 +49,7 @@ import {
   useAttachments,
   WorkspacePicker,
 } from "./composer-parts";
+import { GOAL_COMMAND, GoalBar, goalRunning } from "./goal";
 import { PendingRequest } from "./pending";
 import { ResumeBanner } from "./resume-banner";
 import { useAutoRecap } from "./auto-recap";
@@ -71,7 +73,7 @@ export interface ToolUse {
 const PAGE = 150;
 
 // Features of the engine rather than of claude.
-const shared = ["attachments", "history", "worktrees"];
+const shared = ["attachments", "history", "worktrees", "goal"];
 
 export function AgentView({
   peer,
@@ -143,7 +145,13 @@ export function AgentView({
   const needModels = features.includes("worktrees") && !!state && !harness && state.models.length === 0;
   const agentInfo = useRpc(peer, "agent.info", {}, [], needModels);
   const models = state?.models.length ? state.models : (agentInfo.data?.models ?? []);
-  const commands = state?.commands?.length ? state.commands : (agentInfo.data?.commands ?? []);
+  const canGoal = features.includes("goal");
+  const agentCommands = state?.commands?.length ? state.commands : (agentInfo.data?.commands ?? []);
+  // The daemon runs /goal itself, in place of any the agent has.
+  const commands = useMemo(
+    () => (canGoal ? [GOAL_COMMAND, ...agentCommands.filter((c) => c.name !== "goal")] : agentCommands),
+    [canGoal, agentCommands],
+  );
   const limits = state?.limits?.length ? state.limits : agentInfo.data?.limits;
   const unlocked = !!state && !state.workspace.locked;
   const git = useRpc(peer, "git.info", { projectId }, [], unlocked && features.includes("worktrees"));
@@ -348,6 +356,15 @@ export function AgentView({
             ))}
             {claudeAuth.data && onSignIn && <SignedOutBanner auth={claudeAuth.data} onSignIn={onSignIn} />}
             <ResumeBanner threadId={threadId} context={state?.context} canCompact={canCompact} onCompact={compact} />
+            {canGoal && (
+              <GoalBar
+                goal={state?.goal}
+                wake={state?.wake}
+                name={name}
+                disabled={!agent.attached || !agent.synced}
+                send={user.send}
+              />
+            )}
             {aboveComposer}
             <StatusBar agent={agent} name={name} />
             <Composer
@@ -361,6 +378,7 @@ export function AgentView({
               limits={limits}
               git={git.data}
               canAttach={features.includes("attachments")}
+              canGoal={canGoal}
               name={name}
             />
             {!harness && agentInfo.data && !agentInfo.data.available && (
@@ -508,6 +526,7 @@ function Composer({
   limits,
   git,
   canAttach,
+  canGoal,
   name,
 }: {
   agent: AgentThread;
@@ -520,6 +539,8 @@ function Composer({
   limits: AgentLimit[] | undefined;
   git: Parameters<typeof WorkspacePicker>[0]["git"];
   canAttach: boolean;
+  /** The device runs goals: the composer can set one. */
+  canGoal: boolean;
   /** The agent's name, for the placeholder. */
   name: string;
 }) {
@@ -543,7 +564,11 @@ function Composer({
   // A recap runs as a turn, but it's background work: no Stop, no "current turn".
   const recapping = !!state?.recapping;
   const active = busy && !recapping;
-  const suggestion = !busy && text === "" ? state?.suggestion : undefined;
+  // Goal mode: what's sent becomes the thread's goal, which the agent works
+  // toward turn after turn. Only while no goal runs; then prompts join it.
+  const [goalMode, setGoalMode] = useState(false);
+  const settingGoal = goalMode && canGoal && !goalRunning(state?.goal);
+  const suggestion = !busy && !settingGoal && text === "" ? state?.suggestion : undefined;
   const model = models.find((m) => m.value === (state?.model || "default"));
 
   // Drafts from the thread's other panels, like browser annotations.
@@ -620,9 +645,22 @@ function Composer({
   // A prompt sent mid-recap would join the recap's turn; it's only a few seconds.
   // Other agents take one prompt per turn: nothing joins a turn in progress.
   const oneAtATime = !!state?.harness && active;
-  const canSend = ready && !dictating && !recapping && !oneAtATime && !files.uploading && (text.trim() !== "" || files.ready.length > 0);
+  const canSend =
+    ready &&
+    !dictating &&
+    !recapping &&
+    !oneAtATime &&
+    !files.uploading &&
+    (settingGoal ? text.trim() !== "" && files.ready.length === 0 : text.trim() !== "" || files.ready.length > 0);
   const submit = () => {
     if (!canSend) return;
+    if (settingGoal) {
+      agent.send({ t: "goal", action: "set", text: text.trim() });
+      setText("");
+      setBeforeRewrite(null);
+      setGoalMode(false);
+      return;
+    }
     const attachments = files.ready.map((a) => a.id);
     agent.send({ t: "send", text: text.trim(), ...(attachments.length ? { attachments } : {}) });
     setText("");
@@ -705,13 +743,15 @@ function Composer({
         placeholder={
           !ready
             ? "Connecting…"
-            : active
-              ? oneAtATime
-                ? `${name} is working… (Esc to stop)`
-                : "Add to the current turn… (Esc to stop)"
-              : suggestion
-                ? suggestion
-                : `Ask ${name} to do something… (/ for commands)`
+            : settingGoal
+              ? `Describe the goal: ${name} keeps working, turn after turn, until it's done`
+              : active
+                ? oneAtATime
+                  ? `${name} is working… (Esc to stop)`
+                  : "Add to the current turn… (Esc to stop)"
+                : suggestion
+                  ? suggestion
+                  : `Ask ${name} to do something… (/ for commands)`
         }
         className={cn(
           "block max-h-60 w-full resize-none bg-transparent px-3 pt-2.5 pb-1 outline-none placeholder:text-muted-foreground disabled:opacity-50",
@@ -761,6 +801,27 @@ function Composer({
           </>
         )}
         <DictateButton disabled={!ready} dictation={dictation} />
+        {canGoal && !goalRunning(state?.goal) && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className={cn("h-6 px-2 font-normal", settingGoal && "bg-secondary text-primary")}
+            disabled={!ready}
+            onClick={() => {
+              setGoalMode((m) => !m);
+              ref.current?.focus();
+            }}
+            aria-pressed={settingGoal}
+            title={
+              settingGoal
+                ? "Goal mode: what you send becomes the thread's goal. Click to send a normal message."
+                : `Set a goal: ${name} works toward it on its own, turn after turn, until it's done (or /goal)`
+            }
+          >
+            <TargetIcon />
+            Goal
+          </Button>
+        )}
         <RewriteButton
           rewriting={rewriting}
           canUndo={beforeRewrite !== null}

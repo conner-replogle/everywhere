@@ -3,6 +3,7 @@ package plugin
 import (
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 )
@@ -28,6 +29,17 @@ type AgentService interface {
 	Send(threadID, text string) error
 	// MarkDone marks the thread done when its turn completes (afterTurn) or now.
 	MarkDone(threadID string) (afterTurn bool, err error)
+	// Goal is the thread's goal (goal mode), or nil.
+	Goal(threadID string) (*protocol.AgentGoal, error)
+	// GoalStatus is the status of the thread's goal, or "".
+	GoalStatus(threadID string) string
+	// UpdateGoal reports the goal complete, blocked or waiting, for the
+	// thread's agent, and returns what to tell it. processes: some process
+	// of the thread's runs (to wait on).
+	UpdateGoal(threadID, status, reason string, processes bool) (string, error)
+	// ScheduleWake wakes the thread's agent after in, for reason (0
+	// cancels its wake), and returns when.
+	ScheduleWake(threadID string, in time.Duration, reason string) (time.Time, error)
 	// ShareFiles copies files into the thread's chat.
 	ShareFiles(threadID, caption string, paths []string) ([]protocol.AgentAttachment, error)
 	// Status reports whether the thread's claude runs, and its status.

@@ -347,7 +347,9 @@ export interface PluginKind {
  * threads.search over an index of prompts, replies and tool calls, with
  * SearchHit's thread details, role and score, and its projectId and
  * includeArchived. autoUpdate: updating when idle (UpdateInfo.auto,
- * waiting, lastAuto; device.setAutoUpdate).
+ * waiting, lastAuto; device.setAutoUpdate). goal: goal mode
+ * (AgentState.goal, the agent request goal, /goal prompts and the agent's
+ * goal_get and goal_update tools).
  */
 export type DeviceFeature =
   | "plugins"
@@ -374,7 +376,8 @@ export type DeviceFeature =
   | "pin"
   | "search"
   | "autoUpdate"
-  | "iceRestart";
+  | "iceRestart"
+  | "goal";
 
 /**
  * What desktop.start captures: a monitor by name, or a window by id
@@ -510,6 +513,8 @@ export interface Thread {
   running: boolean;
   /** Set for claude threads; see AgentState.status. */
   agentStatus?: AgentStatus;
+  /** The status of an agent thread's goal, while its session is loaded (goal feature). */
+  goal?: AgentGoalStatus;
   /** The git worktree a claude thread runs in, once created. */
   worktree?: string;
   /** archive: set while archived (hidden, its shell or claude stopped). */
@@ -1236,7 +1241,15 @@ export type AgentClientMsg =
    * forking claude's session there. files: also undo claude's file edits since
    * (only edits made through its edit tools, not by shell commands).
    */
-  | { t: "rewind"; id: string; files?: boolean };
+  | { t: "rewind"; id: string; files?: boolean }
+  /**
+   * Goal mode: set gives the thread an objective (text) the daemon keeps it
+   * working toward, turn after turn, for up to maxTurns turns.
+   */
+  | { t: "goal"; action: "set"; text: string; maxTurns?: number }
+  | { t: "goal"; action: "pause" | "resume" | "clear" }
+  /** Cancels the wake the agent scheduled (state.wake). */
+  | { t: "cancelWake" };
 
 export type EffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
 
@@ -1291,6 +1304,47 @@ export interface AgentState {
   modes?: AgentMode[];
   /** Set when the thread runs another agent than Claude; the view shows only what it supports. */
   harness?: AgentHarness;
+  /** The thread's goal, if it has one (goal mode). Absent on older daemons. */
+  goal?: AgentGoal;
+  /** When the agent asked to be woken (thread_wake), if it did. */
+  wake?: AgentWake;
+}
+
+/** A wake the thread's agent scheduled: at `at` (unix ms) a turn starts with its reason. */
+export interface AgentWake {
+  at: number;
+  reason: string;
+}
+
+/**
+ * active: the daemon starts another turn whenever one ends. waiting: the
+ * agent waits on a process of its own, which wakes it. paused: by the user,
+ * or after no progress or a failed or stopped turn. blocked: the agent needs
+ * the user. limited: it used its turns. complete: the agent checked the
+ * objective was met.
+ */
+export type AgentGoalStatus = "active" | "waiting" | "paused" | "blocked" | "limited" | "complete";
+
+/** A thread's goal: turns toward objective keep starting until it's complete, blocked or paused. */
+export interface AgentGoal {
+  objective: string;
+  status: AgentGoalStatus;
+  /** Why it stopped or waits. */
+  reason?: string;
+  /** Turns that ended while it was active, and where it stops. */
+  turns: number;
+  maxTurns: number;
+  /** Turns in a row that used no tools. */
+  stalls?: number;
+  /**
+   * Set once the agent reported the goal complete: "due" until the turn
+   * that checks the claim starts, then "running". Only a claim made in that
+   * turn completes the goal.
+   */
+  audit?: "due" | "running";
+  /** Unix milliseconds. */
+  setAt: number;
+  updatedAt: number;
 }
 
 export interface AgentMode {
@@ -1481,7 +1535,8 @@ export type AgentEvent = AgentEventBase &
         durationMs?: number;
       }
     /** kind compact: the conversation was compacted. */
-    | { type: "notice"; text: string; kind?: "compact" }
+    /** goal: the goal changed or a goal turn started (status is the goal's, if any); wake: a wake was set, canceled or fired. */
+    | { type: "notice"; text: string; kind?: "compact" | "goal" | "wake"; status?: AgentGoalStatus | "cleared" }
     /**
      * The conversation was rolled back to before prompt `id` (whose text is
      * `text`): events from fromSeq up to this one were removed.

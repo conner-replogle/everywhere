@@ -12,6 +12,7 @@ import (
 
 	"github.com/pion/webrtc/v4"
 
+	"github.com/conner-replogle/everywhere/daemon/internal/agent"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugin"
 	"github.com/conner-replogle/everywhere/daemon/internal/plugins/termchan"
 	"github.com/conner-replogle/everywhere/daemon/internal/process"
@@ -115,10 +116,11 @@ func (p *Plugin) Start(h plugin.Host) error {
 
 func (p *Plugin) Stop() { p.m.Shutdown() }
 
-// notice passes a process event to the claude thread or tab that started
-// the process, or else to its thread if that's a claude thread.
+// notice passes a process event to the agent thread or tab that started
+// the process, or else to its thread if that's an agent's (claude's or
+// another agent's).
 func (p *Plugin) notice(threadID, agentThreadID string, n process.Notice) {
-	agent, ok := plugin.Lookup[plugin.AgentService](p.h, plugin.ServiceAgent)
+	svc, ok := plugin.Lookup[plugin.AgentService](p.h, plugin.ServiceAgent)
 	if !ok {
 		return
 	}
@@ -127,11 +129,11 @@ func (p *Plugin) notice(threadID, agentThreadID string, n process.Notice) {
 			continue
 		}
 		t, err := p.h.Threads().Get(id)
-		if err != nil || t.Kind != protocol.ThreadClaude || t.ArchivedAt != nil {
+		if err != nil || !agent.IsAgentKind(t.Kind) || t.ArchivedAt != nil {
 			continue
 		}
-		agent.Notify(id, n.Name, n.Text, n.Prompt, n.Wake)
+		svc.Notify(id, n.Name, n.Text, n.Prompt, n.Wake)
 		return
 	}
-	slog.Debug("process event with no claude thread to tell", "thread", threadID, "process", n.Name)
+	slog.Debug("process event with no agent thread to tell", "thread", threadID, "process", n.Name)
 }

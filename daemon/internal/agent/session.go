@@ -63,6 +63,7 @@ var (
 type published struct {
 	running bool
 	status  string
+	goal    string // the goal's status, or ""
 }
 
 // session is one claude thread. Everything below the channels is owned by
@@ -116,6 +117,14 @@ type session struct {
 	firstReply  string // claude's last top-level text in the current turn
 	// held are process events waiting for the next prompt.
 	held []string
+	// goalTimer starts the goal's next turn (see goal.go); turnTools counts
+	// the current turn's tool calls, and goalNotify, if set, is the push
+	// notification kind its end sends in place of done.
+	goalTimer  *time.Timer
+	turnTools  int
+	goalNotify string
+	// wakeTimer fires state.Wake.
+	wakeTimer *time.Timer
 }
 
 func newSession(m *Manager, threadID string, a store.AgentThread) *session {
@@ -151,6 +160,8 @@ func newSession(m *Manager, threadID string, a store.AgentThread) *session {
 			Context:  usage,
 			Effort:   a.Effort,
 			Thinking: a.Thinking,
+			Goal:     loadGoal(a.Goal),
+			Wake:     loadWake(a.Wake),
 		},
 	}
 	if agent, ok := harness.ByKind(a.Kind); ok {
@@ -166,7 +177,8 @@ func newSession(m *Manager, threadID string, a store.AgentThread) *session {
 			s.applyAgentConfig(c)
 		}
 	}
-	s.pub.Store(&published{status: statusStopped})
+	s.pub.Store(&published{status: statusStopped, goal: goalStatus(s.state.Goal)})
+	s.armWake()
 	return s
 }
 
@@ -228,6 +240,10 @@ func (s *session) run() {
 				s.closeProc()
 			}
 		case <-s.quit:
+			s.cancelGoalTimer()
+			if s.wakeTimer != nil {
+				s.wakeTimer.Stop()
+			}
 			if s.proc != nil {
 				s.closeProc()
 				for range s.procMsgs {
@@ -312,6 +328,10 @@ func (s *session) handle(c Client, msg protocol.AgentClientMsg) {
 		} else {
 			err = s.setThinking(*msg.Thinking)
 		}
+	case "goal":
+		err = s.goalCommand(msg.Action, msg.Text, msg.MaxTurns)
+	case "cancelWake":
+		s.setWake(nil)
 	default:
 		err = fmt.Errorf("unknown request %q", msg.T)
 	}
@@ -326,6 +346,11 @@ func (s *session) send(text string, attachmentIDs []string, via string) error {
 	text = strings.TrimSpace(text)
 	if text == "" && len(attachmentIDs) == 0 {
 		return nil
+	}
+	if len(attachmentIDs) == 0 {
+		if ok, err := s.goalSlashCommand(text); ok {
+			return err
+		}
 	}
 	files, err := s.m.attachments.resolve(s.threadID, attachmentIDs)
 	if err != nil {
@@ -1241,6 +1266,7 @@ func (s *session) onAssistant(msg claude.Message) {
 			}
 		case "tool_use", "server_tool_use", "mcp_tool_use":
 			ev.Type, ev.ID, ev.Name, ev.Input = "tool", b.ID, b.Name, clipJSON(b.Input)
+			s.turnTools++
 		default:
 			continue
 		}
@@ -1435,6 +1461,7 @@ func (s *session) cancelRefreshRetry() {
 func (s *session) beginTurn() {
 	s.turnActive, s.interrupted, s.authFailed, s.refreshBusy = true, false, false, false
 	s.cancelRefreshRetry() // whatever starts a turn retries it
+	s.goalTurnBegan()
 	s.firstReply = ""
 	s.state.Suggestion = ""
 	s.emit(protocol.AgentEvent{Type: "turn", Status: "started"})
@@ -1455,12 +1482,19 @@ func (s *session) endTurn(ev protocol.AgentEvent) {
 	}
 	recap := s.recapping
 	s.recapping, s.state.Recapping = false, false
+	goalGoesOn := s.goalAfterTurn(ev, recap)
 	if recap {
 		return // nothing the user asked for finished
 	}
 	switch ev.Status {
 	case "completed":
-		s.notify("done", "")
+		switch {
+		case goalGoesOn: // the thread isn't finished, only this turn
+		case s.goalNotify != "":
+			s.notify(s.goalNotify, "")
+		default:
+			s.notify("done", "")
+		}
 	case "error":
 		// noteAuthFailed's notice said so already, and refreshBusy is retried.
 		if ev.Kind != "signedOut" && ev.Kind != "refreshBusy" {
@@ -1601,7 +1635,7 @@ func (s *session) changed() {
 		s.idle = nil
 	}
 	s.broadcast(s.stateMsg())
-	next := &published{running: s.proc != nil, status: s.state.Status}
+	next := &published{running: s.proc != nil, status: s.state.Status, goal: goalStatus(s.state.Goal)}
 	if s.recapping && (next.status == statusWorking || next.status == statusStarting) {
 		next.status = statusIdle
 	}

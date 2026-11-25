@@ -180,6 +180,10 @@ const (
 	// connection with its sid, which the daemon keeps a while after it goes
 	// quiet.
 	FeatureICERestart = "iceRestart"
+	// FeatureGoal: goal mode and wakes. AgentState.goal and wake,
+	// Thread.goal, the agent requests goal and cancelWake, /goal prompts,
+	// and the agent's goal_get, goal_update and thread_wake tools.
+	FeatureGoal = "goal"
 )
 
 // AgentsInfo is the result of device.agents: whether this device lets
@@ -344,6 +348,9 @@ type Thread struct {
 	Running bool `json:"running"`
 	// AgentStatus is set for claude threads; see AgentState.Status.
 	AgentStatus string `json:"agentStatus,omitempty"`
+	// Goal is the status of an agent thread's goal (see AgentGoal), while
+	// its session is loaded.
+	Goal string `json:"goal,omitempty"`
 	// Worktree is the git worktree a claude thread runs in, once created.
 	Worktree string `json:"worktree,omitempty"`
 	// ArchivedAt is set while the thread is archived: hidden from the
@@ -569,6 +576,11 @@ type AgentClientMsg struct {
 	Files       bool     `json:"files,omitempty"` // rewind: restore files too
 	// Via names the connected agent that sent a prompt, shown with it.
 	Via string `json:"via,omitempty"`
+	// Action (goal) is set | pause | resume | clear; set takes the
+	// objective in Text and, optionally, MaxTurns. (cancelWake takes
+	// nothing.)
+	Action   string `json:"action,omitempty"`
+	MaxTurns int    `json:"maxTurns,omitempty"`
 }
 
 // Frames from the daemon, discriminated by T.
@@ -661,6 +673,58 @@ type AgentState struct {
 	// Harness is set for agents other than claude: which, and the app
 	// shows only what they support.
 	Harness *AgentHarness `json:"harness,omitempty"`
+	// Goal is the thread's goal, if it has one (goal mode).
+	Goal *AgentGoal `json:"goal,omitempty"`
+	// Wake is when the agent asked to be woken (thread_wake), if it did.
+	Wake *AgentWake `json:"wake,omitempty"`
+}
+
+// AgentWake is a wake the thread's agent scheduled for itself: at At (unix
+// milliseconds) a turn starts, or the message joins the one in progress.
+type AgentWake struct {
+	At     int64  `json:"at"`
+	Reason string `json:"reason"`
+}
+
+// Goal statuses. Only active and waiting goals keep the agent going.
+const (
+	// GoalActive: the daemon starts another turn whenever one ends.
+	GoalActive = "active"
+	// GoalWaiting: the agent waits on a process of its own, which wakes it.
+	GoalWaiting = "waiting"
+	// GoalPaused: by the user, or by the daemon (no progress, a failed or
+	// stopped turn). Resuming makes it active again.
+	GoalPaused = "paused"
+	// GoalBlocked: the agent needs the user to go on.
+	GoalBlocked = "blocked"
+	// GoalLimited: it used its turns. Resuming gives it as many again.
+	GoalLimited = "limited"
+	// GoalComplete: the agent checked the objective was met.
+	GoalComplete = "complete"
+)
+
+// AgentGoal is a thread's goal: the daemon keeps starting turns toward
+// Objective, without the user, until the agent says it's complete or
+// blocked, or a limit pauses it.
+type AgentGoal struct {
+	Objective string `json:"objective"`
+	// Status is active | waiting | paused | blocked | limited | complete.
+	Status string `json:"status"`
+	// Reason is why it stopped or waits, in the agent's or daemon's words.
+	Reason string `json:"reason,omitempty"`
+	// Turns is how many turns ended while it was active; MaxTurns is where
+	// it stops.
+	Turns    int `json:"turns"`
+	MaxTurns int `json:"maxTurns"`
+	// Stalls counts turns in a row that used no tools.
+	Stalls int `json:"stalls,omitempty"`
+	// Audit is set once the agent reported the goal complete: "due" until
+	// the turn that checks the claim starts, then "running". Only a claim
+	// made during that turn completes the goal.
+	Audit string `json:"audit,omitempty"`
+	// SetAt and UpdatedAt are unix milliseconds.
+	SetAt     int64 `json:"setAt"`
+	UpdatedAt int64 `json:"updatedAt"`
 }
 
 // AgentMode is one of an agent's modes (OpenCode's build and plan).

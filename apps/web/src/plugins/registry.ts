@@ -7,6 +7,7 @@ import { dashboards } from "./builtin/dashboards";
 import { desktop } from "./builtin/desktop";
 import { files } from "./builtin/files";
 import { git } from "./builtin/git";
+import { goal } from "./builtin/goal";
 import { installed } from "./builtin/installed";
 import { pin } from "./builtin/pin";
 import { processes } from "./builtin/processes";
@@ -33,6 +34,7 @@ export const BUILTIN: readonly WebPlugin[] = [
   git,
   share,
   done,
+  goal,
   pin,
   recent,
   github,
