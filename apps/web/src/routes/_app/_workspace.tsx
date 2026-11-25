@@ -1,4 +1,4 @@
-import { createFileRoute, Outlet, useLocation } from "@tanstack/react-router";
+import { createFileRoute, Outlet, useLocation, useMatch } from "@tanstack/react-router";
 import { PanelLeftIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 import { AppSidebar } from "@/components/app-sidebar";
@@ -6,6 +6,7 @@ import { DebugPanel, useDebugPanelState } from "@/components/debug-panel";
 import { DeviceContext } from "@/components/device-context";
 import { useFleet } from "@/components/fleet";
 import { SearchProvider } from "@/components/search-overlay";
+import { ThreadGrid } from "@/components/thread-grid";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -25,6 +26,9 @@ function WorkspaceLayout() {
   useEffect(() => setSidebarOpen(false), [pathname]);
   // On phones the home page is the sidebar itself, not an empty page behind a drawer.
   const sidebarAsPage = pathname === "/";
+  // A thread's page is drawn here, among the others open beside it, so a
+  // device going offline or the URL moving to another thread leaves them be.
+  const threadMatch = useMatch({ from: "/_app/_workspace/d/$deviceId/t/$threadId", shouldThrow: false });
 
   return (
     <SearchProvider>
@@ -58,7 +62,16 @@ function WorkspaceLayout() {
           >
             <PanelLeftIcon className="size-5" />
           </Button>
-          <Outlet />
+          {threadMatch ? (
+            <ThreadGrid
+              deviceId={threadMatch.params.deviceId}
+              threadId={threadMatch.params.threadId}
+              tab={threadMatch.search.tab}
+              split={threadMatch.search.split}
+            />
+          ) : (
+            <Outlet />
+          )}
         </section>
         {debugEntry && (
           <DeviceContext.Provider value={debugEntry}>

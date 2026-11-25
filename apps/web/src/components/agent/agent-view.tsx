@@ -55,6 +55,7 @@ import { PERMISSION_MODES } from "@/lib/permission-modes";
 import { usePrefs } from "@/lib/prefs";
 import type { TimelineFilter } from "@/plugins/types";
 import { buildItems, type Item, RECAP_PROMPT, Timeline, type UserEvent } from "./timeline";
+import { useCellFocused } from "@/components/cell-focus";
 
 
 /** A tool call claude made, for plugins that react to it (see ThreadEvents["agent.toolUses"]). */
@@ -522,6 +523,8 @@ function Composer({
   /** The agent's name, for the placeholder. */
   name: string;
 }) {
+  // Beside other threads, only the focused one's composer takes the keyboard on mount.
+  const cellFocused = useCellFocused();
   // Kept per thread, so switching threads or tabs doesn't lose it.
   const [text, setText] = useState(() => loadDraft(threadId));
   useEffect(() => saveDraft(threadId, text), [threadId, text]);
@@ -653,7 +656,7 @@ function Composer({
         ref={ref}
         value={shown}
         rows={1}
-        autoFocus
+        autoFocus={cellFocused}
         disabled={!ready}
         readOnly={rewriting || dictating}
         onChange={(e) => {

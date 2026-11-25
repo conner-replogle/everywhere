@@ -1,0 +1,114 @@
+import { Link } from "@tanstack/react-router";
+import { LoaderIcon, RotateCcwIcon, WifiOffIcon } from "lucide-react";
+import { useDevice } from "@/components/device-context";
+import { canScratch, deviceName } from "@/components/scratch";
+import { useFleet } from "@/components/fleet";
+import { Button } from "@/components/ui/button";
+import { NO_ANSWER_MESSAGE, UNREACHABLE_MESSAGE } from "@/lib/peer";
+import { timeAgo } from "@/lib/utils";
+
+/** In place of a device's pages while it isn't connected: why, and what to do. */
+export function ConnectionPanel() {
+  const { deviceId, device, peer, conn } = useDevice();
+  const name = device?.name ?? "this device";
+
+  if (conn.state === "offline") {
+    return (
+      <Panel icon={<WifiOffIcon className="size-5 text-muted-foreground" />} title="Device offline">
+        <p>
+          {name}'s daemon isn't connected{device?.lastSeenAt ? ` (last seen ${timeAgo(device.lastSeenAt)})` : ""}. This
+          page reconnects on its own when it comes back.
+        </p>
+        <p>
+          On the machine, check it with{" "}
+          <code className="rounded bg-terminal px-1 py-0.5 font-mono text-xs text-foreground">everywhere status</code>.
+        </p>
+        <ElsewhereHint />
+      </Panel>
+    );
+  }
+
+  if (conn.state === "failed") {
+    const unreachable = conn.error === UNREACHABLE_MESSAGE;
+    const noAnswer = conn.error === NO_ANSWER_MESSAGE;
+    return (
+      <Panel
+        icon={<WifiOffIcon className="size-5 text-destructive" />}
+        title={unreachable ? UNREACHABLE_MESSAGE : noAnswer ? NO_ANSWER_MESSAGE : "Couldn't connect to device"}
+        action={
+          <Button variant="outline" size="sm" onClick={() => peer.retry()}>
+            <RotateCcwIcon />
+            Try again
+          </Button>
+        }
+      >
+        {noAnswer ? (
+          <p>
+            {name} looks online, but its daemon never answered. It may have lost its network and not noticed yet; it
+            reconnects on its own within about half a minute. If this keeps happening, check it with{" "}
+            <code className="rounded bg-terminal px-1 py-0.5 font-mono text-xs text-foreground">everywhere status</code>{" "}
+            on the machine.
+          </p>
+        ) : unreachable ? (
+          <p>
+            {name} is online, but no connection could be made, neither direct (LAN, Tailscale) nor through the TURN
+            relay. Open the debug panel for details.
+          </p>
+        ) : (
+          <p className="font-mono text-xs">{conn.error}</p>
+        )}
+      </Panel>
+    );
+  }
+
+  return (
+    <Panel icon={<LoaderIcon className="size-5 animate-spin text-muted-foreground" />} title="Connecting…" key={deviceId}>
+      <p>Opening a direct connection to {name}.</p>
+    </Panel>
+  );
+}
+
+/** Another device can look into this one: its Scratch is a click away. */
+function ElsewhereHint() {
+  const { deviceId } = useDevice();
+  const { entries } = useFleet();
+  const others = [...entries.values()].filter((e) => e.deviceId !== deviceId && canScratch(e));
+  if (others.length === 0) return null;
+  return (
+    <p>
+      To look into it from another device, start a Scratch thread on{" "}
+      {others.map((e, i) => (
+        <span key={e.deviceId}>
+          {i > 0 && (i === others.length - 1 ? " or " : ", ")}
+          <Link to="/d/$deviceId" params={{ deviceId: e.deviceId }} className="text-primary underline-offset-4 hover:underline">
+            {deviceName(e)}
+          </Link>
+        </span>
+      ))}
+      .
+    </p>
+  );
+}
+
+function Panel({
+  icon,
+  title,
+  action,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  action?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-1 items-center justify-center p-6">
+      <div className="flex max-w-md flex-col items-center gap-3 text-center">
+        {icon}
+        <h2 className="text-[15px] font-semibold">{title}</h2>
+        <div className="grid gap-2 text-muted-foreground">{children}</div>
+        {action}
+      </div>
+    </div>
+  );
+}

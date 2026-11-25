@@ -2,6 +2,7 @@ import { FitAddon, Ghostty, type ITheme, Terminal } from "ghostty-web";
 import ghosttyWasmUrl from "ghostty-web/ghostty-vt.wasm?url";
 import { EyeIcon, RotateCcwIcon } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useCellFocused } from "@/components/cell-focus";
 import { applyModifiers, type Modifiers, TerminalKeys, useCoarsePointer } from "@/components/terminal-keys";
 import { Button } from "@/components/ui/button";
 import { PROC_CHANNEL_PREFIX } from "@everywhere/protocol";
@@ -124,6 +125,10 @@ export function TerminalView({
   active?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
+  // Beside other threads, only the focused one's terminal takes the keyboard by itself.
+  const cellFocused = useCellFocused();
+  const cellFocusedRef = useRef(cellFocused);
+  cellFocusedRef.current = cellFocused;
   const termRef = useRef<Terminal | null>(null);
   const chanRef = useRef<TerminalChannel | null>(null);
   const writerRef = useRef(false);
@@ -163,8 +168,8 @@ export function TerminalView({
   }, [writer, exitCode]);
 
   useEffect(() => {
-    if (active && ready) termRef.current?.focus();
-  }, [active, ready]);
+    if (active && ready && cellFocused) termRef.current?.focus();
+  }, [active, ready, cellFocused]);
 
   // Terminal instance: one per mount.
   useEffect(() => {
@@ -200,7 +205,13 @@ export function TerminalView({
       });
       const fit = new FitAddon();
       term.loadAddon(fit);
-      term.open(el);
+      // open() focuses the terminal (and again a tick later): not in a thread beside the focused one.
+      if (cellFocusedRef.current) term.open(el);
+      else {
+        term.focus = () => {};
+        term.open(el);
+        delete (term as { focus?: unknown }).focus;
+      }
       term.attachCustomKeyEventHandler(clipboardKeys(term));
       fit.fit();
 
@@ -240,7 +251,7 @@ export function TerminalView({
 
       termRef.current = term;
       setReady(true);
-      term.focus();
+      if (cellFocusedRef.current) term.focus();
 
       cleanup = () => {
         cancelAnimationFrame(raf);
@@ -290,7 +301,7 @@ export function TerminalView({
               setWriter(msg.you ? "writer" : "viewer");
               // Promoted (e.g. the other writer left): make the PTY match our size.
               if (msg.you && !wasWriter) ch.sendControl({ t: "resize", cols: term.cols, rows: term.rows });
-              if (msg.you) term.focus();
+              if (msg.you && cellFocusedRef.current) term.focus();
               return;
             }
             case "exited":

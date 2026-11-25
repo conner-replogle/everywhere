@@ -23,6 +23,7 @@ import {
   PencilIcon,
   PinIcon,
   PinOffIcon,
+  LayoutGridIcon,
   SearchIcon,
   PuzzleIcon,
   PlusIcon,
@@ -81,6 +82,7 @@ import { useInstallApp } from "@/lib/pwa";
 import { getPrefs } from "@/lib/prefs";
 import { useProjectIcon } from "@/lib/project-icons";
 import { retainThread, visitThread } from "@/lib/recent-threads";
+import { THREAD_DRAG_TYPE, threadDrag, useOpenBeside, useThreadGrid } from "@/lib/thread-grid";
 import { formatShortcut, useSearchShortcut } from "@/lib/shortcut";
 import { cn, errorMessage } from "@/lib/utils";
 
@@ -244,6 +246,7 @@ export function AppSidebar({
 }) {
   const { devices, entries } = useFleet();
   const navigate = useNavigate();
+  const openBeside = useOpenBeside();
   const { deviceId: activeDeviceId, threadId: activeThreadId } = useParams({ strict: false });
   const { collapsed, toggle } = useCollapsed();
   const view = useSidebarView();
@@ -466,6 +469,14 @@ export function AppSidebar({
             Mark done
           </DropdownMenuItem>
         ))}
+      <DropdownMenuItem
+        className="pointer-coarse:hidden"
+        disabled={entry.deviceId === activeDeviceId && t.id === activeThreadId}
+        onSelect={() => openBeside(entry.deviceId, t.id)}
+      >
+        <LayoutGridIcon />
+        Open beside
+      </DropdownMenuItem>
       <DropdownMenuItem onSelect={() => setPending({ kind: "rename-thread", entry, thread: t })}>
         <PencilIcon />
         Rename
@@ -1253,12 +1264,15 @@ function ThreadRow({
   dimmed?: boolean;
   actions: React.ReactNode;
 }) {
+  // Open beside the thread in focus.
+  const grid = useThreadGrid();
+  const beside = !active && grid.cells.length > 1 && grid.cells.some((c) => c.deviceId === deviceId && c.threadId === t.id);
   return (
     <li
       className={cn(
         "group flex items-center rounded-md pr-1",
         detail ? "min-h-7 py-0.5" : "h-7 pointer-coarse:h-10",
-        active ? "bg-accent text-accent-foreground" : "hover:bg-accent/60",
+        active ? "bg-accent text-accent-foreground" : beside ? "bg-accent/40 hover:bg-accent/60" : "hover:bg-accent/60",
         dimmed && "opacity-50",
       )}
     >
@@ -1267,6 +1281,12 @@ function ThreadRow({
         params={{ deviceId, threadId: t.id }}
         // Opening a thread gives it the preview tab; a double-click keeps the tab, as in VS Code.
         onDoubleClick={() => retainThread(deviceId, t.id, t)}
+        // Dragged onto the thread area, it opens there or beside the others.
+        onDragStart={(e) => {
+          e.dataTransfer.setData(THREAD_DRAG_TYPE, JSON.stringify({ deviceId, threadId: t.id }));
+          threadDrag.start(deviceId, t.id);
+        }}
+        onDragEnd={() => threadDrag.end()}
         className={cn(
           "flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-md focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none",
           flat ? "pl-2" : "pl-7",
