@@ -56,6 +56,8 @@ type Login struct {
 	URL string
 
 	cmd      *exec.Cmd
+	name     string // the command, for errors ("claude auth login")
+	prompt   string // the CLI's request for the code; its words after it are a failure's reason
 	group    *proc.Group
 	stdin    io.WriteCloser
 	out      *tailBuffer
@@ -75,10 +77,22 @@ func StartLogin(ctx context.Context, bin string, env []string, console bool) (*L
 	if console {
 		method = "--console"
 	}
-	cmd := exec.Command(bin, "auth", "login", method)
+	return StartLoginCommand(ctx, []string{bin, "auth", "login", method}, env, "Paste code here if prompted >")
+}
+
+// StartLoginCommand runs another CLI's sign-in the same way: one that prints
+// an https sign-in URL whose page ends on a code, reads the code on its
+// stdin, and exits 0 once signed in. prompt is its request for the code,
+// after which its output says why a sign-in failed.
+func StartLoginCommand(ctx context.Context, argv []string, env []string, prompt string) (*Login, error) {
+	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = loginEnv(env)
 	cmd.Dir, _ = os.UserHomeDir()
-	l := &Login{cmd: cmd, out: &tailBuffer{max: stderrTail}, done: make(chan struct{})}
+	name := strings.Join(argv[1:], " ")
+	if base := argv[0]; base != "" {
+		name = strings.TrimSpace(filepathBase(base) + " " + name)
+	}
+	l := &Login{cmd: cmd, name: name, prompt: prompt, out: &tailBuffer{max: stderrTail}, done: make(chan struct{})}
 	cmd.Stderr = l.out
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -88,7 +102,7 @@ func StartLogin(ctx context.Context, bin string, env []string, console bool) (*L
 		return nil, err
 	}
 	if l.group, err = proc.Start(cmd); err != nil {
-		return nil, fmt.Errorf("claude: start %s auth login: %w", bin, err)
+		return nil, fmt.Errorf("start %s: %w", name, err)
 	}
 
 	found := make(chan string, 1)
@@ -133,7 +147,7 @@ func StartLogin(ctx context.Context, bin string, env []string, console bool) (*L
 		return nil, l.err
 	case <-ctx.Done():
 		l.Cancel()
-		return nil, fmt.Errorf("claude auth login didn't give a sign-in link: %w", ctx.Err())
+		return nil, fmt.Errorf("%s didn't give a sign-in link: %w", l.name, ctx.Err())
 	}
 }
 
@@ -181,7 +195,7 @@ func (l *Login) Submit(ctx context.Context, code string) error {
 			return l.Err()
 		default:
 		}
-		return fmt.Errorf("claude auth login: %w", err)
+		return fmt.Errorf("%s: %w", l.name, err)
 	}
 	select {
 	case <-l.done:
@@ -222,7 +236,7 @@ func (l *Login) Cancel() {
 // prompt, e.g. "Login failed: Request failed with status code 400".
 func (l *Login) failure(err error) error {
 	out := l.out.String()
-	if _, after, ok := strings.Cut(out, "Paste code here if prompted >"); ok {
+	if _, after, ok := strings.Cut(out, l.prompt); ok && l.prompt != "" {
 		out = after
 	} else if l.URL != "" {
 		out = "" // only the sign-in link so far
@@ -230,5 +244,13 @@ func (l *Login) failure(err error) error {
 	if text := strings.TrimSpace(out); text != "" {
 		return errors.New(lastN(text, 500))
 	}
-	return fmt.Errorf("claude auth login: %w", err)
+	return fmt.Errorf("%s: %w", l.name, err)
+}
+
+// filepathBase is the program's name without its directory.
+func filepathBase(p string) string {
+	if i := strings.LastIndexAny(p, `/\`); i >= 0 {
+		return p[i+1:]
+	}
+	return p
 }

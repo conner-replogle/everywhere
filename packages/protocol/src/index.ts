@@ -106,8 +106,8 @@ export function notifyText(n: Pick<HubNotify, "kind" | "tool">): string {
  * agents: it answers connected agents' requests (see AgentMethods) while
  * the device allows them. claudeInstructions: it takes the account's custom
  * instructions for Claude (agent.setInstructions), sent when it connects.
- * agentKeys: it takes the account's API keys for agents other than Claude,
- * by kind (agent.setKeys), sent when it connects and when they change.
+ * agentKeys (version 0.34.0 only): it took API keys for other agents
+ * (agent.setKeys); it's now told to forget them.
  */
 export type HubFeature = "rpc" | "claudeToken" | "pluginSettings" | "agents" | "claudeInstructions" | "agentKeys";
 
@@ -342,7 +342,9 @@ export interface PluginKind {
  * threads.search, scratch.usage, threads.delete's removeScratch,
  * tabs.create's input and threads.create's prompt. claudeAuth:
  * agent.auth, agent.login, agent.loginCode, agent.loginCancel, claude.auth
- * and the signedOut turn kind. done: Thread.doneAt, threads.done and the
+ * and the signedOut turn kind. harnessAuth: agent.harnessAuth,
+ * agent.harnessLogin, agent.harnessLoginCode and agent.harnessLoginCancel,
+ * for other agents' sign-ins (changes come as claude.auth). done: Thread.doneAt, threads.done and the
  * agent's thread_done tool. agents: device.agents and device.setAgents
  * (connected agents' switch on the device) and the user event's via. pin:
  * Thread.pinnedAt and seenAt, threads.pin and threads.seen. search:
@@ -379,7 +381,8 @@ export type DeviceFeature =
   | "search"
   | "autoUpdate"
   | "iceRestart"
-  | "goal";
+  | "goal"
+  | "harnessAuth";
 
 /**
  * What desktop.start captures: a monitor by name, or a window by id
@@ -449,6 +452,23 @@ export interface ClaudeAuth {
   signingIn?: boolean;
   /** claudeToken: claude uses the account's Claude token (Settings), not its own sign-in. */
   token?: boolean;
+}
+
+/** agent.harnessAuth: whether another agent is signed in on the device. */
+export interface HarnessAuth {
+  kind: string;
+  title: string;
+  /** Its CLI is on the device; the rest is only known if so. */
+  installed: boolean;
+  /** It could say; signedIn means something only then. */
+  known: boolean;
+  signedIn: boolean;
+  /** agent.harnessLogin can sign it in. */
+  canSignIn: boolean;
+  /** An agent.harnessLogin is waiting for its code. */
+  signingIn?: boolean;
+  /** Why it couldn't be asked, if it couldn't. */
+  problem?: string;
 }
 
 export interface Project {
@@ -977,6 +997,13 @@ export interface RpcMethods {
   /** Finishes the waiting sign-in with the code from its page. Open threads switch over when next idle. */
   "agent.loginCode": [{ code: string }, ClaudeAuth];
   "agent.loginCancel": [Record<string, never>, Record<string, never>];
+  /** harnessAuth: whether another agent (by its threads' kind) is signed in on the device. */
+  "agent.harnessAuth": [{ kind: string }, HarnessAuth];
+  /** Starts signing it in: a page to open anywhere, which ends on a code for agent.harnessLoginCode. */
+  "agent.harnessLogin": [{ kind: string }, { url?: string }];
+  /** The code from that page; the answer says whether it's signed in now. */
+  "agent.harnessLoginCode": [{ kind: string; code: string }, HarnessAuth];
+  "agent.harnessLoginCancel": [{ kind: string }, Record<string, never>];
   "debug.peer": [Record<string, never>, PeerDebug];
   /** The daemon's newest log lines, oldest first (lines: how many; all it keeps, 2000, by default). Older daemons don't have it. */
   "debug.logs": [{ lines?: number }, string[]];
@@ -1022,8 +1049,8 @@ export interface RemoteMethods {
   "agent.setToken": RpcMethods["agent.setToken"];
   /** The account's custom instructions, added to every Claude thread's system prompt ("" for none). */
   "agent.setInstructions": [{ instructions: string }, Record<string, never>];
-  /** Every API key there is for another agent, by its kind; a kind left out has none. */
-  "agent.setKeys": [{ keys: Record<string, string> }, Record<string, never>];
+  /** Version 0.34.0's API keys for other agents, by kind: now only ever none, to forget them. */
+  "agent.setKeys": [{ keys: Record<string, never> }, Record<string, never>];
   /** A plugin's account settings, whole (sealed in the hub, sent to each device that takes them). */
   "plugins.setAccountSettings": [{ id: string; values: Record<string, unknown> }, Record<string, never>];
   /** Whether the device lets connected agents in (so the Worker can say why not). */

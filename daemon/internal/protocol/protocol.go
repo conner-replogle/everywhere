@@ -69,11 +69,6 @@ const HubFeatureClaudeToken = "claudeToken"
 // it connects and when they change.
 const HubFeatureClaudeInstructions = "claudeInstructions"
 
-// HubFeatureAgentKeys: the daemon takes the account's API keys for agents
-// other than claude, by kind (agent.setKeys), which the hub sends when it
-// connects and when they change.
-const HubFeatureAgentKeys = "agentKeys"
-
 // HubFeatureAgents: the daemon serves connected agents' requests (rpc with
 // Agent set) for the methods registered with plugin.Agent, while the device
 // allows them (`device.agents`).
@@ -171,7 +166,11 @@ const (
 	FeatureClaudeAuth = "claudeAuth"  // agent.auth, agent.login*, claude.auth and kind signedOut
 	FeatureDone       = "done"        // Thread.doneAt, threads.done and the thread_done tool
 	FeatureToken      = "claudeToken" // agent.setToken and ClaudeAuth.token
-	FeaturePin        = "pin"         // Thread.pinnedAt and seenAt, threads.pin and threads.seen
+	// FeatureHarnessAuth: agent.harnessAuth, agent.harnessLogin,
+	// agent.harnessLoginCode and agent.harnessLoginCancel, for other agents'
+	// sign-ins; changes come as claude.auth.
+	FeatureHarnessAuth = "harnessAuth"
+	FeaturePin         = "pin" // Thread.pinnedAt and seenAt, threads.pin and threads.seen
 	// FeatureAutoUpdate: updating when idle; UpdateInfo.auto, waiting and
 	// lastAuto, and device.setAutoUpdate.
 	FeatureAutoUpdate = "autoUpdate"
@@ -296,6 +295,24 @@ type ClaudeAuth struct {
 	// Token (claudeToken): claude uses the account's Claude token (set in
 	// Settings, sent by the hub with agent.setToken), not its own sign-in.
 	Token bool `json:"token,omitempty"`
+}
+
+// HarnessAuth is agent.harnessAuth: whether another agent (by its threads'
+// kind) is signed in on the device, and whether it can be from the app.
+type HarnessAuth struct {
+	Kind  string `json:"kind"`
+	Title string `json:"title"`
+	// Installed: its CLI is on the device. The rest is only known if so.
+	Installed bool `json:"installed"`
+	// Known: it could say. SignedIn means something only then.
+	Known    bool `json:"known"`
+	SignedIn bool `json:"signedIn"`
+	// CanSignIn: agent.harnessLogin can sign it in.
+	CanSignIn bool `json:"canSignIn"`
+	// SigningIn: an agent.harnessLogin is waiting for its code.
+	SigningIn bool `json:"signingIn,omitempty"`
+	// Problem is why it couldn't be asked, if it couldn't.
+	Problem string `json:"problem,omitempty"`
 }
 
 // ClaudeLogin is the result of agent.login: the sign-in page, which ends on

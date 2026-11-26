@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -269,19 +268,20 @@ func TestAgentConfigBeforeStart(t *testing.T) {
 	eventually(t, "the saved config", func() bool { s := c2.state(); return len(s.Models) == 2 && s.Model == "m2" })
 }
 
-// The account's API key for an agent is what its threads start with, in
-// place of its own sign-in; a new key moves idle threads onto it.
-func TestAgentKey(t *testing.T) {
+// Another agent is signed in from the app: its sign-in command's link, then
+// the code from its page. Until it is, its threads say how to sign it in.
+func TestHarnessSignIn(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
+	marker := filepath.Join(t.TempDir(), "signed-in")
 	t.Setenv(acptest.Env, "1")
-	t.Setenv(acptest.NeedsKeyEnv, "1")
+	t.Setenv(acptest.AuthEnv, marker)
 	saved := harness.Agents
 	harness.Agents = []harness.Agent{{
 		Kind: "fake", Title: "Fake", Command: []string{exe}, Install: "Sign it in.",
-		Key: &harness.KeySpec{Env: acptest.KeyEnv, Method: acptest.KeyMethod, Prefix: "fk-"},
+		Login: []string{"/usr/bin/env", acptest.LoginEnv + "=" + marker, exe}, LoginPrompt: acptest.LoginPrompt,
 	}}
 	t.Cleanup(func() { harness.Agents = saved })
 
@@ -295,63 +295,60 @@ func TestAgentKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dataDir := t.TempDir()
-	m := NewManager(st, dataDir, func() {})
+	m := NewManager(st, t.TempDir(), func() {})
 	t.Cleanup(m.Shutdown)
+	ctx := context.Background()
+
+	a, err := m.HarnessAuth(ctx, "fake")
+	if err != nil || !a.Installed || !a.Known || a.SignedIn || !a.CanSignIn || a.Title != "Fake" {
+		t.Fatalf("before signing in: %+v, %v", a, err)
+	}
 	c := &recorder{}
 	if err := m.Attach(th.ID, c, 0, 0); err != nil {
 		t.Fatal(err)
 	}
-
-	// Without a key it says how to sign it in.
-	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "send", Text: "key?"})
+	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "send", Text: "hello"})
 	eventually(t, "the sign-in error", func() bool {
 		errs := c.errors()
 		return len(errs) > 0 && strings.Contains(errs[len(errs)-1], "Fake isn't signed in. Sign it in.")
 	})
 
-	if err := m.SetAgentKeys(map[string]string{"fake": "not-a-key-of-its-own-at-all"}); err == nil {
-		t.Fatal("took a key that isn't one of the agent's")
+	// A code the page didn't give is refused, in the CLI's words.
+	l, err := m.StartHarnessLogin(ctx, "fake")
+	if err != nil || !strings.HasPrefix(l.URL, "https://") || !strings.Contains(l.URL, "oauth") {
+		t.Fatalf("sign-in link %q, %v", l.URL, err)
 	}
-	key1 := "fk-" + strings.Repeat("a", 24)
-	if err := m.SetAgentKeys(map[string]string{"fake": " " + key1 + "\n", "other": "kept-for-later"}); err != nil {
-		t.Fatal(err)
+	if a, _ := m.HarnessAuth(ctx, "fake"); !a.SigningIn {
+		t.Fatalf("while waiting for the code: %+v", a)
 	}
-	if info, err := os.Stat(filepath.Join(dataDir, "agent-keys.json")); err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
-		t.Fatalf("keys file: %v, %v", info, err)
+	if _, err := m.FinishHarnessLogin(ctx, "fake", "wrong"); err == nil || !strings.Contains(err.Error(), "that code was refused") {
+		t.Fatalf("a wrong code: %v", err)
 	}
-	lastReply := func(want string) func() bool {
-		return func() bool {
-			evs := c.events()
-			for i := len(evs) - 1; i >= 0; i-- {
-				if evs[i].Type == "assistant" {
-					return evs[i].Text == want
-				}
-			}
-			return false
-		}
+	if _, err := m.FinishHarnessLogin(ctx, "fake", acptest.GoodCode); err == nil {
+		t.Fatal("a code for a sign-in that ended was taken")
 	}
-	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "send", Text: "key?"})
-	eventually(t, "a reply with the key", lastReply("key "+key1))
-	eventually(t, "idle", func() bool { return c.state().Status == statusIdle })
 
-	// A new key: the idle agent makes way for one started with it.
-	key2 := "fk-" + strings.Repeat("b", 24)
-	if err := m.SetAgentKeys(map[string]string{"fake": key2}); err != nil {
+	// Cancelled, it stops waiting.
+	if _, err := m.StartHarnessLogin(ctx, "fake"); err != nil {
 		t.Fatal(err)
 	}
-	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "send", Text: "key?"})
-	eventually(t, "a reply with the new key", lastReply("key "+key2))
+	m.CancelHarnessLogin("fake")
+	if a, _ := m.HarnessAuth(ctx, "fake"); a.SigningIn || a.SignedIn {
+		t.Fatalf("after cancelling: %+v", a)
+	}
 
-	// A daemon started later has it still.
-	if got := NewManager(st, dataDir, func() {}).agentKey("fake"); got != key2 {
-		t.Fatalf("reloaded key = %q", got)
-	}
-	// None: back to its own sign-in.
-	if err := m.SetAgentKeys(nil); err != nil {
+	// The right code signs it in, and its threads work.
+	if _, err := m.StartHarnessLogin(ctx, "fake"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dataDir, "agent-keys.json")); !os.IsNotExist(err) {
-		t.Fatalf("keys file after removing them: %v", err)
+	a, err = m.FinishHarnessLogin(ctx, "fake", " "+acptest.GoodCode+"\n")
+	if err != nil || !a.SignedIn || a.SigningIn {
+		t.Fatalf("signed in: %+v, %v", a, err)
+	}
+	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "send", Text: "hello"})
+	eventually(t, "the agent at work", func() bool { return len(c.state().Pending) == 1 })
+
+	if _, err := m.StartHarnessLogin(ctx, "nope"); err == nil {
+		t.Fatal("signed in an agent there isn't")
 	}
 }

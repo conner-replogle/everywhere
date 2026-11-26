@@ -73,9 +73,6 @@ type StartOptions struct {
 	Resume      string
 	Model, Mode string
 	MCP         []MCPServer
-	// Key is the account's API key for the agent (Agent.Key), used in
-	// place of its own sign-in; "" leaves it to that.
-	Key string
 }
 
 // MCPServer is an MCP server (over HTTP) the agent gets.
@@ -92,12 +89,7 @@ func Start(ctx context.Context, o StartOptions) (*Conn, error) {
 		tools: map[string]*toolCall{}, pending: map[string]*permission{},
 	}
 	c.wake = sync.NewCond(&c.mu)
-	var env []string
-	useKey := o.Key != "" && o.Agent.Key != nil
-	if useKey {
-		env = append(env, o.Agent.Key.Env+"="+o.Key)
-	}
-	conn, err := startACP(o.Agent.Command, o.Dir, env, c.onNotify, c.onRequest)
+	conn, err := startACP(o.Agent.Command, o.Dir, nil, c.onNotify, c.onRequest)
 	if err != nil {
 		return nil, err
 	}
@@ -127,12 +119,6 @@ func Start(ctx context.Context, o StartOptions) (*Conn, error) {
 		"clientInfo": map[string]string{"name": "everywhere", "title": "everywhere", "version": version.Version},
 	}, &c.init); err != nil {
 		return fail(err)
-	}
-	if useKey {
-		// The key in its environment isn't enough: it's chosen as the way in.
-		if err := conn.call(ctx, "authenticate", map[string]any{"methodId": o.Agent.Key.Method}, nil); err != nil {
-			return fail(fmt.Errorf("%s didn't take the API key: %w", o.Agent.Title, err))
-		}
 	}
 	servers := []acpMCPServer{}
 	if c.init.AgentCapabilities.MCPCapabilities.HTTP {
@@ -757,12 +743,62 @@ func newID() string {
 	return hex.EncodeToString(b)
 }
 
-// signInHint says how to sign the agent in when it refuses a session for
-// want of it (ACP's auth_required).
+// ErrSignedOut is (wrapped in) the error of an agent that refused a
+// session for want of a sign-in: ACP's auth_required.
+var ErrSignedOut = errors.New("not signed in")
+
+// signedOut is that error, saying how to sign the agent in.
+type signedOut struct{ a Agent }
+
+func (e signedOut) Error() string {
+	if e.a.Install == "" {
+		return e.a.Title + " isn't signed in."
+	}
+	return e.a.Title + " isn't signed in. " + e.a.Install
+}
+
+func (e signedOut) Is(target error) bool { return target == ErrSignedOut }
+
+// signInHint makes an auth_required refusal a signedOut error.
 func signInHint(a Agent, err error) error {
-	var re *rpcError
-	if errors.As(err, &re) && re.Code == -32000 && a.Install != "" {
-		return fmt.Errorf("%s isn't signed in. %s", a.Title, a.Install)
+	if isAuthRequired(err) {
+		return signedOut{a}
 	}
 	return err
+}
+
+func isAuthRequired(err error) bool {
+	var re *rpcError
+	return errors.As(err, &re) && re.Code == -32000
+}
+
+// Auth asks the agent, without opening a session, whether it's signed in:
+// known is false if it has no way to say (no session/list).
+func Auth(ctx context.Context, a Agent, dir string) (signedIn, known bool, err error) {
+	conn, err := startACP(a.Command, dir, nil, func(string, json.RawMessage) {}, func(method string, _ json.RawMessage) (any, error) {
+		return nil, &rpcError{Code: -32601, Message: "method not found: " + method}
+	})
+	if err != nil {
+		return false, false, err
+	}
+	defer conn.close()
+	var init acpInitializeResult
+	if err := conn.call(ctx, "initialize", map[string]any{
+		"protocolVersion":    acpVersion,
+		"clientCapabilities": map[string]any{"fs": map[string]bool{"readTextFile": false, "writeTextFile": false}, "terminal": false},
+		"clientInfo":         map[string]string{"name": "everywhere", "title": "everywhere", "version": version.Version},
+	}, &init); err != nil {
+		return false, false, err
+	}
+	err = conn.call(ctx, "session/list", map[string]any{"cwd": dir}, nil)
+	var re *rpcError
+	switch {
+	case err == nil:
+		return true, true, nil
+	case isAuthRequired(err):
+		return false, true, nil
+	case errors.As(err, &re):
+		return false, false, nil // it can't say
+	}
+	return false, false, err
 }

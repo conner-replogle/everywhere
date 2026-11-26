@@ -1,54 +1,24 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { KeyRoundIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { CheckIcon, KeyRoundIcon } from "lucide-react";
+import { useState } from "react";
+import type { DeviceContextValue } from "@/components/device-context";
+import { useFleet } from "@/components/fleet";
+import { HarnessSignIn, useHarnessAuth } from "@/components/harness-auth";
+import { PresenceDot } from "@/components/presence-dot";
 import { Section } from "@/components/settings-section";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { type AgentKeyInfo, type AgentKeyResult, api } from "@/lib/api";
-import { useDevices } from "@/lib/devices";
-import { cn, errorMessage } from "@/lib/utils";
+import type { Device } from "@/lib/api";
 
 export const Route = createFileRoute("/_app/_workspace/settings/antigravity")({
   component: AntigravitySettings,
 });
 
 const KIND = "antigravity";
+const TITLE = "Antigravity";
 
-/**
- * The account's Antigravity API key (a Gemini API key): every device's
- * daemon gives it to Antigravity instead of each signing in on its own.
- */
+/** Antigravity's Google sign-in on each device, from here. */
 function AntigravitySettings() {
-  const [info, setInfo] = useState<AgentKeyInfo | undefined>();
-  const [result, setResult] = useState<AgentKeyResult["devices"] | null>(null);
-  const [key, setKey] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const devices = useDevices();
-  const name = (id: string) => devices.devices?.find((d) => d.id === id)?.name ?? id;
-
-  useEffect(() => {
-    api.agentKeys().then(
-      (all) => setInfo(all[KIND] ?? { set: false }),
-      (e: unknown) => setError(errorMessage(e)),
-    );
-  }, []);
-
-  const run = async (fn: () => Promise<AgentKeyResult>) => {
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await fn();
-      setInfo(r.set ? { set: true, hint: r.hint, setAt: r.setAt } : { set: false });
-      setResult(r.devices);
-      setKey("");
-    } catch (e) {
-      setError(errorMessage(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
+  const { devices, entries } = useFleet();
   return (
     <div className="flex flex-col gap-5">
       <div>
@@ -58,75 +28,100 @@ function AntigravitySettings() {
         </p>
       </div>
       <Section
-        title="API key for every device"
-        description={
-          <>
-            Make a Gemini API key at{" "}
-            <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer" className="underline underline-offset-2">
-              aistudio.google.com/apikey
-            </a>{" "}
-            and paste it here. Every device's Antigravity then uses it, as{" "}
-            <code className="font-mono">GEMINI_API_KEY</code>, instead of the Google sign-in it has there. Its use is billed
-            to the key's Google Cloud project (or its free tier), not to a Google AI subscription.
-          </>
-        }
+        title="Google sign-in"
+        description="Antigravity uses the Google account it's signed in with on each device, and that account's plan. Sign a device in here: Google's page opens in this browser and ends on a code to paste back."
       >
-        <div className="grid gap-3">
-          <p className="text-muted-foreground">
-            {!info
-              ? "Checking…"
-              : info.set
-                ? `Set ${new Date(info.setAt).toLocaleString()}, ending …${info.hint}. Devices get it whenever they connect.`
-                : "Not set: each device uses Antigravity's own sign-in (run agy once there to sign in)."}
-          </p>
-          <form
-            className="flex gap-2 max-sm:flex-wrap"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (key.trim()) void run(() => api.setAgentKey(KIND, key.trim()));
-            }}
-          >
-            <Input
-              type="password"
-              value={key}
-              onChange={(e) => setKey(e.target.value)}
-              placeholder={info?.set ? "Paste a new key to replace it" : "AIza…"}
-              autoComplete="off"
-              spellCheck={false}
-              aria-label="Antigravity API key"
-              className="min-w-0 flex-1 font-mono"
-            />
-            <Button type="submit" size="sm" disabled={busy || !key.trim()}>
-              <KeyRoundIcon />
-              {info?.set ? "Replace" : "Save"}
-            </Button>
-            {info?.set && (
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                disabled={busy}
-                onClick={() => void run(() => api.removeAgentKey(KIND))}
-              >
-                Remove
-              </Button>
-            )}
-          </form>
-          {result && (
-            <ul className="grid gap-0.5 text-xs">
-              {Object.keys(result).length === 0 && (
-                <li className="text-muted-foreground">No device is connected; each gets it when it connects.</li>
-              )}
-              {Object.entries(result).map(([id, r]) => (
-                <li key={id} className={cn(r === "ok" ? "text-muted-foreground" : "text-warn")}>
-                  {name(id)}: {r === "ok" ? "updated" : r}
-                </li>
-              ))}
-            </ul>
-          )}
-          {error && <p className="text-destructive">{error}</p>}
-        </div>
+        {!devices && <p className="text-muted-foreground">Loading…</p>}
+        {devices?.length === 0 && <p className="text-muted-foreground">No devices enrolled.</p>}
+        {devices && devices.length > 0 && (
+          <ul className="-my-2 divide-y">
+            {devices.map((d) => {
+              const entry = entries.get(d.id);
+              return entry ? (
+                <DeviceRow key={d.id} device={d} entry={entry} />
+              ) : (
+                <DeviceLine key={d.id} device={d} online={false} note="Offline" />
+              );
+            })}
+          </ul>
+        )}
       </Section>
     </div>
+  );
+}
+
+function DeviceLine({
+  device,
+  online,
+  note,
+  children,
+}: {
+  device: Device;
+  online: boolean | undefined;
+  note: React.ReactNode;
+  children?: React.ReactNode;
+}) {
+  return (
+    <li className="flex items-center gap-3 py-2 max-sm:flex-wrap">
+      <PresenceDot online={online} />
+      <div className="min-w-0 flex-1">
+        <div className="truncate font-medium">{device.name}</div>
+        <div className="text-xs text-muted-foreground">{note}</div>
+      </div>
+      {children}
+    </li>
+  );
+}
+
+function DeviceRow({ device, entry }: { device: Device; entry: DeviceContextValue }) {
+  const connected = entry.conn.state === "connected";
+  const supported = !!entry.info.data?.features?.includes("harnessAuth");
+  const auth = useHarnessAuth(entry, KIND);
+  const [signingIn, setSigningIn] = useState(false);
+  const a = auth.data;
+
+  let note: React.ReactNode;
+  let action: React.ReactNode = null;
+  if (!connected) note = entry.conn.state === "connecting" ? "Connecting…" : "Offline";
+  else if (!entry.info.data) note = "Connecting…";
+  else if (!supported) note = "Update everywhere on this device to sign Antigravity in from here.";
+  else if (!a) note = "Checking…";
+  else if (!a.installed) note = "The Antigravity CLI isn't installed (antigravity.google).";
+  else if (!a.known) note = a.problem ? `Couldn't ask Antigravity: ${a.problem}` : "Antigravity can't say whether it's signed in.";
+  else if (a.signedIn)
+    note = (
+      <span className="inline-flex items-center gap-1 text-live">
+        <CheckIcon className="size-3" />
+        Signed in with Google
+      </span>
+    );
+  else note = a.signingIn ? "A sign-in is waiting for its code." : "Not signed in";
+
+  if (supported && a?.installed && a.canSignIn && a.known) {
+    action = (
+      <Button
+        size="sm"
+        variant={a.signedIn ? "outline" : "secondary"}
+        className="shrink-0"
+        onClick={() => setSigningIn(true)}
+      >
+        <KeyRoundIcon />
+        {a.signedIn ? "Sign in again" : "Sign in with Google"}
+      </Button>
+    );
+  }
+
+  return (
+    <DeviceLine device={device} online={connected} note={note}>
+      {action}
+      <HarnessSignIn
+        entry={entry}
+        kind={KIND}
+        title={TITLE}
+        open={signingIn}
+        onOpenChange={setSigningIn}
+        onDone={auth.refetch}
+      />
+    </DeviceLine>
   );
 }

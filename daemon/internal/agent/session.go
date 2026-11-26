@@ -88,9 +88,8 @@ type session struct {
 	// its version.
 	procBuild   string
 	procVersion string
-	procAuth    int    // the sign-in it started under (Manager.authGeneration)
-	procKey     string // another agent's: the API key it started with (Manager.agentKey)
-	authFailed  bool   // claude's credentials were refused this turn
+	procAuth    int  // the sign-in it started under (Manager.authGeneration)
+	authFailed  bool // claude's credentials were refused this turn
 	// refreshBusy: this turn lost the race to renew claude's sign-in, and is
 	// retried by refreshRetry after refreshRetries tries so far.
 	refreshBusy    bool
@@ -1654,13 +1653,8 @@ func (s *session) changed() {
 	// Claude was updated or signed in again: an idle process makes way for
 	// one with the new build or credentials. The next prompt starts it,
 	// resuming the conversation.
-	// Another agent's makes way for one with the account's new API key.
-	if s.proc != nil && s.state.Status == statusIdle && !s.stopping && s.agent != nil {
-		if s.m.agentKey(s.agent.Kind) != s.procKey {
-			slog.Info("stopping the agent for its new API key", "thread", s.threadID, "kind", s.agent.Kind)
-			s.closeProc()
-		}
-	} else if s.proc != nil && s.state.Status == statusIdle && !s.stopping {
+	// (Claude's only: other agents' processes aren't claude.)
+	if s.proc != nil && s.state.Status == statusIdle && !s.stopping && s.agent == nil {
 		if build, _ := s.m.currentBuild(); build != s.procBuild {
 			slog.Info("stopping claude for its new version", "thread", s.threadID)
 			s.closeProc()
@@ -1843,16 +1837,17 @@ func (s *session) startAgent(ctx context.Context, a store.AgentThread, dir strin
 	if mode == "default" || mode == "auto" { // claude's, the store's default
 		mode = ""
 	}
-	key := s.m.agentKey(s.agent.Kind)
 	p, err := s.m.startAgent(ctx, harness.StartOptions{
-		Agent: *s.agent, Dir: dir, Resume: a.SessionID, Model: a.Model, Mode: mode, MCP: servers, Key: key,
+		Agent: *s.agent, Dir: dir, Resume: a.SessionID, Model: a.Model, Mode: mode, MCP: servers,
 	})
 	if err != nil {
 		s.release()
+		if errors.Is(err, harness.ErrSignedOut) {
+			s.m.authChanged() // so the app offers to sign it in
+		}
 		return fail(fmt.Errorf("starting %s: %w", s.agent.Title, err))
 	}
 	s.proc, s.procMsgs = p, p.Messages()
-	s.procKey = key
 	if v, ok := p.(interface{ Version() string }); ok {
 		s.state.Harness.Version = v.Version()
 	}

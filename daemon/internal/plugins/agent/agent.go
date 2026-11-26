@@ -40,7 +40,7 @@ func (p *Plugin) Manifest() plugin.Manifest {
 		ID: "agent", Title: "Agents", API: plugin.API, Builtin: true,
 		Permissions: []string{plugin.PermExec, plugin.PermFSWrite, plugin.PermAgentTools, plugin.PermRemote},
 		Features: []string{protocol.FeatureClaude, protocol.FeatureWorktrees, protocol.FeatureAttachments, protocol.FeatureHistory,
-			protocol.FeatureRewind, protocol.FeatureClaudeUpdate, protocol.FeatureClaudeAuth, protocol.FeatureToken, protocol.FeatureSearch},
+			protocol.FeatureRewind, protocol.FeatureClaudeUpdate, protocol.FeatureClaudeAuth, protocol.FeatureToken, protocol.FeatureSearch, protocol.FeatureHarnessAuth},
 	}
 }
 
@@ -103,8 +103,8 @@ func (p *Plugin) Start(h plugin.Host) error {
 		Code    string `json:"code"`
 		// Instructions: agent.setInstructions.
 		Instructions string `json:"instructions"`
-		// Keys: agent.setKeys, the account's API keys by agent kind.
-		Keys map[string]string `json:"keys"`
+		// Kind: agent.harness*, another agent's threads' kind.
+		Kind string `json:"kind"`
 	}
 	rpc := func(method string, fn func(ctx context.Context, p params) (any, error), opts ...plugin.RPCOption) {
 		h.HandleRPC(method, func(ctx context.Context, _ plugin.RPCContext, raw json.RawMessage) (any, error) {
@@ -149,14 +149,20 @@ func (p *Plugin) Start(h plugin.Host) error {
 		h.Emit(protocol.RPCEvent{Event: protocol.EventClaudeAuth})
 		return plugin.Empty{}, nil
 	}, plugin.RemoteOnly())
-	// And the account's API keys for other agents (Antigravity's), by kind:
-	// every key there is, so a kind left out has none.
-	rpc("agent.setKeys", func(_ context.Context, ps params) (any, error) {
-		if err := p.m.SetAgentKeys(ps.Keys); err != nil {
-			return nil, err
-		}
+	// Other agents' sign-ins (Antigravity's with Google), as claude's above.
+	rpc("agent.harnessAuth", func(_ context.Context, ps params) (any, error) {
+		return p.m.HarnessAuth(context.Background(), ps.Kind)
+	}, plugin.Slow())
+	rpc("agent.harnessLogin", func(_ context.Context, ps params) (any, error) {
+		return p.m.StartHarnessLogin(context.Background(), ps.Kind)
+	}, plugin.Slow())
+	rpc("agent.harnessLoginCode", func(_ context.Context, ps params) (any, error) {
+		return p.m.FinishHarnessLogin(context.Background(), ps.Kind, ps.Code)
+	}, plugin.Slow())
+	rpc("agent.harnessLoginCancel", func(_ context.Context, ps params) (any, error) {
+		p.m.CancelHarnessLogin(ps.Kind)
 		return plugin.Empty{}, nil
-	}, plugin.RemoteOnly())
+	}, plugin.Slow())
 	// And the account's custom instructions, for claude's system prompt.
 	rpc("agent.setInstructions", func(_ context.Context, ps params) (any, error) {
 		if err := p.setInstructions(ps.Instructions); err != nil {

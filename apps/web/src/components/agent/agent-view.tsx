@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ClaudeSignIn, SignedOutBanner, signedOut, useClaudeAuth } from "@/components/claude-auth";
+import { HarnessSignedOutBanner, HarnessSignIn, harnessSignedOut, useHarnessAuth } from "@/components/harness-auth";
 import { useDevice } from "@/components/device-context";
 import { Button } from "@/components/ui/button";
 import {
@@ -134,7 +135,8 @@ export function AgentView({
     }
     if (uses.length) onToolUsesRef.current?.(uses);
   }, [agent.events]);
-  const { info } = useDevice();
+  const deviceCtx = useDevice();
+  const { info } = deviceCtx;
   // Another agent than Claude: what it supports, and its name.
   const harness = state?.harness;
   const name = harness?.title ?? "Claude";
@@ -185,6 +187,10 @@ export function AgentView({
   const claudeAuth = useClaudeAuth();
   const [signingIn, setSigningIn] = useState(false);
   const onSignIn = !harness && signedOut(claudeAuth.data) ? () => setSigningIn(true) : undefined;
+  // Another agent's sign-in on the device (Antigravity's with Google).
+  const harnessAuth = useHarnessAuth(deviceCtx, harness?.kind ?? "", !!harness && !archived);
+  const [harnessSigningIn, setHarnessSigningIn] = useState(false);
+  const harnessOut = !!harness && harnessSignedOut(harnessAuth.data);
   const prefs = usePrefs();
   useAutoRecap({
     threadId,
@@ -326,6 +332,16 @@ export function AgentView({
         </div>
       </div>
       <ClaudeSignIn auth={claudeAuth.data} open={signingIn} onOpenChange={setSigningIn} />
+      {harness && (
+        <HarnessSignIn
+          entry={deviceCtx}
+          kind={harness.kind}
+          title={harness.title}
+          open={harnessSigningIn}
+          onOpenChange={setHarnessSigningIn}
+          onDone={harnessAuth.refetch}
+        />
+      )}
       <RewindDialog
         prompt={rewindTo}
         onClose={() => setRewindTo(null)}
@@ -355,6 +371,9 @@ export function AgentView({
               <PendingRequest key={r.id} request={r} cwd={workdir} respond={user.send} agent={harness?.title} />
             ))}
             {claudeAuth.data && onSignIn && <SignedOutBanner auth={claudeAuth.data} onSignIn={onSignIn} />}
+            {harnessOut && harnessAuth.data && (
+              <HarnessSignedOutBanner auth={harnessAuth.data} onSignIn={() => setHarnessSigningIn(true)} />
+            )}
             <ResumeBanner threadId={threadId} context={state?.context} canCompact={canCompact} onCompact={compact} />
             {canGoal && (
               <GoalBar

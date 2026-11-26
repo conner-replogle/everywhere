@@ -111,7 +111,7 @@ func (m *Manager) probeAgent(a harness.Agent) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
-	p, err := m.startAgent(ctx, harness.StartOptions{Agent: a, Dir: dir, Key: m.agentKey(a.Kind)})
+	p, err := m.startAgent(ctx, harness.StartOptions{Agent: a, Dir: dir})
 	if err != nil {
 		slog.Warn("probing agent", "kind", a.Kind, "err", err)
 		return

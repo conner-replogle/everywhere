@@ -2,6 +2,7 @@ package harness
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -38,10 +39,10 @@ func TestToolNames(t *testing.T) {
 func TestSignInHint(t *testing.T) {
 	a, _ := ByKind("antigravity")
 	err := signInHint(a, &rpcError{Code: -32000, Message: "Authentication required"})
-	if want := "Antigravity isn't signed in. " + a.Install; err.Error() != want {
+	if want := "Antigravity isn't signed in. " + a.Install; err.Error() != want || !errors.Is(err, ErrSignedOut) {
 		t.Errorf("got %q, want %q", err, want)
 	}
-	if err := signInHint(a, &rpcError{Code: -32603, Message: "boom"}); err.Error() != "boom" {
+	if err := signInHint(a, &rpcError{Code: -32603, Message: "boom"}); err.Error() != "boom" || errors.Is(err, ErrSignedOut) {
 		t.Errorf("other errors pass through, got %q", err)
 	}
 }

@@ -21,7 +21,7 @@ dashboardFrame.get("/", serveDashboardFrame);
 
 export const WORKER_PLUGINS: readonly WorkerPlugin[] = [
   claude,
-  // API keys for other coding agents (Antigravity's), sent to every device.
+  // Forgets the API keys for other agents that version 0.34.0 kept.
   agentKeys,
   push,
   pluginSettings,

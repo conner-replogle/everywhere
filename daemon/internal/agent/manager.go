@@ -121,10 +121,6 @@ type Manager struct {
 	attachments attachmentStore
 	// tokenPath keeps claude's long-lived token, when it's signed in with one.
 	tokenPath string
-	// keysPath keeps the account's API keys for other agents (keys.go).
-	keysPath string
-	keysMu   sync.Mutex
-	keys     map[string]string // as last read or set; nil until read
 
 	store    Store
 	onChange func() // called when a thread's running state or status changes
@@ -158,7 +154,9 @@ type Manager struct {
 	// credentials, until a sign-in or a turn that works.
 	authProblem string
 	authGen     int // sign-ins so far; see authGeneration
-	login       *pendingLogin
+	// harnessLogins are other agents' sign-ins waiting for their code, by kind.
+	harnessLogins map[string]*harnessLogin
+	login         *pendingLogin
 
 	probeMu sync.Mutex // one Info probe at a time
 
@@ -180,7 +178,6 @@ func NewManager(st Store, dataDir string, onChange func()) *Manager {
 		WorktreeDir:      filepath.Join(dataDir, "worktrees"),
 		attachments:      attachmentStore{root: filepath.Join(dataDir, "attachments")},
 		tokenPath:        filepath.Join(dataDir, "claude-token.json"),
-		keysPath:         filepath.Join(dataDir, "agent-keys.json"),
 		store:            st,
 		onChange:         onChange,
 		sessions:         map[string]*session{},
@@ -197,6 +194,9 @@ func NewManager(st Store, dataDir string, onChange func()) *Manager {
 		return c, nil
 	}
 	m.forkPoint = m.transcriptForkPoint
+	// Version 0.34.0 kept the account's API keys for other agents here;
+	// they're no longer used, and a key is no thing to leave lying about.
+	_ = os.Remove(filepath.Join(dataDir, "agent-keys.json"))
 	return m
 }
 
@@ -500,7 +500,14 @@ func (m *Manager) Shutdown() {
 	m.mu.Lock()
 	sessions := m.sessions
 	m.sessions = map[string]*session{}
+	var kinds []string
+	for kind := range m.harnessLogins {
+		kinds = append(kinds, kind)
+	}
 	m.mu.Unlock()
+	for _, kind := range kinds {
+		m.CancelHarnessLogin(kind)
+	}
 	var wg sync.WaitGroup
 	for _, s := range sessions {
 		wg.Go(s.stop)

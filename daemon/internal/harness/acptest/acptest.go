@@ -6,6 +6,7 @@ package acptest
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -14,13 +15,17 @@ import (
 // Env, set to "1", makes Main run the fake agent.
 const Env = "FAKE_ACP_AGENT"
 
-// NeedsKeyEnv, set to "1", has it refuse sessions (ACP's auth_required)
-// until authenticate chose KeyMethod with a key in KeyEnv. A prompt
-// containing "key?" is answered with that key, and nothing else.
+// AuthEnv, set to a file's path, has the agent refuse sessions (ACP's
+// auth_required) until that file exists: it's signed in once it does.
+const AuthEnv = "FAKE_ACP_AUTH"
+
+// LoginEnv, set to such a file's path, has Main play the agent's sign-in
+// command instead: it prints a sign-in link and LoginPrompt, reads a code,
+// and with GoodCode creates the file and exits 0; with another it fails.
 const (
-	NeedsKeyEnv = "FAKE_ACP_NEEDS_KEY"
-	KeyEnv      = "FAKE_ACP_KEY"
-	KeyMethod   = "fake-key"
+	LoginEnv    = "FAKE_ACP_LOGIN"
+	LoginPrompt = "and press Enter:"
+	GoodCode    = "good-code"
 )
 
 // Main runs the fake agent and exits if Env is set; otherwise it returns.
@@ -32,11 +37,42 @@ const (
 // permission first), then text, usage and end_turn. A prompt containing
 // "slow" waits to be cancelled. Prompts with images say so in the text.
 func Main() {
+	if path := os.Getenv(LoginEnv); path != "" {
+		login(path)
+	}
 	if os.Getenv(Env) != "1" {
 		return
 	}
 	run()
 	os.Exit(0)
+}
+
+func login(path string) {
+	fmt.Println("Open this link in a browser to log in:")
+	fmt.Println()
+	fmt.Println("  https://accounts.example.test/o/oauth2/auth?client_id=fake&state=s")
+	fmt.Println()
+	fmt.Println("Then paste the authorization code " + LoginPrompt)
+	code, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	if strings.TrimSpace(code) != GoodCode {
+		fmt.Println("login failed: that code was refused")
+		os.Exit(1)
+	}
+	if err := os.WriteFile(path, []byte("signed in"), 0o600); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
+	}
+	fmt.Println("Logged in.")
+	os.Exit(0)
+}
+
+func signedIn() bool {
+	path := os.Getenv(AuthEnv)
+	if path == "" {
+		return true
+	}
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func run() {
@@ -60,7 +96,6 @@ func run() {
 	replies := map[float64]chan json.RawMessage{}
 	cancel := make(chan struct{}, 1)
 	nextID := 9000.0
-	authed := os.Getenv(NeedsKeyEnv) != "1"
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 1<<20), 8<<20)
 	for in.Scan() {
@@ -98,20 +133,15 @@ func run() {
 				},
 				"agentInfo": map[string]any{"name": "fake", "version": "9.9"},
 			}})
-		case "authenticate":
-			var p struct {
-				MethodID string `json:"methodId"`
-			}
-			json.Unmarshal(m.Params, &p)
-			authed = authed || p.MethodID == KeyMethod && os.Getenv(KeyEnv) != ""
-			send(map[string]any{"id": *m.ID, "result": map[string]any{}})
-		case "session/new", "session/load":
-			if !authed {
+		case "session/new", "session/load", "session/list":
+			if !signedIn() {
 				send(map[string]any{"id": *m.ID, "error": map[string]any{"code": -32000, "message": "Authentication required"}})
 				continue
 			}
 		}
 		switch m.Method {
+		case "session/list":
+			send(map[string]any{"id": *m.ID, "result": map[string]any{"sessions": []any{}}})
 		case "session/new":
 			send(map[string]any{"id": *m.ID, "result": map[string]any{"sessionId": "s1", "configOptions": config}})
 		case "session/load":
@@ -144,11 +174,6 @@ func run() {
 			}
 			prompt := strings.Join(words, " ")
 			go func() {
-				if strings.Contains(prompt, "key?") {
-					text("agent_message_chunk", "key "+os.Getenv(KeyEnv))
-					send(map[string]any{"id": id, "result": map[string]any{"stopReason": "end_turn"}})
-					return
-				}
 				if strings.Contains(prompt, "slow") {
 					text("agent_message_chunk", "Working on it")
 					<-cancel
