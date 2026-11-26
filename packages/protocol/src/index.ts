@@ -106,8 +106,10 @@ export function notifyText(n: Pick<HubNotify, "kind" | "tool">): string {
  * agents: it answers connected agents' requests (see AgentMethods) while
  * the device allows them. claudeInstructions: it takes the account's custom
  * instructions for Claude (agent.setInstructions), sent when it connects.
+ * agentKeys: it takes the account's API keys for agents other than Claude,
+ * by kind (agent.setKeys), sent when it connects and when they change.
  */
-export type HubFeature = "rpc" | "claudeToken" | "pluginSettings" | "agents" | "claudeInstructions";
+export type HubFeature = "rpc" | "claudeToken" | "pluginSettings" | "agents" | "claudeInstructions" | "agentKeys";
 
 /** Sent by the hub to a daemon. `from` is a browser connection id. */
 export type HubToDaemon =
@@ -1020,6 +1022,8 @@ export interface RemoteMethods {
   "agent.setToken": RpcMethods["agent.setToken"];
   /** The account's custom instructions, added to every Claude thread's system prompt ("" for none). */
   "agent.setInstructions": [{ instructions: string }, Record<string, never>];
+  /** Every API key there is for another agent, by its kind; a kind left out has none. */
+  "agent.setKeys": [{ keys: Record<string, string> }, Record<string, never>];
   /** A plugin's account settings, whole (sealed in the hub, sent to each device that takes them). */
   "plugins.setAccountSettings": [{ id: string; values: Record<string, unknown> }, Record<string, never>];
   /** Whether the device lets connected agents in (so the Worker can say why not). */

@@ -103,6 +103,8 @@ func (p *Plugin) Start(h plugin.Host) error {
 		Code    string `json:"code"`
 		// Instructions: agent.setInstructions.
 		Instructions string `json:"instructions"`
+		// Keys: agent.setKeys, the account's API keys by agent kind.
+		Keys map[string]string `json:"keys"`
 	}
 	rpc := func(method string, fn func(ctx context.Context, p params) (any, error), opts ...plugin.RPCOption) {
 		h.HandleRPC(method, func(ctx context.Context, _ plugin.RPCContext, raw json.RawMessage) (any, error) {
@@ -145,6 +147,14 @@ func (p *Plugin) Start(h plugin.Host) error {
 			return nil, err
 		}
 		h.Emit(protocol.RPCEvent{Event: protocol.EventClaudeAuth})
+		return plugin.Empty{}, nil
+	}, plugin.RemoteOnly())
+	// And the account's API keys for other agents (Antigravity's), by kind:
+	// every key there is, so a kind left out has none.
+	rpc("agent.setKeys", func(_ context.Context, ps params) (any, error) {
+		if err := p.m.SetAgentKeys(ps.Keys); err != nil {
+			return nil, err
+		}
 		return plugin.Empty{}, nil
 	}, plugin.RemoteOnly())
 	// And the account's custom instructions, for claude's system prompt.

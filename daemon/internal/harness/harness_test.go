@@ -33,3 +33,15 @@ func TestToolNames(t *testing.T) {
 		}
 	}
 }
+
+// An agent that isn't signed in says how to sign it in.
+func TestSignInHint(t *testing.T) {
+	a, _ := ByKind("antigravity")
+	err := signInHint(a, &rpcError{Code: -32000, Message: "Authentication required"})
+	if want := "Antigravity isn't signed in. " + a.Install; err.Error() != want {
+		t.Errorf("got %q, want %q", err, want)
+	}
+	if err := signInHint(a, &rpcError{Code: -32603, Message: "boom"}); err.Error() != "boom" {
+		t.Errorf("other errors pass through, got %q", err)
+	}
+}

@@ -14,6 +14,15 @@ import (
 // Env, set to "1", makes Main run the fake agent.
 const Env = "FAKE_ACP_AGENT"
 
+// NeedsKeyEnv, set to "1", has it refuse sessions (ACP's auth_required)
+// until authenticate chose KeyMethod with a key in KeyEnv. A prompt
+// containing "key?" is answered with that key, and nothing else.
+const (
+	NeedsKeyEnv = "FAKE_ACP_NEEDS_KEY"
+	KeyEnv      = "FAKE_ACP_KEY"
+	KeyMethod   = "fake-key"
+)
+
 // Main runs the fake agent and exits if Env is set; otherwise it returns.
 //
 // The agent answers initialize, session/new and session/load (session
@@ -51,6 +60,7 @@ func run() {
 	replies := map[float64]chan json.RawMessage{}
 	cancel := make(chan struct{}, 1)
 	nextID := 9000.0
+	authed := os.Getenv(NeedsKeyEnv) != "1"
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 1<<20), 8<<20)
 	for in.Scan() {
@@ -88,6 +98,20 @@ func run() {
 				},
 				"agentInfo": map[string]any{"name": "fake", "version": "9.9"},
 			}})
+		case "authenticate":
+			var p struct {
+				MethodID string `json:"methodId"`
+			}
+			json.Unmarshal(m.Params, &p)
+			authed = authed || p.MethodID == KeyMethod && os.Getenv(KeyEnv) != ""
+			send(map[string]any{"id": *m.ID, "result": map[string]any{}})
+		case "session/new", "session/load":
+			if !authed {
+				send(map[string]any{"id": *m.ID, "error": map[string]any{"code": -32000, "message": "Authentication required"}})
+				continue
+			}
+		}
+		switch m.Method {
 		case "session/new":
 			send(map[string]any{"id": *m.ID, "result": map[string]any{"sessionId": "s1", "configOptions": config}})
 		case "session/load":
@@ -120,6 +144,11 @@ func run() {
 			}
 			prompt := strings.Join(words, " ")
 			go func() {
+				if strings.Contains(prompt, "key?") {
+					text("agent_message_chunk", "key "+os.Getenv(KeyEnv))
+					send(map[string]any{"id": id, "result": map[string]any{"stopReason": "end_turn"}})
+					return
+				}
 				if strings.Contains(prompt, "slow") {
 					text("agent_message_chunk", "Working on it")
 					<-cancel

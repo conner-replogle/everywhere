@@ -69,6 +69,11 @@ const HubFeatureClaudeToken = "claudeToken"
 // it connects and when they change.
 const HubFeatureClaudeInstructions = "claudeInstructions"
 
+// HubFeatureAgentKeys: the daemon takes the account's API keys for agents
+// other than claude, by kind (agent.setKeys), which the hub sends when it
+// connects and when they change.
+const HubFeatureAgentKeys = "agentKeys"
+
 // HubFeatureAgents: the daemon serves connected agents' requests (rpc with
 // Agent set) for the methods registered with plugin.Agent, while the device
 // allows them (`device.agents`).

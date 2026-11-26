@@ -73,6 +73,9 @@ type StartOptions struct {
 	Resume      string
 	Model, Mode string
 	MCP         []MCPServer
+	// Key is the account's API key for the agent (Agent.Key), used in
+	// place of its own sign-in; "" leaves it to that.
+	Key string
 }
 
 // MCPServer is an MCP server (over HTTP) the agent gets.
@@ -89,7 +92,12 @@ func Start(ctx context.Context, o StartOptions) (*Conn, error) {
 		tools: map[string]*toolCall{}, pending: map[string]*permission{},
 	}
 	c.wake = sync.NewCond(&c.mu)
-	conn, err := startACP(o.Agent.Command, o.Dir, nil, c.onNotify, c.onRequest)
+	var env []string
+	useKey := o.Key != "" && o.Agent.Key != nil
+	if useKey {
+		env = append(env, o.Agent.Key.Env+"="+o.Key)
+	}
+	conn, err := startACP(o.Agent.Command, o.Dir, env, c.onNotify, c.onRequest)
 	if err != nil {
 		return nil, err
 	}
@@ -120,6 +128,12 @@ func Start(ctx context.Context, o StartOptions) (*Conn, error) {
 	}, &c.init); err != nil {
 		return fail(err)
 	}
+	if useKey {
+		// The key in its environment isn't enough: it's chosen as the way in.
+		if err := conn.call(ctx, "authenticate", map[string]any{"methodId": o.Agent.Key.Method}, nil); err != nil {
+			return fail(fmt.Errorf("%s didn't take the API key: %w", o.Agent.Title, err))
+		}
+	}
 	servers := []acpMCPServer{}
 	if c.init.AgentCapabilities.MCPCapabilities.HTTP {
 		for _, m := range o.MCP {
@@ -142,7 +156,7 @@ func Start(ctx context.Context, o StartOptions) (*Conn, error) {
 	}
 	if !loaded {
 		if err := conn.call(ctx, "session/new", map[string]any{"cwd": o.Dir, "mcpServers": servers}, &res); err != nil {
-			return fail(err)
+			return fail(signInHint(o.Agent, err))
 		}
 		if o.Resume != "" {
 			c.emitSystem("harness_notice", map[string]any{"text": o.Agent.Title + " couldn't reload the conversation; it goes on in a new session, without the earlier context"})
@@ -741,4 +755,14 @@ func newID() string {
 	b := make([]byte, 12)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// signInHint says how to sign the agent in when it refuses a session for
+// want of it (ACP's auth_required).
+func signInHint(a Agent, err error) error {
+	var re *rpcError
+	if errors.As(err, &re) && re.Code == -32000 && a.Install != "" {
+		return fmt.Errorf("%s isn't signed in. %s", a.Title, a.Install)
+	}
+	return err
 }

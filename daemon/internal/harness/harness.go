@@ -13,6 +13,8 @@ package harness
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -33,10 +35,38 @@ type Agent struct {
 	Command []string
 	// Install says how to get it, when it's missing.
 	Install string
+	// Key is how it takes an API key in place of its own sign-in, if it can:
+	// the account's key for it (Settings) is given to every one started.
+	Key *KeySpec
+}
+
+// KeySpec is how an agent takes an API key: in an environment variable,
+// then chosen with ACP's authenticate.
+type KeySpec struct {
+	// Env is the variable it reads the key from.
+	Env string
+	// Method is the authMethod id that has it use the key.
+	Method string
+	// Prefix starts every such key.
+	Prefix string
+}
+
+// Valid checks a key looks like one of the agent's.
+func (k *KeySpec) Valid(key string) error {
+	if k == nil {
+		return errors.New("it doesn't take an API key")
+	}
+	if !strings.HasPrefix(key, k.Prefix) || len(key) < len(k.Prefix)+20 || strings.ContainsAny(key, " \t\r\n") {
+		return fmt.Errorf("that isn't an API key for it (they start %s)", k.Prefix)
+	}
+	return nil
 }
 
 //go:embed icons/opencode.svg
 var opencodeIcon string
+
+//go:embed icons/antigravity.svg
+var antigravityIcon string
 
 // Agents are the agents the daemon knows how to run.
 var Agents = []Agent{
@@ -44,6 +74,13 @@ var Agents = []Agent{
 		Kind: "opencode", Title: "OpenCode", Icon: svgURL(opencodeIcon),
 		Command: []string{"opencode", "acp"},
 		Install: "Install OpenCode (opencode.ai) and sign it in with `opencode auth login`.",
+	},
+	{
+		Kind: "antigravity", Title: "Antigravity", Icon: svgURL(antigravityIcon),
+		Command: []string{"agy", "acp"},
+		Install: "Install the Antigravity CLI (antigravity.google) and sign it in by running `agy` once, or set an Antigravity API key in Settings.",
+		// A Gemini API key, from aistudio.google.com/apikey.
+		Key: &KeySpec{Env: "GEMINI_API_KEY", Method: "gemini-api-key", Prefix: "AIza"},
 	},
 }
 

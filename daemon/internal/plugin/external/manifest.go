@@ -116,7 +116,7 @@ var (
 var Reserved = []string{plugin.CoreID, "plugins", "terminal", "agent", "browser", "desktop", "files", "processes",
 	"telemetry", "dashboards", "scratch", "git", "clone", "code", "share", "done", "web", "everywhere",
 	// The agents the agent plugin runs (package harness), whose ids are their threads' kinds.
-	"opencode"}
+	"opencode", "antigravity"}
 
 // ToolName is a plugin tool's name on the daemon's MCP server.
 func (m Manifest) ToolName(name string) string {

@@ -121,6 +121,10 @@ type Manager struct {
 	attachments attachmentStore
 	// tokenPath keeps claude's long-lived token, when it's signed in with one.
 	tokenPath string
+	// keysPath keeps the account's API keys for other agents (keys.go).
+	keysPath string
+	keysMu   sync.Mutex
+	keys     map[string]string // as last read or set; nil until read
 
 	store    Store
 	onChange func() // called when a thread's running state or status changes
@@ -176,6 +180,7 @@ func NewManager(st Store, dataDir string, onChange func()) *Manager {
 		WorktreeDir:      filepath.Join(dataDir, "worktrees"),
 		attachments:      attachmentStore{root: filepath.Join(dataDir, "attachments")},
 		tokenPath:        filepath.Join(dataDir, "claude-token.json"),
+		keysPath:         filepath.Join(dataDir, "agent-keys.json"),
 		store:            st,
 		onChange:         onChange,
 		sessions:         map[string]*session{},

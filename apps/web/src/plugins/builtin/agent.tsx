@@ -1,7 +1,7 @@
 // The agent plugin: Claude Code threads and tabs, and Settings → Claude.
 
 import type { AgentStatus, PluginInfo } from "@everywhere/protocol";
-import { SparklesIcon, type LucideIcon } from "lucide-react";
+import { OrbitIcon, SparklesIcon, type LucideIcon } from "lucide-react";
 import { ClaudeIcon, pluginLogoIcon } from "@/components/kind-icon";
 import { lazy, Suspense } from "react";
 import { getPrefs } from "@/lib/prefs";
@@ -23,7 +23,10 @@ export const agent = definePlugin({
       },
     }),
   ],
-  settings: [{ to: "/settings/claude", label: "Claude", icon: SparklesIcon, order: 20 }],
+  settings: [
+    { to: "/settings/claude", label: "Claude", icon: SparklesIcon, order: 20 },
+    { to: "/settings/antigravity", label: "Antigravity", icon: OrbitIcon, order: 21 },
+  ],
 });
 
 /** A tab kind drawn with the agent view: Claude's, or another agent's the device runs. */

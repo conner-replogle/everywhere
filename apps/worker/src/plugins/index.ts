@@ -10,6 +10,7 @@ import type { App } from "../types";
 import { agentSettings } from "../agents/keys";
 import { mcp } from "../agents/mcp";
 import { oauth } from "../agents/oauth";
+import { agentKeys } from "./agent-keys";
 import { claude } from "./claude";
 import { pluginSettings } from "./plugin-settings";
 import { push } from "./push";
@@ -20,6 +21,8 @@ dashboardFrame.get("/", serveDashboardFrame);
 
 export const WORKER_PLUGINS: readonly WorkerPlugin[] = [
   claude,
+  // API keys for other coding agents (Antigravity's), sent to every device.
+  agentKeys,
   push,
   pluginSettings,
   // Connecting a GitHub account; cloning with its token goes through the hub to the clone plugin.

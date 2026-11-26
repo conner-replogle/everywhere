@@ -88,8 +88,9 @@ type session struct {
 	// its version.
 	procBuild   string
 	procVersion string
-	procAuth    int  // the sign-in it started under (Manager.authGeneration)
-	authFailed  bool // claude's credentials were refused this turn
+	procAuth    int    // the sign-in it started under (Manager.authGeneration)
+	procKey     string // another agent's: the API key it started with (Manager.agentKey)
+	authFailed  bool   // claude's credentials were refused this turn
 	// refreshBusy: this turn lost the race to renew claude's sign-in, and is
 	// retried by refreshRetry after refreshRetries tries so far.
 	refreshBusy    bool
@@ -468,6 +469,14 @@ func (s *session) continueTurn() {
 }
 
 func (s *session) ensureProc() error {
+	if s.proc != nil && s.stopping && !s.turnActive {
+		// It's on its way out between turns (for a new build, sign-in or
+		// key, or idle): a prompt now goes to the one that follows it, not
+		// to it as it ends.
+		for range s.procMsgs {
+		}
+		s.onExit()
+	}
 	if s.proc != nil {
 		return nil
 	}
@@ -1645,7 +1654,13 @@ func (s *session) changed() {
 	// Claude was updated or signed in again: an idle process makes way for
 	// one with the new build or credentials. The next prompt starts it,
 	// resuming the conversation.
-	if s.proc != nil && s.state.Status == statusIdle && !s.stopping {
+	// Another agent's makes way for one with the account's new API key.
+	if s.proc != nil && s.state.Status == statusIdle && !s.stopping && s.agent != nil {
+		if s.m.agentKey(s.agent.Kind) != s.procKey {
+			slog.Info("stopping the agent for its new API key", "thread", s.threadID, "kind", s.agent.Kind)
+			s.closeProc()
+		}
+	} else if s.proc != nil && s.state.Status == statusIdle && !s.stopping {
 		if build, _ := s.m.currentBuild(); build != s.procBuild {
 			slog.Info("stopping claude for its new version", "thread", s.threadID)
 			s.closeProc()
@@ -1828,14 +1843,16 @@ func (s *session) startAgent(ctx context.Context, a store.AgentThread, dir strin
 	if mode == "default" || mode == "auto" { // claude's, the store's default
 		mode = ""
 	}
+	key := s.m.agentKey(s.agent.Kind)
 	p, err := s.m.startAgent(ctx, harness.StartOptions{
-		Agent: *s.agent, Dir: dir, Resume: a.SessionID, Model: a.Model, Mode: mode, MCP: servers,
+		Agent: *s.agent, Dir: dir, Resume: a.SessionID, Model: a.Model, Mode: mode, MCP: servers, Key: key,
 	})
 	if err != nil {
 		s.release()
 		return fail(fmt.Errorf("starting %s: %w", s.agent.Title, err))
 	}
 	s.proc, s.procMsgs = p, p.Messages()
+	s.procKey = key
 	if v, ok := p.(interface{ Version() string }); ok {
 		s.state.Harness.Version = v.Version()
 	}

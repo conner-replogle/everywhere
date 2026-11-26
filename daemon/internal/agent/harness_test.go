@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -266,4 +267,91 @@ func TestAgentConfigBeforeStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, "the saved config", func() bool { s := c2.state(); return len(s.Models) == 2 && s.Model == "m2" })
+}
+
+// The account's API key for an agent is what its threads start with, in
+// place of its own sign-in; a new key moves idle threads onto it.
+func TestAgentKey(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(acptest.Env, "1")
+	t.Setenv(acptest.NeedsKeyEnv, "1")
+	saved := harness.Agents
+	harness.Agents = []harness.Agent{{
+		Kind: "fake", Title: "Fake", Command: []string{exe}, Install: "Sign it in.",
+		Key: &harness.KeySpec{Env: acptest.KeyEnv, Method: acptest.KeyMethod, Prefix: "fk-"},
+	}}
+	t.Cleanup(func() { harness.Agents = saved })
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	projects, _ := st.ListProjects()
+	th, err := st.CreateThread(projects[0].ID, "", "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataDir := t.TempDir()
+	m := NewManager(st, dataDir, func() {})
+	t.Cleanup(m.Shutdown)
+	c := &recorder{}
+	if err := m.Attach(th.ID, c, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+
+	// Without a key it says how to sign it in.
+	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "send", Text: "key?"})
+	eventually(t, "the sign-in error", func() bool {
+		errs := c.errors()
+		return len(errs) > 0 && strings.Contains(errs[len(errs)-1], "Fake isn't signed in. Sign it in.")
+	})
+
+	if err := m.SetAgentKeys(map[string]string{"fake": "not-a-key-of-its-own-at-all"}); err == nil {
+		t.Fatal("took a key that isn't one of the agent's")
+	}
+	key1 := "fk-" + strings.Repeat("a", 24)
+	if err := m.SetAgentKeys(map[string]string{"fake": " " + key1 + "\n", "other": "kept-for-later"}); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(filepath.Join(dataDir, "agent-keys.json")); err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
+		t.Fatalf("keys file: %v, %v", info, err)
+	}
+	lastReply := func(want string) func() bool {
+		return func() bool {
+			evs := c.events()
+			for i := len(evs) - 1; i >= 0; i-- {
+				if evs[i].Type == "assistant" {
+					return evs[i].Text == want
+				}
+			}
+			return false
+		}
+	}
+	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "send", Text: "key?"})
+	eventually(t, "a reply with the key", lastReply("key "+key1))
+	eventually(t, "idle", func() bool { return c.state().Status == statusIdle })
+
+	// A new key: the idle agent makes way for one started with it.
+	key2 := "fk-" + strings.Repeat("b", 24)
+	if err := m.SetAgentKeys(map[string]string{"fake": key2}); err != nil {
+		t.Fatal(err)
+	}
+	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "send", Text: "key?"})
+	eventually(t, "a reply with the new key", lastReply("key "+key2))
+
+	// A daemon started later has it still.
+	if got := NewManager(st, dataDir, func() {}).agentKey("fake"); got != key2 {
+		t.Fatalf("reloaded key = %q", got)
+	}
+	// None: back to its own sign-in.
+	if err := m.SetAgentKeys(nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, "agent-keys.json")); !os.IsNotExist(err) {
+		t.Fatalf("keys file after removing them: %v", err)
+	}
 }

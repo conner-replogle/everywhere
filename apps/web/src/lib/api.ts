@@ -220,6 +220,13 @@ export const api = {
   setClaudeInstructions: (text: string) =>
     request<ClaudeInstructions & { devices: Record<string, string> }>("PUT", "/api/claude/instructions", { text }),
 
+  /** The account's API keys for other coding agents, by kind, as far as the app sees them. */
+  agentKeys: () => request<Record<string, AgentKeyInfo>>("GET", "/api/agent-keys"),
+  /** Sets a kind's key, sending every key to each connected device; devices as for the Claude token. */
+  setAgentKey: (kind: string, key: string) =>
+    request<AgentKeyResult>("PUT", `/api/agent-keys/${encodeURIComponent(kind)}`, { key }),
+  removeAgentKey: (kind: string) => request<AgentKeyResult>("DELETE", `/api/agent-keys/${encodeURIComponent(kind)}`),
+
   /** A clearer version of a composer draft, given the thread's recent messages. */
   rewritePrompt: (draft: string, context: { role: "user" | "claude"; text: string }[]) =>
     request<{ text: string }>("POST", "/api/prompt/rewrite", { draft, context }),
@@ -257,5 +264,7 @@ export const api = {
 export type ClaudeTokenInfo = { set: false } | { set: true; hint: string; setAt: number };
 export type ClaudeTokenResult = ClaudeTokenInfo & { devices: Record<string, string> };
 export type ClaudeInstructions = { text: string; setAt?: number };
+export type AgentKeyInfo = { set: false } | { set: true; hint: string; setAt: number };
+export type AgentKeyResult = AgentKeyInfo & { devices: Record<string, string> };
 /** As the Worker allows (apps/worker/src/plugins/claude.ts). */
 export const MAX_CLAUDE_INSTRUCTIONS = 16_000;
