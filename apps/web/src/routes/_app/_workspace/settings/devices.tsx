@@ -54,10 +54,11 @@ function DeviceSettings() {
             <thead className="border-b text-xs text-muted-foreground">
               <tr>
                 <th className="px-4 py-2 font-medium">Name</th>
-                <th className="px-3 py-2 font-medium">Hostname</th>
-                <th className="px-3 py-2 font-medium">Platform</th>
-                <th className="px-3 py-2 font-medium">Version</th>
-                <th className="px-3 py-2 font-medium">Added</th>
+                {/* On phones only the name (with platform and version under it), last seen and actions. */}
+                <th className="px-3 py-2 font-medium max-sm:hidden">Hostname</th>
+                <th className="px-3 py-2 font-medium max-sm:hidden">Platform</th>
+                <th className="px-3 py-2 font-medium max-sm:hidden">Version</th>
+                <th className="px-3 py-2 font-medium max-sm:hidden">Added</th>
                 <th className="px-3 py-2 font-medium">Last seen</th>
                 <th className="w-10 px-2 py-2">
                   <span className="sr-only">Actions</span>
@@ -72,15 +73,20 @@ function DeviceSettings() {
                     <td className="px-4 py-2">
                       <span className="flex items-center gap-2.5">
                         <PresenceDot online={isOnline} />
-                        <span className="font-medium">{d.name}</span>
+                        <span className="grid min-w-0">
+                          <span className="font-medium">{d.name}</span>
+                          <span className="text-xs text-muted-foreground sm:hidden">
+                            {d.os}/{d.arch} · {d.version}
+                          </span>
+                        </span>
                       </span>
                     </td>
-                    <td className="px-3 py-2 font-mono text-xs text-muted-foreground">{d.hostname}</td>
-                    <td className="px-3 py-2 text-muted-foreground">
+                    <td className="px-3 py-2 font-mono text-xs text-muted-foreground max-sm:hidden">{d.hostname}</td>
+                    <td className="px-3 py-2 text-muted-foreground max-sm:hidden">
                       {d.os}/{d.arch}
                     </td>
-                    <td className="px-3 py-2 font-mono text-xs text-muted-foreground">{d.version}</td>
-                    <td className="px-3 py-2 text-muted-foreground">{timeAgo(d.createdAt)}</td>
+                    <td className="px-3 py-2 font-mono text-xs text-muted-foreground max-sm:hidden">{d.version}</td>
+                    <td className="px-3 py-2 text-muted-foreground max-sm:hidden">{timeAgo(d.createdAt)}</td>
                     <td className="px-3 py-2 text-muted-foreground">
                       {isOnline ? <span className="text-live">Online now</span> : timeAgo(d.lastSeenAt)}
                     </td>
