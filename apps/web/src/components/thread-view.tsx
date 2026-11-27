@@ -7,6 +7,7 @@ import {
   Columns2Icon,
   LayoutGridIcon,
   Maximize2Icon,
+  PanelRightCloseIcon,
   PencilIcon,
   PlusIcon,
   PuzzleIcon,
@@ -577,6 +578,31 @@ export function ThreadView({
             <span className="hidden md:contents">{active && activeKind?.status?.(active, reports[active.id])}</span>
           )}
           <GridMenu deviceId={deviceId} threadId={threadId} cell={cell} />
+          {/* Out of the menu, so leaving the grid is one tap, on phones too. */}
+          {cell && (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="self-center"
+              aria-label="Close this thread here"
+              title="Close this thread here (it stays in the sidebar)"
+              onClick={cell.onClose}
+            >
+              <XIcon />
+            </Button>
+          )}
+          {splitPane && (
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="self-center"
+              aria-label="Close split"
+              title="Close split: keep only the tab you're in"
+              onClick={closeSplit}
+            >
+              <PanelRightCloseIcon />
+            </Button>
+          )}
           {panes.length > 1 && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
