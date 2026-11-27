@@ -1540,7 +1540,7 @@ export type AgentEvent = AgentEventBase &
     /** id is the tool_use id; a toolResult with the same id follows. */
     | { type: "tool"; id: string; name: string; input: unknown }
     /** attachments: images in the result (a Read of an image, a screenshot), as claude saw them. */
-    | { type: "toolResult"; id: string; output: string; isError?: boolean; attachments?: AgentAttachment[] }
+    | { type: "toolResult"; id: string; output?: string; isError?: boolean; attachments?: AgentAttachment[] }
     | {
         type: "request";
         id: string;

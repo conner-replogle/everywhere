@@ -464,7 +464,7 @@ function seenImages(name: string, input: Record<string, unknown>, result: ToolIt
   if (result?.attachments?.length) return result.attachments;
   const path = typeof input.file_path === "string" ? input.file_path : "";
   const type = IMAGE_TYPES[path.split(".").pop()?.toLowerCase() ?? ""];
-  if (name !== "Read" || !type || !result || result.isError || !result.output.includes("[image]")) return [];
+  if (name !== "Read" || !type || !result || result.isError || !result.output?.includes("[image]")) return [];
   return [{ id: path, name: path.split(/[\\/]/).pop() ?? path, kind: "image", mediaType: type, size: 0, path }];
 }
 
@@ -507,7 +507,7 @@ function ToolDetail({ name, input }: { name: string; input: ToolInput }) {
   return <Output text={JSON.stringify(input, null, 2)} />;
 }
 
-function Output({ text, error }: { text: string; error?: boolean }) {
+function Output({ text, error }: { text?: string; error?: boolean }) {
   if (!text) return null;
   return (
     <pre
