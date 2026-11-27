@@ -40,10 +40,14 @@ type Conn struct {
 	// loading: session/load is replaying the conversation, which the
 	// engine's log already has.
 	loading bool
-	// prompting: a prompt's turn is running; prompts sent meanwhile wait.
+	// prompting: a prompt's turn is running; prompts sent meanwhile wait
+	// (or, for an agent that steers, go at once: Agent.Steers).
 	prompting bool
 	queued    [][]acpContentBlock
-	tools     map[string]*toolCall
+	// turn is the engine's turn as the agent works it, from a prompt (or an
+	// agent's waking on its own) to the result that ends it (turn.go).
+	turn  turnState
+	tools map[string]*toolCall
 	// The block being streamed, of each kind.
 	text, thought stream
 	used, size    int
@@ -125,7 +129,7 @@ func Start(ctx context.Context, o StartOptions) (*Conn, error) {
 		return fail(err)
 	}
 	servers := []acpMCPServer{}
-	if c.init.AgentCapabilities.MCPCapabilities.HTTP {
+	if c.init.AgentCapabilities.MCPCapabilities.HTTP || o.Agent.MCPOverHTTP {
 		for _, m := range o.MCP {
 			srv := acpMCPServer{Type: "http", Name: m.Name, URL: m.URL, Headers: []acpHTTPHeader{}}
 			for k, v := range m.Headers {
@@ -209,30 +213,61 @@ func (c *Conn) Send(m claude.UserMessage) error {
 		return nil
 	}
 	c.mu.Lock()
-	if c.prompting {
+	c.turn.stopped = false // a prompt after Stop is a new run
+	switch {
+	case c.prompting && !c.steers():
 		c.queued = append(c.queued, blocks)
 		c.mu.Unlock()
 		return nil
+	case c.prompting:
+		// The agent takes a prompt sent mid-turn as a steer: the one running
+		// ends (its end_turn is ignored) and the turn goes on under this one.
 	}
 	c.prompting = true
+	c.openTurnLocked()
+	gen := c.turn.nextPromptLocked()
 	c.mu.Unlock()
-	go c.prompt(blocks)
+	go c.prompt(blocks, gen)
 	return nil
 }
 
-func (c *Conn) prompt(blocks []acpContentBlock) {
+func (c *Conn) prompt(blocks []acpContentBlock, gen int) {
 	start := time.Now()
 	var res struct {
 		StopReason string `json:"stopReason"`
 	}
-	err := c.conn.call(context.Background(), "session/prompt", map[string]any{"sessionId": c.sessionID, "prompt": blocks}, &res)
+	var err error
+	for attempt := 0; ; attempt++ {
+		err = c.conn.call(context.Background(), "session/prompt", map[string]any{"sessionId": c.sessionID, "prompt": blocks}, &res)
+		// A steer can reach the agent before it has let go of the prompt
+		// before: it says so, and takes it a moment later.
+		if err == nil || !strings.Contains(strings.ToLower(err.Error()), "already processing") || attempt >= 30 {
+			break
+		}
+		time.Sleep(time.Second)
+		c.mu.Lock()
+		gone := c.turn.stopped || c.turn.gen != gen
+		c.mu.Unlock()
+		if gone {
+			return
+		}
+	}
 	c.mu.Lock()
+	if gen != c.turn.gen {
+		// Superseded by a steer: the turn goes on under the newer prompt.
+		c.mu.Unlock()
+		return
+	}
+	c.turn.promptReturned()
 	c.flushLocked()
 	result := map[string]any{"subtype": "success", "duration_ms": time.Since(start).Milliseconds(), "stop_reason": res.StopReason}
 	fail := func(text string) {
 		result["subtype"], result["is_error"], result["result"] = "error_during_execution", true, text
 	}
+	stopped := c.turn.stopped || res.StopReason == "cancelled"
 	switch {
+	case stopped:
+		// Stop: it ends now, however the agent ended the prompt.
 	case err != nil:
 		fail(err.Error())
 	case res.StopReason == "max_tokens":
@@ -242,24 +277,31 @@ func (c *Conn) prompt(blocks []acpContentBlock) {
 	case res.StopReason == "refusal":
 		fail("The model declined to continue.")
 	}
-	c.tools = map[string]*toolCall{}
-	// Prompts sent while it worked (the agent takes one at a time) follow
-	// in the same turn: it ends after the last of them. A prompt that failed
-	// ends it at once, and those waiting aren't sent.
+	// Prompts sent while it worked (an agent that takes one at a time)
+	// follow in the same turn: it ends after the last of them. A prompt that
+	// failed ends it at once, and those waiting aren't sent.
 	var next []acpContentBlock
-	if len(c.queued) > 0 && result["is_error"] == nil && res.StopReason != "cancelled" {
+	switch {
+	case len(c.queued) > 0 && result["is_error"] == nil && !stopped:
 		next, c.queued = c.queued[0], c.queued[1:]
-	} else {
+		gen = c.turn.nextPromptLocked()
+	case result["is_error"] == nil && !stopped && c.agent.BackgroundWork:
+		// The agent may work on after its prompt (commands left running, its
+		// waking to their ends): the turn ends once it's done (turn.go).
+		c.queued = nil
+		c.prompting = false
+		c.settleLocked(result)
+	default:
 		if n := len(c.queued); n > 0 && result["is_error"] != nil {
 			result["result"] = fmt.Sprintf("%v (%d message(s) sent meanwhile weren't passed on)", result["result"], n)
 		}
 		c.queued = nil
 		c.prompting = false
-		c.emitLocked(message("result", "", result))
+		c.endTurnLocked(result)
 	}
 	c.mu.Unlock()
 	if next != nil {
-		c.prompt(next)
+		c.prompt(next, gen)
 	}
 }
 
@@ -284,8 +326,12 @@ func (c *Conn) Respond(req *claude.PermissionRequest, res claude.PermissionResul
 	return nil
 }
 
-// Interrupt cancels the turn; prompts it was waiting on are cancelled too.
-func (c *Conn) Interrupt(context.Context) error {
+// Interrupt stops the turn: prompts waiting and permission requests are
+// cancelled, and so is what the agent runs, commands left running after its
+// prompt included (session/cancel ends them). It waits for the agent to end
+// its prompt; an agent that doesn't in time is reported, to be stopped.
+// What the stopped run sends after is dropped.
+func (c *Conn) Interrupt(ctx context.Context) error {
 	c.mu.Lock()
 	c.queued = nil
 	for id, p := range c.pending {
@@ -293,9 +339,32 @@ func (c *Conn) Interrupt(context.Context) error {
 		delete(c.pending, id)
 		c.emitLocked(claude.Message{Type: "control_cancel_request", CanceledRequestID: id})
 	}
+	if !c.turn.open && !c.prompting {
+		c.mu.Unlock()
+		return nil
+	}
+	c.turn.stopped = true
+	returned := c.turn.returned
+	waiting := c.prompting
 	c.mu.Unlock()
 	c.conn.notify("session/cancel", map[string]string{"sessionId": c.sessionID})
-	return nil
+	if !waiting {
+		// Only work after its prompt was left: the turn ends now.
+		c.mu.Lock()
+		c.endTurnLocked(map[string]any{"subtype": "success", "stop_reason": "cancelled"})
+		c.mu.Unlock()
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, StopTimeout)
+	defer cancel()
+	select {
+	case <-returned:
+		return nil
+	case <-c.conn.done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("%s didn't stop", c.agent.Title)
+	}
 }
 
 func (c *Conn) SetPermissionMode(ctx context.Context, mode string) error {
@@ -490,6 +559,18 @@ func (c *Conn) onNotify(method string, params json.RawMessage) {
 		}
 	}
 	switch u.SessionUpdate {
+	case "agent_message_chunk", "agent_thought_chunk", "tool_call", "tool_call_update", "plan":
+		if c.turn.stopped {
+			return // the stopped run's
+		}
+		if !c.turn.open && !c.prompting {
+			c.wakeLocked()
+		}
+		c.activityLocked(u.SessionUpdate)
+	case "usage_update":
+		c.activityLocked(u.SessionUpdate)
+	}
+	switch u.SessionUpdate {
 	case "agent_message_chunk":
 		c.streamLocked(&c.text, "text", contentText(u.Content))
 	case "agent_thought_chunk":
@@ -667,10 +748,14 @@ func (c *Conn) onRequest(method string, params json.RawMessage) (any, error) {
 		p.options["allow"] = p.options["allowSession"]
 	}
 	c.mu.Lock()
-	if c.ended {
+	if c.ended || c.turn.stopped {
 		c.mu.Unlock()
 		return cancelled(), nil
 	}
+	if !c.turn.open && !c.prompting {
+		c.wakeLocked() // it asks with no prompt open, having woken
+	}
+	c.activityLocked("tool_call")
 	t := c.tools[r.ToolCall.ToolCallID]
 	if t == nil {
 		t = &toolCall{id: r.ToolCall.ToolCallID}

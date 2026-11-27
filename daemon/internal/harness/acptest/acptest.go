@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Env, set to "1", makes Main run the fake agent.
@@ -18,6 +19,11 @@ const Env = "FAKE_ACP_AGENT"
 // NoAutoEnv, set to "1", leaves out the auto mode (as Antigravity does
 // where it can't sandbox commands).
 const NoAutoEnv = "FAKE_ACP_NO_AUTO"
+
+// NoHTTPMCPEnv, set to a file's path, has the agent not say it takes MCP
+// servers over HTTP (as Antigravity doesn't), and write the servers each
+// session/new gives it to that file, as JSON.
+const NoHTTPMCPEnv = "FAKE_ACP_NO_HTTP_MCP"
 
 // AuthEnv, set to a file's path, has the agent refuse sessions (ACP's
 // auth_required) until that file exists: it's signed in once it does.
@@ -32,6 +38,17 @@ const (
 	GoodCode    = "good-code"
 )
 
+// Prompts that play Antigravity's ways (with the words in them):
+//
+//   - "slow": works until cancelled (stopReason cancelled), or until another
+//     prompt comes, which steers it: it ends end_turn and the new one runs.
+//   - "background": starts a command (execute, in_progress) and returns
+//     end_turn at once; a moment later the command ends, and it says
+//     "background done" and sends usage_update, with no prompt open.
+//   - "wake": returns end_turn, then a moment later says "woke up" and
+//     sends usage_update, with no prompt open.
+//   - "stuck": works on and ignores a cancel.
+//
 // Main runs the fake agent and exits if Env is set; otherwise it returns.
 //
 // The agent answers initialize, session/new and session/load (session
@@ -99,6 +116,8 @@ func run() {
 	var rmu sync.Mutex
 	replies := map[float64]chan json.RawMessage{}
 	cancel := make(chan struct{}, 1)
+	var smu sync.Mutex
+	var latest chan struct{} // closed when a newer prompt arrives
 	nextID := 9000.0
 	current := map[string]string{} // config options set, by id
 	in := bufio.NewScanner(os.Stdin)
@@ -144,7 +163,7 @@ func run() {
 				"protocolVersion": 1,
 				"agentCapabilities": map[string]any{
 					"loadSession": true, "promptCapabilities": map[string]any{"image": true},
-					"mcpCapabilities": map[string]any{"http": true},
+					"mcpCapabilities": map[string]any{"http": os.Getenv(NoHTTPMCPEnv) == ""},
 				},
 				"agentInfo": map[string]any{"name": "fake", "version": "9.9"},
 			}})
@@ -153,6 +172,13 @@ func run() {
 				send(map[string]any{"id": *m.ID, "error": map[string]any{"code": -32000, "message": "Authentication required"}})
 				continue
 			}
+		}
+		if path := os.Getenv(NoHTTPMCPEnv); path != "" && m.Method == "session/new" {
+			var p struct {
+				MCPServers json.RawMessage `json:"mcpServers"`
+			}
+			json.Unmarshal(m.Params, &p)
+			os.WriteFile(path, p.MCPServers, 0o600)
 		}
 		switch m.Method {
 		case "session/list":
@@ -182,6 +208,13 @@ func run() {
 			default:
 			}
 		case "session/prompt":
+			smu.Lock()
+			if latest != nil {
+				close(latest)
+			}
+			steer := make(chan struct{})
+			latest = steer
+			smu.Unlock()
 			id := *m.ID
 			var p struct {
 				Prompt []struct {
@@ -201,10 +234,39 @@ func run() {
 			}
 			prompt := strings.Join(words, " ")
 			go func() {
+				end := func(reason string) {
+					send(map[string]any{"id": id, "result": map[string]any{"stopReason": reason}})
+				}
 				if strings.Contains(prompt, "slow") {
 					text("agent_message_chunk", "Working on it")
+					select {
+					case <-cancel:
+						end("cancelled")
+					case <-steer:
+						end("end_turn") // steered: the new prompt goes on
+					}
+					return
+				}
+				if strings.Contains(prompt, "stuck") {
+					text("agent_message_chunk", "Working on it")
 					<-cancel
-					send(map[string]any{"id": id, "result": map[string]any{"stopReason": "cancelled"}})
+					select {} // and on
+				}
+				if strings.Contains(prompt, "background") {
+					update(map[string]any{"sessionUpdate": "tool_call", "toolCallId": "bg1", "title": "sleep 1", "kind": "execute", "status": "in_progress", "rawInput": map[string]any{"command": "sleep 1"}})
+					end("end_turn")
+					time.Sleep(300 * time.Millisecond)
+					update(map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "bg1", "status": "completed", "content": []any{map[string]any{"type": "content", "content": map[string]any{"type": "text", "text": "slept"}}}})
+					text("agent_message_chunk", "background done")
+					update(map[string]any{"sessionUpdate": "usage_update", "used": 60, "size": 1000})
+					return
+				}
+				if strings.Contains(prompt, "wake") {
+					text("agent_message_chunk", "Going to sleep")
+					end("end_turn")
+					time.Sleep(300 * time.Millisecond)
+					text("agent_message_chunk", "woke up")
+					update(map[string]any{"sessionUpdate": "usage_update", "used": 70, "size": 1000})
 					return
 				}
 				text("agent_thought_chunk", "thinking it over")

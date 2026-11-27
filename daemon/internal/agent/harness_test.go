@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/harness"
 	"github.com/conner-replogle/everywhere/daemon/internal/harness/acptest"
@@ -568,4 +569,168 @@ func TestHarnessMessageWhileWorking(t *testing.T) {
 		t.Fatalf("events: %s", got)
 	}
 	eventually(t, "idle", func() bool { return c.state().Status == statusIdle })
+}
+
+// An agent that takes MCP servers over HTTP without saying so (Antigravity)
+// gets the daemon's all the same, when it's known to (MCPOverHTTP); one
+// that doesn't say so, and isn't known to, gets none.
+func TestHarnessMCPOverHTTPUnannounced(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := filepath.Join(t.TempDir(), "servers.json")
+	t.Setenv(acptest.Env, "1")
+	t.Setenv(acptest.NoHTTPMCPEnv, got)
+	servers := []harness.MCPServer{{Name: "everywhere", URL: "http://127.0.0.1:1/mcp", Headers: map[string]string{"Authorization": "Bearer t"}}}
+	for _, known := range []bool{true, false} {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		a := harness.Agent{Kind: "fake", Title: "Fake", Command: []string{exe}, MCPOverHTTP: known}
+		c, err := harness.Start(ctx, harness.StartOptions{Agent: a, Dir: t.TempDir(), MCP: servers})
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.Close()
+		raw, _ := os.ReadFile(got)
+		var list []struct {
+			Type, Name, URL string
+			Headers         []struct{ Name, Value string }
+		}
+		_ = json.Unmarshal(raw, &list)
+		if known && (len(list) != 1 || list[0].Type != "http" || list[0].URL != servers[0].URL || len(list[0].Headers) != 1) {
+			t.Fatalf("known to take them, it got %s", raw)
+		}
+		if !known && len(list) != 0 {
+			t.Fatalf("not known to, it got %s", raw)
+		}
+	}
+}
+
+// antigravityLike runs a thread of a fake agent that works as Antigravity
+// does: on after its prompt, waking on its own, steered by prompts sent
+// mid-turn. The waits are short.
+func antigravityLike(t *testing.T) (*Manager, string, *recorder) {
+	t.Helper()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(acptest.Env, "1")
+	saved, quiet, stop := harness.Agents, harness.SettleQuiet, harness.StopTimeout
+	harness.Agents = []harness.Agent{{Kind: "fake", Title: "Fake", Command: []string{exe}, BackgroundWork: true, SteersSince: "1.0"}}
+	harness.SettleQuiet, harness.StopTimeout = 150*time.Millisecond, 500*time.Millisecond
+	t.Cleanup(func() { harness.Agents, harness.SettleQuiet, harness.StopTimeout = saved, quiet, stop })
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	projects, _ := st.ListProjects()
+	th, err := st.CreateThread(projects[0].ID, "", "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(st, t.TempDir(), func() {})
+	t.Cleanup(m.Shutdown)
+	c := &recorder{}
+	if err := m.Attach(th.ID, c, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	return m, th.ID, c
+}
+
+func count(evs []string, prefix string) int {
+	n := 0
+	for _, e := range evs {
+		if strings.HasPrefix(e, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
+// A message sent mid-turn steers the agent at once: the prompt running
+// ends, and the turn goes on under the new one, ending once.
+func TestHarnessSteer(t *testing.T) {
+	m, th, c := antigravityLike(t)
+	m.Handle(th, c, protocol.AgentClientMsg{T: "send", Text: "slow work"})
+	eventually(t, "it working", func() bool { return c.state().Status == statusWorking })
+	time.Sleep(100 * time.Millisecond) // its prompt is in
+	m.Handle(th, c, protocol.AgentClientMsg{T: "send", Text: "please write b.txt now"})
+	eventually(t, "the steer's request", func() bool { return len(c.state().Pending) == 1 })
+	if got := summary(c.events(), 0); count(got, "turn:") != 1 {
+		t.Fatalf("the steered prompt ended the turn: %q", got)
+	}
+	m.Handle(th, c, protocol.AgentClientMsg{T: "respond", RequestID: c.state().Pending[0].ID, Decision: "allow"})
+	eventually(t, "the turn to end", lastTurnEnded(c))
+	got := summary(c.events(), 0)
+	if count(got, "turn:started") != 1 || count(got, "turn:completed") != 1 || count(got, "user:") != 2 {
+		t.Fatalf("events %q", got)
+	}
+}
+
+// A command it leaves running holds the turn: it ends once the command
+// has, and what the agent said of it is in the turn.
+func TestHarnessBackgroundWork(t *testing.T) {
+	m, th, c := antigravityLike(t)
+	m.Handle(th, c, protocol.AgentClientMsg{T: "send", Text: "background job"})
+	eventually(t, "the turn to end", lastTurnEnded(c))
+	got := summary(c.events(), 0)
+	joined := strings.Join(got, "|")
+	if count(got, "turn:started") != 1 || count(got, "turn:completed") != 1 ||
+		!strings.Contains(joined, "tool:Bash|result:false:slept|assistant:background done|turn:completed") {
+		t.Fatalf("events %q", got)
+	}
+}
+
+// Woken on its own, with no prompt open, it gets a turn of its own.
+func TestHarnessWake(t *testing.T) {
+	m, th, c := antigravityLike(t)
+	m.Handle(th, c, protocol.AgentClientMsg{T: "send", Text: "wake me"})
+	eventually(t, "the woken turn to end", func() bool {
+		got := summary(c.events(), 0)
+		return count(got, "turn:completed") == 2
+	})
+	got := summary(c.events(), 0)
+	if count(got, "turn:started") != 2 || !strings.Contains(strings.Join(got, "|"), "turn:started|assistant:woke up|turn:completed") {
+		t.Fatalf("events %q", got)
+	}
+	eventually(t, "idle", func() bool { return c.state().Status == statusIdle })
+}
+
+// Stop ends the turn; an agent that ignores the cancel is stopped, and the
+// next prompt starts it again.
+func TestHarnessStopUnresponsive(t *testing.T) {
+	m, th, c := antigravityLike(t)
+	m.Handle(th, c, protocol.AgentClientMsg{T: "send", Text: "stuck work"})
+	eventually(t, "it working", func() bool { return c.state().Status == statusWorking })
+	time.Sleep(100 * time.Millisecond) // its prompt is in
+	m.Handle(th, c, protocol.AgentClientMsg{T: "interrupt"})
+	eventually(t, "the turn to end", lastTurnEnded(c))
+	if got := summary(c.events(), 0); got[len(got)-1] != "turn:interrupted" {
+		t.Fatalf("events %q", got)
+	}
+	m.Handle(th, c, protocol.AgentClientMsg{T: "send", Text: "please write c.txt now"})
+	eventually(t, "it working again", func() bool { return len(c.state().Pending) == 1 })
+}
+
+// Stop while a command it left running holds the turn ends the turn there
+// (and session/cancel ends the command).
+func TestHarnessStopBackground(t *testing.T) {
+	m, th, c := antigravityLike(t)
+	harness.SettleQuiet = 5 * time.Second
+	m.Handle(th, c, protocol.AgentClientMsg{T: "send", Text: "wake me"})
+	eventually(t, "the prompt's reply", func() bool {
+		return strings.Contains(strings.Join(summary(c.events(), 0), "|"), "assistant:Going to sleep")
+	})
+	time.Sleep(50 * time.Millisecond) // its prompt has returned; the turn is held
+	m.Handle(th, c, protocol.AgentClientMsg{T: "interrupt"})
+	eventually(t, "the turn to end", lastTurnEnded(c))
+	time.Sleep(500 * time.Millisecond) // the stopped run's waking is dropped
+	got := summary(c.events(), 0)
+	if count(got, "turn:started") != 1 || got[len(got)-1] != "turn:interrupted" || strings.Contains(strings.Join(got, "|"), "woke up") {
+		t.Fatalf("events %q", got)
+	}
 }

@@ -1137,6 +1137,12 @@ func (s *session) onSystem(msg claude.Message) {
 		}
 	case "harness_config":
 		s.onHarnessConfig(msg)
+	case "harness_turn":
+		// Another agent began a turn of its own (it woke, as Antigravity does
+		// when a command it left running ends), or the engine's began it.
+		if !s.turnActive {
+			s.beginTurn()
+		}
 	case "harness_usage":
 		var f struct{ Used, Size int }
 		if msg.Decode(&f) == nil && f.Size > 0 {

@@ -39,6 +39,18 @@ type Agent struct {
 	// code, after which its output says why a sign-in failed.
 	Login       []string
 	LoginPrompt string
+	// BackgroundWork: it works on after its prompt returns (commands left
+	// running) and wakes on its own when they end, so a turn ends once it's
+	// done, not with the prompt (turn.go).
+	BackgroundWork bool
+	// SteersSince is its first version that takes a prompt sent mid-turn
+	// as a steer (the prompt running ends, the turn goes on under the new
+	// one); before it, or with none, such prompts wait for the turn's end.
+	SteersSince string
+	// MCPOverHTTP: it takes MCP servers over HTTP, as the daemon's are,
+	// though it doesn't say so in initialize (Antigravity's mcpCapabilities
+	// are missing).
+	MCPOverHTTP bool
 	// AcceptAll is the agent's own mode that everywhere's AcceptAllMode runs
 	// it in, where the agent has no auto mode of its own; "" offers none.
 	AcceptAll string
@@ -71,7 +83,10 @@ var Agents = []Agent{
 		// shows the code to paste back.
 		Login: []string{"agy", "acp", "--login"}, LoginPrompt: "and press Enter:",
 		// Its Auto needs its terminal sandbox, which Windows hasn't.
-		AcceptAll: "accept-edits",
+		AcceptAll:      "accept-edits",
+		MCPOverHTTP:    true,
+		BackgroundWork: true,
+		SteersSince:    "1.5.0",
 	},
 }
 
