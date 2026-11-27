@@ -358,7 +358,8 @@ function eventText(ev: AgentEvent, detail: Detail): string | null {
       return detail === "full" ? `[tool ${ev.name}] ${toolLine(ev.name, ev.input)}` : null;
     case "toolResult":
       if (detail !== "full") return null;
-      return ev.isError ? `[  ↳ error] ${clip(ev.output, 1000)}` : `[  ↳] ${clip(ev.output, 400)}${filesLine(ev.attachments)}`;
+      // A tool result with no output leaves it out (Antigravity's often do).
+      return ev.isError ? `[  ↳ error] ${clip(ev.output ?? "", 1000)}` : `[  ↳] ${clip(ev.output ?? "", 400)}${filesLine(ev.attachments)}`;
     case "process":
       return detail === "full" ? `[process ${ev.name}] ${clip(ev.text, 600)}` : null;
   }
