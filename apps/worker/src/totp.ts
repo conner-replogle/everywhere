@@ -46,15 +46,21 @@ export function otpauthUri(secret: string, account: string, issuer: string): str
   return `otpauth://totp/${label}?${params}`;
 }
 
-export async function codeAt(secret: string, step: number): Promise<string> {
+const ENCODER = new TextEncoder();
+
+async function codeWithKey(key: CryptoKey, step: number): Promise<string> {
   const counter = new ArrayBuffer(8);
   new DataView(counter).setBigUint64(0, BigInt(step));
-  const key = await crypto.subtle.importKey("raw", base32Decode(secret), { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
   const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, counter));
   const offset = mac[mac.length - 1]! & 0x0f;
   const bin =
     ((mac[offset]! & 0x7f) << 24) | (mac[offset + 1]! << 16) | (mac[offset + 2]! << 8) | mac[offset + 3]!;
   return String(bin % 10 ** DIGITS).padStart(DIGITS, "0");
+}
+
+export async function codeAt(secret: string, step: number): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", base32Decode(secret), { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+  return codeWithKey(key, step);
 }
 
 /**
@@ -64,10 +70,12 @@ export async function codeAt(secret: string, step: number): Promise<string> {
 export async function verifyTotp(secret: string, code: string, now = Date.now()): Promise<number | null> {
   if (!/^\d{6}$/.test(code)) return null;
   const current = Math.floor(now / 1000 / PERIOD);
-  const enc = new TextEncoder();
-  for (const step of [current - 1, current, current + 1]) {
-    const expected = await codeAt(secret, step);
-    if (crypto.subtle.timingSafeEqual(enc.encode(expected), enc.encode(code))) return step;
+  const steps = [current - 1, current, current + 1];
+  const key = await crypto.subtle.importKey("raw", base32Decode(secret), { name: "HMAC", hash: "SHA-1" }, false, ["sign"]);
+  const expected = await Promise.all(steps.map((step) => codeWithKey(key, step)));
+  const codeBytes = ENCODER.encode(code);
+  for (let i = 0; i < steps.length; i++) {
+    if (crypto.subtle.timingSafeEqual(ENCODER.encode(expected[i]!), codeBytes)) return steps[i]!;
   }
   return null;
 }

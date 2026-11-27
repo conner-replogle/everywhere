@@ -1,12 +1,19 @@
 package desktop
 
 import (
+	"bytes"
 	"log/slog"
 	"slices"
 	"time"
 
 	"github.com/conner-replogle/everywhere/daemon/internal/desktop/wire"
 )
+
+func (s *session) capturingWindow() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.media != nil && s.media.win != nil
+}
 
 // watchWM keeps the viewer's workspace bar and window list current, keeps a
 // captured window's geometry current (floating windows move without events,
@@ -38,7 +45,12 @@ func (s *session) watchWM() {
 					debounce = nil
 					s.refreshWM()
 				case <-tick.C:
-					s.refreshWM()
+					// Hyprland's event socket already pushes workspace/window/focus
+					// changes; the 1s poll is only needed to track floating window
+					// geometry when capturing a single window.
+					if s.capturingWindow() {
+						s.refreshWM()
+					}
 				}
 			}
 		}
@@ -84,8 +96,8 @@ func (s *session) refreshWM() {
 	windows := wire.MarshalWindows(windowInfos(clients, mons, activeWin))
 
 	s.mu.Lock()
-	changed := string(msg) != string(s.wm)
-	windowsChanged := string(windows) != string(s.windows)
+	changed := !bytes.Equal(msg, s.wm)
+	windowsChanged := !bytes.Equal(windows, s.windows)
 	s.wm, s.windows, s.activeWin = msg, windows, activeWin
 	dc, follow := s.control, s.follow
 	current, restart := "", false

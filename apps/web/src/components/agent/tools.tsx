@@ -15,6 +15,7 @@ import {
   TerminalIcon,
   WrenchIcon,
 } from "lucide-react";
+import { memo, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { toolRenderer } from "@/plugins/registry";
 
@@ -124,10 +125,20 @@ export function lineDiff(before: string, after: string): DiffLine[] {
   if (a.length * b.length > 250_000) {
     return [...a.map((text) => ({ op: "-" as const, text })), ...b.map((text) => ({ op: "+" as const, text }))];
   }
-  const lcs: number[][] = Array.from({ length: a.length + 1 }, () => new Array<number>(b.length + 1).fill(0));
+  const cols = b.length + 1;
+  const lcs = new Int32Array((a.length + 1) * cols);
   for (let i = a.length - 1; i >= 0; i--) {
+    const row = i * cols;
+    const nextRow = (i + 1) * cols;
+    const ai = a[i];
     for (let j = b.length - 1; j >= 0; j--) {
-      lcs[i]![j] = a[i] === b[j] ? lcs[i + 1]![j + 1]! + 1 : Math.max(lcs[i + 1]![j]!, lcs[i]![j + 1]!);
+      if (ai === b[j]) {
+        lcs[row + j] = lcs[nextRow + j + 1]! + 1;
+      } else {
+        const down = lcs[nextRow + j]!;
+        const right = lcs[row + j + 1]!;
+        lcs[row + j] = down >= right ? down : right;
+      }
     }
   }
   const out: DiffLine[] = [];
@@ -138,7 +149,7 @@ export function lineDiff(before: string, after: string): DiffLine[] {
       out.push({ op: " ", text: a[i]! });
       i++;
       j++;
-    } else if (lcs[i + 1]![j]! >= lcs[i]![j + 1]!) out.push({ op: "-", text: a[i++]! });
+    } else if (lcs[(i + 1) * cols + j]! >= lcs[i * cols + j + 1]!) out.push({ op: "-", text: a[i++]! });
     else out.push({ op: "+", text: b[j++]! });
   }
   while (i < a.length) out.push({ op: "-", text: a[i++]! });
@@ -146,8 +157,8 @@ export function lineDiff(before: string, after: string): DiffLine[] {
   return out;
 }
 
-export function Diff({ before, after, className }: { before: string; after: string; className?: string }) {
-  const lines = lineDiff(before, after);
+export const Diff = memo(function Diff({ before, after, className }: { before: string; after: string; className?: string }) {
+  const lines = useMemo(() => lineDiff(before, after), [before, after]);
   return (
     <pre className={cn("overflow-x-auto rounded-md border bg-terminal py-2 font-mono text-xs leading-relaxed", className)}>
       {lines.map((l, i) => (
@@ -165,7 +176,7 @@ export function Diff({ before, after, className }: { before: string; after: stri
       ))}
     </pre>
   );
-}
+});
 
 /** The file change a Write/Edit/MultiEdit call makes, if it is one. */
 export function EditPreview({ name, input, className }: { name: string; input: ToolInput; className?: string }) {

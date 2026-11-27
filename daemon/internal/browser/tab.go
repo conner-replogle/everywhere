@@ -876,6 +876,12 @@ func (t *Tab) flush() {
 
 func (t *Tab) waitDrain() {
 	deadline := time.Now().Add(drainWait)
+	var timer *time.Timer
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
 	for {
 		t.mu.Lock()
 		var busy []*viewerState
@@ -894,8 +900,13 @@ func (t *Tab) waitDrain() {
 		if len(busy) == 0 {
 			return
 		}
+		if timer == nil {
+			timer = time.NewTimer(5 * time.Millisecond)
+		} else {
+			timer.Reset(5 * time.Millisecond)
+		}
 		select {
-		case <-time.After(5 * time.Millisecond):
+		case <-timer.C:
 		case <-t.ctx.Done():
 			return
 		}

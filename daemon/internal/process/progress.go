@@ -204,8 +204,10 @@ func (p *progress) line(text string, off int64, now time.Time) []event {
 			evs = append(evs, p.reach(i, off, now)...)
 		}
 	}
-	for _, u := range localURLs(text) {
-		p.addURL(u)
+	if p.url == "" && len(p.urls) < maxURLs && strings.Contains(text, "http") {
+		for _, u := range localURLs(text) {
+			p.addURL(u)
+		}
 	}
 	return evs
 }

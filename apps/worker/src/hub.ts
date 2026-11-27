@@ -41,10 +41,20 @@ interface PendingRpc {
 // leaves its socket open here with nothing coming through, so one that hasn't
 // pinged in this long counts as offline and is closed.
 const DEVICE_SILENT_MS = 60_000;
-const SWEEP_INTERVAL_MS = 30_000;
+const MIN_SWEEP_MS = 15_000;
 
 /** Hub features the core serves; plugins add theirs. */
 const CORE_FEATURES: HubFeature[] = ["rpc", "agents"];
+const KNOWN_FEATURES = new Set<HubFeature>([
+  ...CORE_FEATURES,
+  ...WORKER_PLUGINS.flatMap((p) => p.hubFeatures ?? []),
+]);
+const PLUGIN_BY_ID = new Map<string, WorkerPlugin>(WORKER_PLUGINS.map((p) => [p.id, p]));
+const DAEMON_MSG_OWNER = new Map<string, WorkerPlugin>();
+for (const p of WORKER_PLUGINS) {
+  for (const t of Object.keys(p.daemonMessages ?? {})) DAEMON_MSG_OWNER.set(t, p);
+}
+const TEXT_DECODER = new TextDecoder();
 
 export const HUB_KIND_HEADER = "x-ew-kind";
 export const HUB_ID_HEADER = "x-ew-id";
@@ -75,19 +85,22 @@ export class AccountHub extends DurableObject<Env> {
       if (!deviceId) return new Response("missing device id", { status: 400 });
       // A daemon reconnecting replaces its stale socket.
       for (const ws of this.ctx.getWebSockets(`device:${deviceId}`)) ws.close(4000, "replaced");
-      this.ctx.acceptWebSocket(server, [`device:${deviceId}`]);
+      this.ctx.acceptWebSocket(server, ["device", `device:${deviceId}`]);
       server.serializeAttachment({ kind: "device", id: deviceId, since: Date.now() } satisfies Attachment);
       this.broadcast({ t: "presence.update", deviceId, online: true });
-      await this.touchDevice(deviceId);
-      if ((await this.ctx.storage.getAlarm()) === null) {
-        await this.ctx.storage.setAlarm(Date.now() + SWEEP_INTERVAL_MS);
+      // Only run the periodic silent-device sweep while at least one browser
+      // client is connected; idle accounts stay fully hibernated.
+      if (this.ctx.getWebSockets("client").length > 0 && (await this.ctx.storage.getAlarm()) === null) {
+        await this.ctx.storage.setAlarm(Date.now() + DEVICE_SILENT_MS);
       }
     } else {
       const connId = randomId();
-      this.ctx.acceptWebSocket(server, [`client:${connId}`]);
       const session = request.headers.get(HUB_SESSION_HEADER) ?? "";
+      this.ctx.acceptWebSocket(server, ["client", `client:${connId}`, `session:${session}`]);
       server.serializeAttachment({ kind: "client", id: connId, session } satisfies Attachment);
+      this.closeSilentDevices();
       send(server, { t: "presence", online: this.onlineDevices() } satisfies HubToClient);
+      await this.scheduleNextSweep();
     }
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -96,7 +109,7 @@ export class AccountHub extends DurableObject<Env> {
     const me = ws.deserializeAttachment() as Attachment;
     let msg: unknown;
     try {
-      msg = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw));
+      msg = JSON.parse(typeof raw === "string" ? raw : TEXT_DECODER.decode(raw));
     } catch {
       return this.fail(ws, "bad_message", "invalid JSON");
     }
@@ -119,7 +132,7 @@ export class AccountHub extends DurableObject<Env> {
           ws.close(4003, "session expired");
           return;
         }
-        await this.closeSilentDevices();
+        this.closeSilentDevices();
       }
       const target = this.socket(`device:${m.to}`);
       if (!target) {
@@ -137,8 +150,7 @@ export class AccountHub extends DurableObject<Env> {
         return;
       }
       if (Array.isArray(m.features)) {
-        const known = new Set([...CORE_FEATURES, ...WORKER_PLUGINS.flatMap((p) => p.hubFeatures ?? [])]);
-        const features = m.features.filter((f): f is HubFeature => known.has(f));
+        const features = m.features.filter((f): f is HubFeature => KNOWN_FEATURES.has(f));
         ws.serializeAttachment({ ...me, features } satisfies Attachment);
         // Plugins hear of daemons that serve their features (the Claude token goes to those that take it).
         for (const p of WORKER_PLUGINS) {
@@ -168,7 +180,7 @@ export class AccountHub extends DurableObject<Env> {
     }
     // Messages plugins own (notify: push notifications).
     const t = (m as { t?: unknown } | null)?.t;
-    const owner = typeof t === "string" ? WORKER_PLUGINS.find((p) => p.daemonMessages?.[t]) : undefined;
+    const owner = typeof t === "string" ? DAEMON_MSG_OWNER.get(t) : undefined;
     if (owner && typeof t === "string") {
       this.ctx.waitUntil(owner.daemonMessages![t]!(this.host(owner), me.id, m));
       return;
@@ -178,7 +190,7 @@ export class AccountHub extends DurableObject<Env> {
 
   /** Calls a plugin's hub method (from the plugin's routes; see callHub). */
   async plugin(id: string, method: string, args: unknown): Promise<unknown> {
-    const p = WORKER_PLUGINS.find((x) => x.id === id);
+    const p = PLUGIN_BY_ID.get(id);
     const fn = p?.hubMethods?.[method];
     if (!p || !fn) throw new Error(`no hub method ${id}.${method}`);
     return fn(this.host(p), args);
@@ -203,22 +215,25 @@ export class AccountHub extends DurableObject<Env> {
       deviceRpc: (deviceId, method, params, timeoutMs) => this.deviceRpc(deviceId, method, params, timeoutMs),
       devicesWith: (feature) => this.devicesWith(feature),
       broadcast: (msg) => this.broadcast(msg),
-      viewing: (deviceId, threadId) =>
-        this.ctx.getWebSockets().some((ws) => {
+      viewing: (deviceId, threadId) => {
+        const target = `${deviceId}/${threadId}`;
+        return this.ctx.getWebSockets("client").some((ws) => {
           const a = ws.deserializeAttachment() as Attachment | null;
-          return a?.kind === "client" && a.viewing === `${deviceId}/${threadId}`;
-        }),
+          return a?.kind === "client" && a.viewing === target;
+        });
+      },
       inUse: () =>
-        this.ctx.getWebSockets().some((ws) => {
+        this.ctx.getWebSockets("client").some((ws) => {
+          if (ws.readyState !== WebSocket.OPEN) return false;
           const a = ws.deserializeAttachment() as Attachment | null;
-          return a?.kind === "client" && !!a.active && this.live(ws);
+          return a?.kind === "client" && !!a.active;
         }),
       waitUntil: (pr) => this.ctx.waitUntil(pr),
     };
   }
 
   override async webSocketClose(ws: WebSocket, code: number, reason: string): Promise<void> {
-    await this.onGone(ws);
+    this.onGone(ws);
     try {
       ws.close(code, reason);
     } catch {
@@ -227,23 +242,42 @@ export class AccountHub extends DurableObject<Env> {
   }
 
   override async webSocketError(ws: WebSocket): Promise<void> {
-    await this.onGone(ws);
+    this.onGone(ws);
   }
 
-  /** Periodic sweep for daemons that went silent, while any are connected. */
+  /** Periodic sweep for daemons that went silent, while both clients and devices are connected. */
   override async alarm(): Promise<void> {
-    await this.closeSilentDevices();
-    if (this.ctx.getWebSockets().some((ws) => (ws.deserializeAttachment() as Attachment | null)?.kind === "device")) {
-      await this.ctx.storage.setAlarm(Date.now() + SWEEP_INTERVAL_MS);
+    this.closeSilentDevices();
+    await this.scheduleNextSweep();
+  }
+
+  /** Schedules the next silence sweep at the earliest device's deadline, only when clients watch. */
+  private async scheduleNextSweep(): Promise<void> {
+    if (this.ctx.getWebSockets("client").length === 0) return;
+    const devices = this.ctx.getWebSockets("device");
+    if (devices.length === 0) return;
+    const now = Date.now();
+    let earliest = Infinity;
+    for (const ws of devices) {
+      if (ws.readyState !== WebSocket.OPEN) continue;
+      const a = ws.deserializeAttachment() as Attachment | null;
+      if (a?.kind !== "device") continue;
+      const last = this.lastActivity(ws, a, now);
+      if (last < earliest) earliest = last;
     }
+    if (!Number.isFinite(earliest)) return;
+    const nextAt = Math.min(now + DEVICE_SILENT_MS, Math.max(now + MIN_SWEEP_MS, earliest + DEVICE_SILENT_MS + 1000));
+    await this.ctx.storage.setAlarm(nextAt);
   }
 
   /** The online devices, and which of them answer rpc requests and connected agents'. */
   async devices(): Promise<{ id: string; rpc: boolean; agents: boolean }[]> {
+    const now = Date.now();
     const out = new Map<string, { id: string; rpc: boolean; agents: boolean }>();
-    for (const ws of this.ctx.getWebSockets()) {
+    for (const ws of this.ctx.getWebSockets("device")) {
+      if (ws.readyState !== WebSocket.OPEN) continue;
       const a = ws.deserializeAttachment() as Attachment | null;
-      if (a?.kind === "device" && this.live(ws)) {
+      if (a?.kind === "device" && !this.silent(ws, a, now)) {
         out.set(a.id, { id: a.id, rpc: !!a.features?.includes("rpc"), agents: !!a.features?.includes("agents") });
       }
     }
@@ -304,10 +338,12 @@ export class AccountHub extends DurableObject<Env> {
 
   /** Connected daemons that announced a hub feature. */
   private devicesWith(feature: HubFeature): string[] {
+    const now = Date.now();
     const ids = new Set<string>();
-    for (const ws of this.ctx.getWebSockets()) {
+    for (const ws of this.ctx.getWebSockets("device")) {
+      if (ws.readyState !== WebSocket.OPEN) continue;
       const a = ws.deserializeAttachment() as Attachment | null;
-      if (a?.kind === "device" && this.live(ws) && a.features?.includes(feature)) ids.add(a.id);
+      if (a?.kind === "device" && !this.silent(ws, a, now) && a.features?.includes(feature)) ids.add(a.id);
     }
     return [...ids];
   }
@@ -318,6 +354,7 @@ export class AccountHub extends DurableObject<Env> {
       this.fail(ws, "revoked", "device was removed");
       ws.close(4003, "revoked");
     }
+    this.rejectPending(deviceId, "device was removed");
     this.broadcast({ t: "presence.update", deviceId, online: false });
   }
 
@@ -326,56 +363,71 @@ export class AccountHub extends DurableObject<Env> {
    * tells daemons to drop any WebRTC peers those browsers opened.
    */
   async revokeSessions(sessionIds: string[]): Promise<void> {
-    const revoked = new Set(sessionIds);
     const conns: string[] = [];
-    for (const ws of this.ctx.getWebSockets()) {
-      const a = ws.deserializeAttachment() as Attachment | null;
-      if (a?.kind === "client" && revoked.has(a.session)) {
-        conns.push(a.id);
-        ws.close(4003, "signed out");
+    for (const sessionId of sessionIds) {
+      for (const ws of this.ctx.getWebSockets(`session:${sessionId}`)) {
+        const a = ws.deserializeAttachment() as Attachment | null;
+        if (a?.kind === "client") {
+          conns.push(a.id);
+          ws.close(4003, "signed out");
+        }
       }
     }
     if (conns.length === 0) return;
-    for (const ws of this.ctx.getWebSockets()) {
-      const a = ws.deserializeAttachment() as Attachment | null;
-      if (a?.kind !== "device") continue;
-      for (const connId of conns) send(ws, { t: "client.revoked", connId } satisfies HubToDaemon);
+    const frames = conns.map((connId) => JSON.stringify({ t: "client.revoked", connId } satisfies HubToDaemon));
+    for (const ws of this.ctx.getWebSockets("device")) {
+      for (const frame of frames) sendText(ws, frame);
     }
   }
 
-  private async onGone(ws: WebSocket): Promise<void> {
-    const me = ws.deserializeAttachment() as Attachment | null;
-    if (me?.kind !== "device") return;
-    // A replacement socket may already be open for the same device.
-    if (this.socket(`device:${me.id}`, ws)) return;
+  private rejectPending(deviceId: string, message: string): void {
     for (const [id, p] of this.pending) {
-      if (p.deviceId !== me.id) continue;
+      if (p.deviceId !== deviceId) continue;
       this.pending.delete(id);
       clearTimeout(p.timer);
-      p.resolve({ ok: false, code: "offline", message: "the device disconnected" });
+      p.resolve({ ok: false, code: "offline", message });
     }
+  }
+
+  private onGone(ws: WebSocket, touch = true): string | null {
+    const me = ws.deserializeAttachment() as Attachment | null;
+    if (me?.kind !== "device") return null;
+    // A replacement socket may already be open for the same device.
+    if (this.socket(`device:${me.id}`, ws)) return null;
+    this.rejectPending(me.id, "the device disconnected");
     this.broadcast({ t: "presence.update", deviceId: me.id, online: false });
-    await this.touchDevice(me.id);
+    if (touch) this.ctx.waitUntil(this.touchDevice(me.id));
+    return me.id;
   }
 
   /** Closes daemon sockets that stopped pinging and reports those devices offline. */
-  private async closeSilentDevices(): Promise<void> {
-    for (const ws of this.ctx.getWebSockets()) {
+  private closeSilentDevices(): void {
+    const now = Date.now();
+    const touched: string[] = [];
+    for (const ws of this.ctx.getWebSockets("device")) {
+      if (ws.readyState !== WebSocket.OPEN) continue;
       const a = ws.deserializeAttachment() as Attachment | null;
-      if (a?.kind !== "device" || ws.readyState !== WebSocket.OPEN || !this.silent(ws, a)) continue;
+      if (a?.kind !== "device" || !this.silent(ws, a, now)) continue;
       try {
         ws.close(4008, "no ping");
       } catch {
         // already closed
       }
-      await this.onGone(ws);
+      const id = this.onGone(ws, false);
+      if (id) touched.push(id);
+    }
+    if (touched.length > 0) {
+      this.ctx.waitUntil(this.touchDevices(touched, now));
     }
   }
 
-  private silent(ws: WebSocket, a: Attachment & { kind: "device" }): boolean {
+  private lastActivity(ws: WebSocket, a: Attachment & { kind: "device" }, now: number): number {
     // Sockets accepted before `since` existed count from now until their next ping.
-    const last = this.ctx.getWebSocketAutoResponseTimestamp(ws)?.getTime() ?? a.since ?? Date.now();
-    return Date.now() - last > DEVICE_SILENT_MS;
+    return this.ctx.getWebSocketAutoResponseTimestamp(ws)?.getTime() ?? a.since ?? now;
+  }
+
+  private silent(ws: WebSocket, a: Attachment & { kind: "device" }, now = Date.now()): boolean {
+    return now - this.lastActivity(ws, a, now) > DEVICE_SILENT_MS;
   }
 
   private live(ws: WebSocket): boolean {
@@ -389,19 +441,21 @@ export class AccountHub extends DurableObject<Env> {
   }
 
   private onlineDevices(): string[] {
+    const now = Date.now();
     const ids = new Set<string>();
-    for (const ws of this.ctx.getWebSockets()) {
+    for (const ws of this.ctx.getWebSockets("device")) {
+      if (ws.readyState !== WebSocket.OPEN) continue;
       const a = ws.deserializeAttachment() as Attachment | null;
-      if (a?.kind === "device" && this.live(ws)) ids.add(a.id);
+      if (a?.kind === "device" && !this.silent(ws, a, now)) ids.add(a.id);
     }
     return [...ids];
   }
 
   private broadcast(msg: HubToClient): void {
-    for (const ws of this.ctx.getWebSockets()) {
-      const a = ws.deserializeAttachment() as Attachment | null;
-      if (a?.kind === "client") send(ws, msg);
-    }
+    const clients = this.ctx.getWebSockets("client");
+    if (clients.length === 0) return;
+    const text = JSON.stringify(msg);
+    for (const ws of clients) sendText(ws, text);
   }
 
   private fail(ws: WebSocket, code: HubErrorCode, message: string): void {
@@ -418,6 +472,17 @@ export class AccountHub extends DurableObject<Env> {
   private async touchDevice(deviceId: string): Promise<void> {
     await this.env.DB.prepare("UPDATE devices SET last_seen_at = ? WHERE id = ?").bind(Date.now(), deviceId).run();
   }
+
+  private async touchDevices(deviceIds: string[], now: number): Promise<void> {
+    if (deviceIds.length === 1) {
+      await this.env.DB.prepare("UPDATE devices SET last_seen_at = ? WHERE id = ?").bind(now, deviceIds[0]!).run();
+      return;
+    }
+    const placeholders = deviceIds.map(() => "?").join(",");
+    await this.env.DB.prepare(`UPDATE devices SET last_seen_at = ? WHERE id IN (${placeholders})`)
+      .bind(now, ...deviceIds)
+      .run();
+  }
 }
 
 function isSignal(m: unknown): m is { t: "signal"; to: string; sid: string; data: SignalData } {
@@ -433,10 +498,14 @@ function isSignal(m: unknown): m is { t: "signal"; to: string; sid: string; data
   );
 }
 
-function send(ws: WebSocket, msg: HubToClient | HubToDaemon): void {
+function sendText(ws: WebSocket, text: string): void {
   try {
-    ws.send(JSON.stringify(msg));
+    ws.send(text);
   } catch {
     // Socket closed between lookup and send; its close handler cleans up.
   }
+}
+
+function send(ws: WebSocket, msg: HubToClient | HubToDaemon): void {
+  sendText(ws, JSON.stringify(msg));
 }

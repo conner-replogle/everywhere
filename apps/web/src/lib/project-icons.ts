@@ -9,7 +9,7 @@ const PREFIX = "everywhere.projectIcon.";
 /** data: URL per project, or null for none; absent until known. */
 const icons = new Map<string, string | null>();
 const fetched = new Set<string>();
-const listeners = new Set<() => void>();
+const listeners = new Map<string, Set<() => void>>();
 
 function read(key: string): string | null | undefined {
   if (icons.has(key)) return icons.get(key);
@@ -30,7 +30,8 @@ function store(key: string, url: string | null): void {
   } catch {
     // storage full or blocked: the icon lasts until reload
   }
-  for (const fn of listeners) fn();
+  const set = listeners.get(key);
+  if (set) for (const fn of set) fn();
 }
 
 /** The project's icon as a data: URL; null when it has none or the daemon can't say. */
@@ -39,9 +40,14 @@ export function useProjectIcon(peer: DevicePeer, deviceId: string, projectId: st
   const [, rerender] = useState(0);
   useEffect(() => {
     const fn = () => rerender((n) => n + 1);
-    listeners.add(fn);
-    return () => void listeners.delete(fn);
-  }, []);
+    let set = listeners.get(key);
+    if (!set) listeners.set(key, (set = new Set()));
+    set.add(fn);
+    return () => {
+      set.delete(fn);
+      if (set.size === 0) listeners.delete(key);
+    };
+  }, [key]);
   useEffect(() => {
     if (!enabled || fetched.has(key)) return;
     fetched.add(key);

@@ -33,20 +33,24 @@ async function tokenInfo(hub: HubHost): Promise<ClaudeTokenInfo> {
  * connected daemon that takes it; the rest get it when they next connect.
  * Reports what each device said.
  */
-async function setToken(hub: HubHost, token: string): Promise<Record<string, string>> {
+async function setToken(hub: HubHost, token: string): Promise<ClaudeTokenInfo & { devices: Record<string, string> }> {
+  let info: ClaudeTokenInfo;
   if (token) {
-    await hub.storage.put<StoredToken>(TOKEN_KEY, { sealed: await seal(hub.env, token), hint: token.slice(-4), setAt: Date.now() });
+    const stored: StoredToken = { sealed: await seal(hub.env, token), hint: token.slice(-4), setAt: Date.now() };
+    await hub.storage.put<StoredToken>(TOKEN_KEY, stored);
+    info = { set: true, hint: stored.hint, setAt: stored.setAt };
   } else {
     await hub.storage.delete(TOKEN_KEY);
+    info = { set: false };
   }
-  const out: Record<string, string> = {};
+  const devices: Record<string, string> = {};
   await Promise.all(
     hub.devicesWith("claudeToken").map(async (id) => {
       const r = await hub.deviceRpc(id, "agent.setToken", { token }, 15_000);
-      out[id] = r.ok ? "ok" : r.message;
+      devices[id] = r.ok ? "ok" : r.message;
     }),
   );
-  return out;
+  return { ...info, devices };
 }
 
 const INSTRUCTIONS_KEY = "instructions";
@@ -65,17 +69,24 @@ async function instructions(hub: HubHost): Promise<ClaudeInstructions> {
 }
 
 /** Keeps them ("" forgets them) and sends them to every connected daemon that takes them. */
-async function setInstructions(hub: HubHost, text: string): Promise<Record<string, string>> {
-  if (text) await hub.storage.put<StoredInstructions>(INSTRUCTIONS_KEY, { text, setAt: Date.now() });
-  else await hub.storage.delete(INSTRUCTIONS_KEY);
-  const out: Record<string, string> = {};
+async function setInstructions(hub: HubHost, text: string): Promise<ClaudeInstructions & { devices: Record<string, string> }> {
+  let info: ClaudeInstructions;
+  if (text) {
+    const setAt = Date.now();
+    await hub.storage.put<StoredInstructions>(INSTRUCTIONS_KEY, { text, setAt });
+    info = { text, setAt };
+  } else {
+    await hub.storage.delete(INSTRUCTIONS_KEY);
+    info = { text: "" };
+  }
+  const devices: Record<string, string> = {};
   await Promise.all(
     hub.devicesWith("claudeInstructions").map(async (id) => {
       const r = await hub.deviceRpc(id, "agent.setInstructions", { instructions: text }, 15_000);
-      out[id] = r.ok ? "ok" : r.message;
+      devices[id] = r.ok ? "ok" : r.message;
     }),
   );
-  return out;
+  return { ...info, devices };
 }
 
 const routes = new Hono<App>();
@@ -93,14 +104,12 @@ routes.put("/token", async (c) => {
   if (!TOKEN.test(token)) {
     return c.json({ error: "that isn't a Claude token; `claude setup-token` prints one starting sk-ant-oat01-" }, 400);
   }
-  const devices = await callHub<Record<string, string>>(c.env, c.var.user.id, "claude", "setToken", token);
-  return c.json({ ...(await callHub<ClaudeTokenInfo>(c.env, c.var.user.id, "claude", "tokenInfo")), devices });
+  return c.json(await callHub(c.env, c.var.user.id, "claude", "setToken", token));
 });
 
 /** Forgets the token; devices go back to their own sign-in. */
 routes.delete("/token", async (c) => {
-  const devices = await callHub<Record<string, string>>(c.env, c.var.user.id, "claude", "setToken", "");
-  return c.json({ ...(await callHub<ClaudeTokenInfo>(c.env, c.var.user.id, "claude", "tokenInfo")), devices });
+  return c.json(await callHub(c.env, c.var.user.id, "claude", "setToken", ""));
 });
 
 routes.get("/instructions", async (c) =>
@@ -115,8 +124,7 @@ routes.put("/instructions", async (c) => {
   if (text.length > MAX_INSTRUCTIONS) {
     return c.json({ error: `instructions can be at most ${MAX_INSTRUCTIONS.toLocaleString("en-US")} characters` }, 400);
   }
-  const devices = await callHub<Record<string, string>>(c.env, c.var.user.id, "claude", "setInstructions", text);
-  return c.json({ ...(await callHub<ClaudeInstructions>(c.env, c.var.user.id, "claude", "instructions")), devices });
+  return c.json(await callHub(c.env, c.var.user.id, "claude", "setInstructions", text));
 });
 
 export const claude: WorkerPlugin = {
@@ -126,17 +134,27 @@ export const claude: WorkerPlugin = {
   hubFeatures: ["claudeToken", "claudeInstructions"],
   // A daemon gets the account's Claude token and custom instructions as it connects.
   onDaemonHello: async (hub, deviceId, features) => {
+    const tasks: Promise<void>[] = [];
     if (features.includes("claudeToken")) {
-      const t = await hub.storage.get<StoredToken>(TOKEN_KEY);
-      const token = t ? await open(hub.env, t.sealed) : "";
-      const r = await hub.deviceRpc(deviceId, "agent.setToken", { token }, 15_000);
-      if (!r.ok) console.warn(`sending ${deviceId} the Claude token: ${r.message}`);
+      tasks.push(
+        (async () => {
+          const t = await hub.storage.get<StoredToken>(TOKEN_KEY);
+          const token = t ? await open(hub.env, t.sealed) : "";
+          const r = await hub.deviceRpc(deviceId, "agent.setToken", { token }, 15_000);
+          if (!r.ok) console.warn(`sending ${deviceId} the Claude token: ${r.message}`);
+        })(),
+      );
     }
     if (features.includes("claudeInstructions")) {
-      const { text } = await instructions(hub);
-      const r = await hub.deviceRpc(deviceId, "agent.setInstructions", { instructions: text }, 15_000);
-      if (!r.ok) console.warn(`sending ${deviceId} the custom instructions: ${r.message}`);
+      tasks.push(
+        (async () => {
+          const { text } = await instructions(hub);
+          const r = await hub.deviceRpc(deviceId, "agent.setInstructions", { instructions: text }, 15_000);
+          if (!r.ok) console.warn(`sending ${deviceId} the custom instructions: ${r.message}`);
+        })(),
+      );
     }
+    await Promise.all(tasks);
   },
   hubMethods: {
     tokenInfo: (hub) => tokenInfo(hub),

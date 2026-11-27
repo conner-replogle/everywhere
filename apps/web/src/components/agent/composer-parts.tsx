@@ -198,9 +198,16 @@ class AttachmentStore {
   private listeners = new Set<() => void>();
   private seq = 0;
 
+  constructor(private readonly threadId: string) {}
+
   subscribe = (fn: () => void) => {
     this.listeners.add(fn);
-    return () => this.listeners.delete(fn);
+    return () => {
+      this.listeners.delete(fn);
+      if (this.listeners.size === 0 && this.items.length === 0 && attachmentStores.get(this.threadId) === this) {
+        attachmentStores.delete(this.threadId);
+      }
+    };
   };
   snapshot = () => this.items;
 
@@ -227,8 +234,15 @@ class AttachmentStore {
       };
       this.set([...this.items, item]);
       if (item.error) continue;
+      let lastPct = -1;
       peer
-        .upload(threadId, file, (sent) => this.update(key, { sent }))
+        .upload(threadId, file, (sent) => {
+          const pct = Math.round((sent / file.size) * 100);
+          if (pct !== lastPct || sent >= file.size) {
+            lastPct = pct;
+            this.update(key, { sent });
+          }
+        })
         .then((attachment) => this.update(key, { attachment }))
         .catch((e: unknown) => this.update(key, { error: errorMessage(e) }));
     }
@@ -240,8 +254,11 @@ class AttachmentStore {
     this.set(this.items.filter((a) => a.key !== key));
   }
 
-  /** Forget everything after a send; previews are kept by the sent message. */
+  /** Forget everything after a send and release preview object URLs. */
   clear() {
+    for (const a of this.items) {
+      if (a.preview) URL.revokeObjectURL(a.preview);
+    }
     this.set([]);
   }
 }
@@ -251,7 +268,7 @@ const attachmentStores = new Map<string, AttachmentStore>();
 /** Uploads files as soon as they're added, so sending doesn't wait on them. */
 export function useAttachments(peer: DevicePeer, threadId: string) {
   let store = attachmentStores.get(threadId);
-  if (!store) attachmentStores.set(threadId, (store = new AttachmentStore()));
+  if (!store) attachmentStores.set(threadId, (store = new AttachmentStore(threadId)));
   const items = useSyncExternalStore(store.subscribe, store.snapshot);
 
   const add = useCallback((files: Iterable<File>) => store.add(peer, threadId, files), [store, peer, threadId]);

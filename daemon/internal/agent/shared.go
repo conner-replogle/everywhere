@@ -51,6 +51,7 @@ func (m *Manager) setCommands(cmds []claude.SlashCommand) {
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	m.mu.Lock()
 	m.commands = out
+	m.rebuildVisibleCommandsLocked()
 	m.mu.Unlock()
 }
 
@@ -62,19 +63,27 @@ func (m *Manager) noteTerminalCommands(names []string) {
 	}
 	m.mu.Lock()
 	m.terminalOnly = names
+	m.rebuildVisibleCommandsLocked()
 	m.mu.Unlock()
 }
 
-func (m *Manager) visibleCommands() []protocol.AgentCommand {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (m *Manager) rebuildVisibleCommandsLocked() {
 	out := make([]protocol.AgentCommand, 0, len(m.commands))
 	for _, c := range m.commands {
 		if !slices.Contains(m.terminalOnly, c.Name) {
 			out = append(out, c)
 		}
 	}
-	return out
+	m.visibleCmds = out
+}
+
+func (m *Manager) visibleCommands() []protocol.AgentCommand {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.visibleCmds == nil {
+		return []protocol.AgentCommand{}
+	}
+	return m.visibleCmds
 }
 
 func (m *Manager) setLimits(limits []protocol.AgentLimit) {

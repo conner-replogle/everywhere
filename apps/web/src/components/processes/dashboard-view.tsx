@@ -27,6 +27,8 @@ export function DashboardView({ peer, process: p }: { peer: DevicePeer; process:
   const [error, setError] = useState<string | null>(null);
   const version = useRef<string | undefined>(undefined);
 
+  const box = useRef<HTMLDivElement>(null);
+
   // Build it, then check for changes while it's on screen.
   useEffect(() => {
     let live = true;
@@ -34,7 +36,10 @@ export function DashboardView({ peer, process: p }: { peer: DevicePeer; process:
     version.current = undefined;
     setBuild(null);
     const check = async () => {
-      if (document.visibilityState === "visible") {
+      // Skip polling when the tab is hidden or the pane is kept mounted off-screen.
+      const visible =
+        document.visibilityState === "visible" && (!box.current || box.current.offsetParent !== null);
+      if (visible) {
         try {
           const b = await peer.call("processes.dashboard", { id: p.id, version: version.current }, 60_000);
           if (!live) return;
@@ -59,7 +64,7 @@ export function DashboardView({ peer, process: p }: { peer: DevicePeer; process:
   if (error && !build) return <Message title="Couldn't load the dashboard">{error}</Message>;
   if (!build) {
     return (
-      <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+      <div ref={box} className="flex h-full items-center justify-center text-xs text-muted-foreground">
         <LayoutDashboardIcon className="mr-2 size-4 animate-pulse" />
         Building {p.dashboard}…
       </div>
@@ -76,7 +81,11 @@ export function DashboardView({ peer, process: p }: { peer: DevicePeer; process:
     );
   }
   // A new build, or a new run of the process (its events start over), is a new frame.
-  return <DashboardFrame key={`${build.version}:${p.startedAt}`} peer={peer} process={p} build={build} />;
+  return (
+    <div ref={box} className="h-full w-full">
+      <DashboardFrame key={`${build.version}:${p.startedAt}`} peer={peer} process={p} build={build} />
+    </div>
+  );
 }
 
 function Message({ title, children }: { title: string; children: React.ReactNode }) {
@@ -175,10 +184,18 @@ function DashboardFrame({ peer, process: p, build }: { peer: DevicePeer; process
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, peer, p.home]);
 
-  // The theme, when the user changes it.
+  // The theme, when the user changes it. Diff against the last sent theme so
+  // unrelated documentElement style changes (like --app-height) don't churn the iframe.
   useEffect(() => {
     if (!ready) return;
-    const observer = new MutationObserver(() => send({ t: "theme", theme: currentTheme() }));
+    let last = JSON.stringify(currentTheme());
+    const observer = new MutationObserver(() => {
+      const theme = currentTheme();
+      const serialized = JSON.stringify(theme);
+      if (serialized === last) return;
+      last = serialized;
+      send({ t: "theme", theme });
+    });
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["style", "class"] });
     return () => observer.disconnect();
   }, [ready]);

@@ -1,6 +1,6 @@
 import type { Context } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import { hashPassword, randomToken, sha256, verifyPassword } from "./crypto";
+import { randomToken, sha256, verifyPassword } from "./crypto";
 import type { App, User } from "./types";
 
 // __Host- prefix: the browser only accepts it with Secure, Path=/ and no Domain,
@@ -72,14 +72,13 @@ export async function sessionUser(c: Context<App>): Promise<{ user: User; sessio
   return { user: { id: row.id, username: row.username, totpEnabled: row.totp === 1 }, sessionId };
 }
 
-// Verifying against a dummy hash for unknown users keeps response time from
-// revealing which usernames exist.
-let dummyHash: Promise<string> | undefined;
+// Verifying against a static dummy hash (16-byte salt, 32-byte hash) for
+// unknown users keeps response time uniform even on cold starts.
+const DUMMY_HASH = "pbkdf2$100000$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 export async function checkPassword(storedHash: string | undefined, password: string): Promise<boolean> {
   if (!storedHash) {
-    dummyHash ??= hashPassword("not-a-real-password");
-    await verifyPassword(password, await dummyHash);
+    await verifyPassword(password, DUMMY_HASH);
     return false;
   }
   return verifyPassword(password, storedHash);

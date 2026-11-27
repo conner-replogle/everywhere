@@ -92,13 +92,15 @@ func logPoints(info RunInfo, e logEntry, ts int64) ([]Point, error) {
 	if err != nil {
 		return nil, err
 	}
+	labelsBytes, _ := json.Marshal(labels)
+	labelsJSON := string(labelsBytes)
 	points := make([]Point, 0, len(e.Metrics))
 	for raw, v := range e.Metrics {
 		name := cleanName(raw, nameChars, 128)
 		if name == "" || math.IsNaN(v) || math.IsInf(v, 0) {
 			continue
 		}
-		points = append(points, Point{Name: name, Labels: labels, TS: ts, Step: e.Step, Value: v})
+		points = append(points, Point{Name: name, Labels: labels, LabelsJSON: labelsJSON, TS: ts, Step: e.Step, Value: v})
 	}
 	return points, nil
 }

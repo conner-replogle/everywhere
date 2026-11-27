@@ -44,11 +44,11 @@ export function ThreadGrid({ deviceId, threadId, tab, split }: { deviceId: strin
   }, [deviceId, threadId, tab, split]);
 
   const ref = useRef<HTMLDivElement>(null);
-  const [size, setSize] = useState({ w: 0, h: 0 });
+  const [narrow, setNarrow] = useState(false);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    const measure = () => setSize({ w: el.clientWidth, h: el.clientHeight });
+    const measure = () => setNarrow(el.clientWidth > 0 && el.clientWidth < SINGLE_BELOW);
     measure();
     const ro = new ResizeObserver(measure);
     ro.observe(el);
@@ -67,7 +67,7 @@ export function ThreadGrid({ deviceId, threadId, tab, split }: { deviceId: strin
   const synced = !!focusedCell && focusedCell.deviceId === deviceId && focusedCell.threadId === threadId;
   const cells = grid.cells;
   const n = cells.length;
-  const single = n <= 1 || (size.w > 0 && size.w < SINGLE_BELOW);
+  const single = n <= 1 || narrow;
   const rects = cellRects(n, x, y);
 
   const go = (c: Pick<GridCell, "deviceId" | "threadId" | "tab" | "split">, replace = false) =>
@@ -175,7 +175,7 @@ export function ThreadGrid({ deviceId, threadId, tab, split }: { deviceId: strin
     },
   });
   const canAdd = n < MAX_CELLS && !single;
-  const canAddSingle = n < MAX_CELLS && (size.w === 0 || size.w >= SINGLE_BELOW);
+  const canAddSingle = n < MAX_CELLS && !narrow;
 
   return (
     <div ref={ref} className="relative min-h-0 flex-1">

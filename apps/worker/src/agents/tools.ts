@@ -218,16 +218,29 @@ async function resolveThread(ctx: ToolContext, deviceRef: unknown, threadRef: un
   if (typeof threadRef !== "string" || !threadRef.trim()) throw new ToolError("thread is required");
   const ref = threadRef.trim();
   const { devices, skipped } = await targetDevices(ctx, deviceRef);
-  const found = await Promise.all(
-    devices.map(async (d) => {
-      const byId = await call(ctx, d, "threads.get", { threadId: ref }).catch(() => null);
-      if (byId) return { d, thread: byId };
-      const list = await call(ctx, d, "threads.list", {}).catch(() => [] as Thread[]);
-      const byName = list.filter((t) => t.name.toLowerCase() === ref.toLowerCase());
-      return byName.length === 1 ? { d, thread: byName[0]! } : null;
-    }),
-  );
-  const hits = found.filter((x) => x !== null);
+  // Phase 1: check exact id across all devices first so ID lookups don't fan out
+  // expensive threads.list RPCs to every other device.
+  const idHits = (
+    await Promise.all(
+      devices.map(async (d) => {
+        const byId = await call(ctx, d, "threads.get", { threadId: ref }).catch(() => null);
+        return byId ? { d, thread: byId } : null;
+      }),
+    )
+  ).filter((x) => x !== null);
+  let hits = idHits;
+  if (hits.length === 0) {
+    const lower = ref.toLowerCase();
+    hits = (
+      await Promise.all(
+        devices.map(async (d) => {
+          const list = await call(ctx, d, "threads.list", {}).catch(() => [] as Thread[]);
+          const byName = list.filter((t) => t.name.toLowerCase() === lower);
+          return byName.length === 1 ? { d, thread: byName[0]! } : null;
+        }),
+      )
+    ).filter((x) => x !== null);
+  }
   if (hits.length > 1) throw new ToolError(`"${ref}" is on more than one device; pass device`);
   const hit = hits[0];
   if (!hit) {
@@ -541,54 +554,103 @@ function fromB64(data: string): Uint8Array {
   return out;
 }
 
+function validateAndMeasureB64(data: string): { clean: string; byteLength: number } | null {
+  const clean = data.replace(/\s+/g, "");
+  if (clean.length === 0) return { clean: "", byteLength: 0 };
+  if (clean.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(clean)) return null;
+  const padding = clean.endsWith("==") ? 2 : clean.endsWith("=") ? 1 : 0;
+  return { clean, byteLength: (clean.length * 3) / 4 - padding };
+}
+
+async function readBoundedBytes(res: Response, name: string, max: number): Promise<Uint8Array> {
+  if (!res.body) return new Uint8Array(await res.arrayBuffer());
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > max) {
+        await reader.cancel();
+        throw new ToolError(`${name} is over ${size(max)}; the limit is ${size(max)} a file`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.byteLength;
+  }
+  return out;
+}
+
 /** The attachments argument as files for agent.send: inline text, base64, or an https URL to fetch. */
 async function filesArg(args: Args): Promise<AgentFile[]> {
   const v = args.attachments;
   if (v === undefined || v === null) return [];
   if (!Array.isArray(v)) throw new ToolError("attachments must be an array");
   if (v.length > 10) throw new ToolError("at most 10 attachments at a time");
-  const out: AgentFile[] = [];
+  const resolved = await Promise.all(
+    v.map(async (raw): Promise<{ file: AgentFile; byteLength: number }> => {
+      const a = obj(raw);
+      const name = typeof a.name === "string" && a.name.trim() ? a.name.trim().slice(0, 200) : "";
+      if (!name) throw new ToolError("each attachment needs a name, like report.pdf");
+      let mediaType = typeof a.media_type === "string" && a.media_type.trim() ? a.media_type.trim() : mediaTypeOf(name);
+      let data: string;
+      let byteLength: number;
+      if (typeof a.text === "string") {
+        const bytes = new TextEncoder().encode(a.text);
+        if (mediaType === "application/octet-stream") mediaType = "text/plain";
+        byteLength = bytes.length;
+        data = b64(bytes);
+      } else if (typeof a.data_base64 === "string") {
+        const parsed = validateAndMeasureB64(a.data_base64);
+        if (!parsed) throw new ToolError(`${name}: data_base64 isn't valid base64`);
+        byteLength = parsed.byteLength;
+        data = parsed.clean;
+      } else if (typeof a.url === "string") {
+        let u: URL;
+        try {
+          u = new URL(a.url);
+        } catch {
+          throw new ToolError(`${name}: url isn't a URL`);
+        }
+        if (u.protocol !== "https:") throw new ToolError(`${name}: url must be https`);
+        const res = await fetch(u.toString(), { redirect: "follow" });
+        if (!res.ok) {
+          await res.body?.cancel();
+          throw new ToolError(`${name}: fetching it answered ${res.status}`);
+        }
+        const len = Number(res.headers.get("content-length") ?? 0);
+        if (len > FILE_MAX) {
+          await res.body?.cancel();
+          throw new ToolError(`${name} is ${size(len)}; the limit is ${size(FILE_MAX)} a file`);
+        }
+        const bytes = await readBoundedBytes(res, name, FILE_MAX);
+        const type = res.headers.get("content-type")?.split(";")[0]?.trim();
+        if (!(typeof a.media_type === "string" && a.media_type.trim()) && type) mediaType = type;
+        byteLength = bytes.length;
+        data = b64(bytes);
+      } else {
+        throw new ToolError(`${name}: give text, data_base64 or url`);
+      }
+      if (byteLength === 0) throw new ToolError(`${name} is empty`);
+      if (byteLength > FILE_MAX) throw new ToolError(`${name} is ${size(byteLength)}; the limit is ${size(FILE_MAX)} a file`);
+      return { file: { name, mediaType, data }, byteLength };
+    }),
+  );
   let total = 0;
-  for (const raw of v) {
-    const a = obj(raw);
-    const name = typeof a.name === "string" && a.name.trim() ? a.name.trim().slice(0, 200) : "";
-    if (!name) throw new ToolError("each attachment needs a name, like report.pdf");
-    let mediaType = typeof a.media_type === "string" && a.media_type.trim() ? a.media_type.trim() : mediaTypeOf(name);
-    let bytes: Uint8Array;
-    if (typeof a.text === "string") {
-      bytes = new TextEncoder().encode(a.text);
-      if (mediaType === "application/octet-stream") mediaType = "text/plain";
-    } else if (typeof a.data_base64 === "string") {
-      try {
-        bytes = fromB64(a.data_base64);
-      } catch {
-        throw new ToolError(`${name}: data_base64 isn't valid base64`);
-      }
-    } else if (typeof a.url === "string") {
-      let u: URL;
-      try {
-        u = new URL(a.url);
-      } catch {
-        throw new ToolError(`${name}: url isn't a URL`);
-      }
-      if (u.protocol !== "https:") throw new ToolError(`${name}: url must be https`);
-      const res = await fetch(u.toString(), { redirect: "follow" });
-      if (!res.ok) throw new ToolError(`${name}: fetching it answered ${res.status}`);
-      const len = Number(res.headers.get("content-length") ?? 0);
-      if (len > FILE_MAX) throw new ToolError(`${name} is ${size(len)}; the limit is ${size(FILE_MAX)} a file`);
-      bytes = new Uint8Array(await res.arrayBuffer());
-      const type = res.headers.get("content-type")?.split(";")[0]?.trim();
-      if (!(typeof a.media_type === "string" && a.media_type.trim()) && type) mediaType = type;
-    } else {
-      throw new ToolError(`${name}: give text, data_base64 or url`);
-    }
-    if (bytes.length === 0) throw new ToolError(`${name} is empty`);
-    if (bytes.length > FILE_MAX) throw new ToolError(`${name} is ${size(bytes.length)}; the limit is ${size(FILE_MAX)} a file`);
-    total += bytes.length;
+  for (const r of resolved) {
+    total += r.byteLength;
     if (total > FILES_MAX) throw new ToolError(`the attachments are over ${size(FILES_MAX)} in all`);
-    out.push({ name, mediaType, data: b64(bytes) });
   }
-  return out;
+  return resolved.map((r) => r.file);
 }
 
 // --- shared actions ----------------------------------------------------------------------

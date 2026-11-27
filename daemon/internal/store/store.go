@@ -196,6 +196,12 @@ SELECT thread_id, seq, at, role, text FROM search_source WHERE COALESCE(text, ''
 ALTER TABLE threads ADD COLUMN agent_goal TEXT;
 ALTER TABLE threads ADD COLUMN agent_wake TEXT;
 `,
+	// Indexes for short-term newest-first search scans and prompt rewind lookup.
+	`
+CREATE INDEX IF NOT EXISTS search_docs_at ON search_docs (at DESC);
+CREATE INDEX IF NOT EXISTS agent_events_user_id ON agent_events (thread_id, json_extract(event, '$.id'))
+  WHERE json_extract(event, '$.type') = 'user';
+`,
 }
 
 type Store struct {
@@ -213,11 +219,12 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=temp_store(MEMORY)&_pragma=cache_size(-32000)"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
 	}
+	db.SetMaxOpenConns(1)
 	if err := migrate(db); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)

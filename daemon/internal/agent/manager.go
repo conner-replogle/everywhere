@@ -143,7 +143,8 @@ type Manager struct {
 	models       []protocol.AgentModel
 	account      *protocol.AgentAccount
 	commands     []protocol.AgentCommand
-	terminalOnly []string // commands claude's own terminal UI keeps to itself
+	terminalOnly []string                // commands claude's own terminal UI keeps to itself
+	visibleCmds  []protocol.AgentCommand // cached commands minus terminalOnly
 	limits       []protocol.AgentLimit
 	infoAt       time.Time // when models/account were last refreshed
 	build        string    // the claude build last seen (claude.Build); "" before the first start

@@ -183,7 +183,7 @@ func (p *Plugin) Start(h plugin.Host) error {
 			ProjectID:    s.ProjectID,
 			SkipArchived: s.IncludeArchived != nil && !*s.IncludeArchived,
 		})
-	}), plugin.Agent())
+	}), plugin.Agent(), plugin.Slow())
 	p.registerConnected(h)
 
 	go p.m.ContinueMarked() // turns interrupted by an update

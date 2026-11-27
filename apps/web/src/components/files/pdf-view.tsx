@@ -47,6 +47,23 @@ export function PdfView({ bytes, zoom }: { bytes: Uint8Array<ArrayBuffer>; zoom:
     return () => ro.disconnect();
   }, []);
 
+  // One shared IntersectionObserver for every page in this PDF.
+  const visibilityCallbacks = useRef(new Map<Element, (visible: boolean) => void>());
+  const [observer, setObserver] = useState<IntersectionObserver | null>(null);
+  useEffect(() => {
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) visibilityCallbacks.current.get(e.target)?.(e.isIntersecting);
+      },
+      { rootMargin: "100% 0px" },
+    );
+    setObserver(io);
+    return () => {
+      io.disconnect();
+      visibilityCallbacks.current.clear();
+    };
+  }, []);
+
   return (
     <div ref={box} className="min-h-full bg-terminal">
       {error ? (
@@ -57,7 +74,13 @@ export function PdfView({ bytes, zoom }: { bytes: Uint8Array<ArrayBuffer>; zoom:
         width > 0 && (
           <div className="flex min-w-max flex-col items-center" style={{ gap: GAP, padding: GAP }}>
             {pages.map((p) => (
-              <PdfPage key={p.pageNumber} page={p} width={(width - 2 * GAP) * zoom} />
+              <PdfPage
+                key={p.pageNumber}
+                page={p}
+                width={(width - 2 * GAP) * zoom}
+                observer={observer}
+                callbacks={visibilityCallbacks}
+              />
             ))}
           </div>
         )
@@ -67,7 +90,17 @@ export function PdfView({ bytes, zoom }: { bytes: Uint8Array<ArrayBuffer>; zoom:
 }
 
 /** One page at the given CSS width; drawn once it's near the viewport. */
-function PdfPage({ page, width }: { page: PDFPageProxy; width: number }) {
+function PdfPage({
+  page,
+  width,
+  observer,
+  callbacks,
+}: {
+  page: PDFPageProxy;
+  width: number;
+  observer: IntersectionObserver | null;
+  callbacks: React.RefObject<Map<Element, (visible: boolean) => void>>;
+}) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const [visible, setVisible] = useState(false);
   const base = page.getViewport({ scale: 1 });
@@ -76,15 +109,25 @@ function PdfPage({ page, width }: { page: PDFPageProxy; width: number }) {
 
   useEffect(() => {
     const el = canvas.current;
-    if (!el) return;
-    const io = new IntersectionObserver(([e]) => e && setVisible(e.isIntersecting), { rootMargin: "100% 0px" });
-    io.observe(el);
-    return () => io.disconnect();
-  }, []);
+    if (!el || !observer) return;
+    const map = callbacks.current;
+    map.set(el, setVisible);
+    observer.observe(el);
+    return () => {
+      observer.unobserve(el);
+      map.delete(el);
+    };
+  }, [observer, callbacks]);
 
   useEffect(() => {
     const el = canvas.current;
-    if (!el || !visible) return;
+    if (!el) return;
+    if (!visible) {
+      // Release the GPU backing store when scrolled away; CSS width/height keeps layout stable.
+      el.width = 0;
+      el.height = 0;
+      return;
+    }
     // Debounced so a resize or zoom redraws once it settles.
     let task: ReturnType<PDFPageProxy["render"]> | undefined;
     const t = setTimeout(() => {

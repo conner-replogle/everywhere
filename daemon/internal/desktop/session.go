@@ -660,9 +660,15 @@ func (s *session) pump(md *media) {
 	track := s.tracks[md.codec]
 	// Chrome treats min=max=0 as "render immediately", bypassing its smoothing buffer.
 	playoutDelay := []byte{0, 0, 0}
+	pkt := &rtp.Packet{
+		Header: rtp.Header{Version: 2},
+	}
+	if s.playoutDelayID != 0 {
+		_ = pkt.Header.SetExtension(s.playoutDelayID, playoutDelay)
+	}
 
 	for {
-		f, err := md.cap.Next(50 * time.Millisecond)
+		f, err := md.cap.Next(0)
 		if err != nil {
 			if !errors.Is(err, errClosed) {
 				slog.Warn("desktop capture stopped", "session", s.id, "err", err)
@@ -675,19 +681,11 @@ func (s *session) pump(md *media) {
 		}
 		ts := uint32(f.CapturedAt.Microseconds() * 90 / 1000)
 		payloads := pl.Payload(rtpMTU, f.Data)
+		pkt.Header.Timestamp = ts
 		for i, payload := range payloads {
-			pkt := &rtp.Packet{
-				Header: rtp.Header{
-					Version:        2,
-					Marker:         i == len(payloads)-1,
-					SequenceNumber: s.seq.NextSequenceNumber(),
-					Timestamp:      ts,
-				},
-				Payload: payload,
-			}
-			if s.playoutDelayID != 0 {
-				_ = pkt.Header.SetExtension(s.playoutDelayID, playoutDelay)
-			}
+			pkt.Header.Marker = i == len(payloads)-1
+			pkt.Header.SequenceNumber = s.seq.NextSequenceNumber()
+			pkt.Payload = payload
 			if err := track.WriteRTP(pkt); err != nil {
 				slog.Debug("write rtp", "err", err)
 			}
@@ -708,7 +706,7 @@ func (s *session) cursorLoop(md *media) {
 	var lastPos wire.CursorPosition
 	sentImage := false
 	for {
-		cur, err := md.cap.WaitCursor(prev, time.Second)
+		cur, err := md.cap.WaitCursor(prev, 0)
 		if err != nil {
 			return
 		}
@@ -769,8 +767,12 @@ func norm(v, extent float64) uint16 {
 // TURN, or through a Tailscale DERP server when the path runs over the tailnet.
 func (s *session) watchPath() {
 	var last *wire.PeerInfo
-	tick := time.NewTicker(3 * time.Second)
-	defer tick.Stop()
+	// Poll quickly at first while Tailscale hole-punching settles, then relax
+	// so we don't spawn `tailscale status --json` every 3s indefinitely.
+	delays := []time.Duration{3 * time.Second, 5 * time.Second, 10 * time.Second, 30 * time.Second}
+	step := 0
+	timer := time.NewTimer(delays[0])
+	defer timer.Stop()
 	for {
 		info := wire.PeerInfo{Device: s.viewer.Name}
 		if pair, err := s.pc.SCTP().Transport().ICETransport().GetSelectedCandidatePair(); err == nil && pair != nil {
@@ -792,10 +794,15 @@ func (s *session) watchPath() {
 			s.sendControl(info.Marshal())
 			last = &info
 		}
+		d := delays[step]
+		if ready && step < len(delays)-1 {
+			step++
+		}
+		timer.Reset(d)
 		select {
 		case <-s.done:
 			return
-		case <-tick.C:
+		case <-timer.C:
 		}
 	}
 }

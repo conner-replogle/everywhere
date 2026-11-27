@@ -91,6 +91,7 @@ speech.get("/stream", async (c) => {
   upstream.addEventListener("close", (e) => close(e.code === 1000 ? 1000 : FAILED, e.reason.slice(0, 100)));
   upstream.addEventListener("error", () => close(FAILED, "transcription failed"));
   server.addEventListener("close", () => close());
+  server.addEventListener("error", () => close(FAILED, "client error"));
 
   return new Response(null, { status: 101, webSocket: client });
 });

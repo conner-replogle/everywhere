@@ -100,6 +100,7 @@ type worker struct {
 	closeCh   chan struct{}
 	closeOnce sync.Once
 	writeMu   sync.Mutex
+	writeBuf  [32]byte
 
 	stdoutClose func()
 }
@@ -246,8 +247,17 @@ func (w *worker) state() error {
 	return errClosed
 }
 
-// Next blocks up to timeout for an encoded frame. It returns (nil, nil) on timeout.
+// Next blocks up to timeout for an encoded frame (or indefinitely when
+// timeout <= 0). It returns (nil, nil) on timeout.
 func (w *worker) Next(timeout time.Duration) (*frame, error) {
+	if timeout <= 0 {
+		select {
+		case f := <-w.frames:
+			return f, nil
+		case <-w.closeCh:
+			return nil, w.state()
+		}
+	}
 	t := time.NewTimer(timeout)
 	defer t.Stop()
 	select {
@@ -261,10 +271,14 @@ func (w *worker) Next(timeout time.Duration) (*frame, error) {
 }
 
 // WaitCursor blocks until the cursor differs from prev (generations), the
-// timeout passes (nil, nil), or the capture closes.
+// timeout passes (nil, nil, when timeout > 0), or the capture closes.
 func (w *worker) WaitCursor(prev *cursor, timeout time.Duration) (*cursor, error) {
-	deadline := time.NewTimer(timeout)
-	defer deadline.Stop()
+	var deadlineCh <-chan time.Time
+	if timeout > 0 {
+		deadline := time.NewTimer(timeout)
+		defer deadline.Stop()
+		deadlineCh = deadline.C
+	}
 	for {
 		w.mu.Lock()
 		cur, sig, img := w.cursor, w.cursorSig, w.cursorImg
@@ -280,7 +294,7 @@ func (w *worker) WaitCursor(prev *cursor, timeout time.Duration) (*cursor, error
 		case <-sig:
 		case <-w.closeCh:
 			return nil, w.state()
-		case <-deadline.C:
+		case <-deadlineCh:
 			return nil, nil
 		}
 	}
@@ -292,72 +306,90 @@ func (w *worker) send(b []byte) {
 	_, _ = w.stdin.Write(b)
 }
 
-func (w *worker) RequestKeyframe() { w.send([]byte{ipc.CmdKeyframe}) }
+func (w *worker) RequestKeyframe() {
+	w.writeMu.Lock()
+	w.writeBuf[0] = ipc.CmdKeyframe
+	_, _ = w.stdin.Write(w.writeBuf[:1])
+	w.writeMu.Unlock()
+}
 
 func (w *worker) SetBitrate(kbps int) {
-	b := []byte{ipc.CmdBitrate, 0, 0, 0, 0}
-	ipc.LE.PutUint32(b[1:], uint32(kbps))
-	w.send(b)
+	w.writeMu.Lock()
+	w.writeBuf[0] = ipc.CmdBitrate
+	ipc.LE.PutUint32(w.writeBuf[1:5], uint32(kbps))
+	_, _ = w.stdin.Write(w.writeBuf[:5])
+	w.writeMu.Unlock()
 }
 
 // Motion moves the pointer to x, y (0..65535 across the captured output).
 func (w *worker) Motion(x, y uint16) {
-	b := make([]byte, 5)
-	b[0] = ipc.CmdMotion
-	ipc.LE.PutUint16(b[1:], x)
-	ipc.LE.PutUint16(b[3:], y)
-	w.send(b)
+	w.writeMu.Lock()
+	w.writeBuf[0] = ipc.CmdMotion
+	ipc.LE.PutUint16(w.writeBuf[1:3], x)
+	ipc.LE.PutUint16(w.writeBuf[3:5], y)
+	_, _ = w.stdin.Write(w.writeBuf[:5])
+	w.writeMu.Unlock()
 }
 
 // MotionBy moves the pointer by dx, dy output pixels, as a mouse does.
 func (w *worker) MotionBy(dx, dy float32) {
-	b := make([]byte, 9)
-	b[0] = ipc.CmdMotionBy
-	ipc.LE.PutUint32(b[1:], math.Float32bits(dx))
-	ipc.LE.PutUint32(b[5:], math.Float32bits(dy))
-	w.send(b)
+	w.writeMu.Lock()
+	w.writeBuf[0] = ipc.CmdMotionBy
+	ipc.LE.PutUint32(w.writeBuf[1:5], math.Float32bits(dx))
+	ipc.LE.PutUint32(w.writeBuf[5:9], math.Float32bits(dy))
+	_, _ = w.stdin.Write(w.writeBuf[:9])
+	w.writeMu.Unlock()
 }
 
 // ButtonHere presses or releases a linux BTN_* button where the pointer is.
 func (w *worker) ButtonHere(code uint32, pressed bool) {
-	b := make([]byte, 6)
-	b[0] = ipc.CmdButtonHere
-	ipc.LE.PutUint32(b[1:], code)
-	b[5] = boolByte(pressed)
-	w.send(b)
+	w.writeMu.Lock()
+	w.writeBuf[0] = ipc.CmdButtonHere
+	ipc.LE.PutUint32(w.writeBuf[1:5], code)
+	w.writeBuf[5] = boolByte(pressed)
+	_, _ = w.stdin.Write(w.writeBuf[:6])
+	w.writeMu.Unlock()
 }
 
 // Button moves to x, y, then presses or releases a linux BTN_* button.
 func (w *worker) Button(code uint32, pressed bool, x, y uint16) {
-	b := make([]byte, 10)
-	b[0] = ipc.CmdButton
-	ipc.LE.PutUint32(b[1:], code)
-	b[5] = boolByte(pressed)
-	ipc.LE.PutUint16(b[6:], x)
-	ipc.LE.PutUint16(b[8:], y)
-	w.send(b)
+	w.writeMu.Lock()
+	w.writeBuf[0] = ipc.CmdButton
+	ipc.LE.PutUint32(w.writeBuf[1:5], code)
+	w.writeBuf[5] = boolByte(pressed)
+	ipc.LE.PutUint16(w.writeBuf[6:8], x)
+	ipc.LE.PutUint16(w.writeBuf[8:10], y)
+	_, _ = w.stdin.Write(w.writeBuf[:10])
+	w.writeMu.Unlock()
 }
 
 // Scroll sends pixel deltas when continuous, otherwise wheel notches.
 func (w *worker) Scroll(continuous bool, dx, dy float64) {
-	b := make([]byte, 18)
-	b[0] = ipc.CmdScroll
-	b[1] = boolByte(continuous)
-	ipc.LE.PutUint64(b[2:], math.Float64bits(dx))
-	ipc.LE.PutUint64(b[10:], math.Float64bits(dy))
-	w.send(b)
+	w.writeMu.Lock()
+	w.writeBuf[0] = ipc.CmdScroll
+	w.writeBuf[1] = boolByte(continuous)
+	ipc.LE.PutUint64(w.writeBuf[2:10], math.Float64bits(dx))
+	ipc.LE.PutUint64(w.writeBuf[10:18], math.Float64bits(dy))
+	_, _ = w.stdin.Write(w.writeBuf[:18])
+	w.writeMu.Unlock()
 }
 
 // Key presses or releases a linux KEY_* code.
 func (w *worker) Key(code uint32, pressed bool) {
-	b := make([]byte, 6)
-	b[0] = ipc.CmdKey
-	ipc.LE.PutUint32(b[1:], code)
-	b[5] = boolByte(pressed)
-	w.send(b)
+	w.writeMu.Lock()
+	w.writeBuf[0] = ipc.CmdKey
+	ipc.LE.PutUint32(w.writeBuf[1:5], code)
+	w.writeBuf[5] = boolByte(pressed)
+	_, _ = w.stdin.Write(w.writeBuf[:6])
+	w.writeMu.Unlock()
 }
 
-func (w *worker) ReleaseAll() { w.send([]byte{ipc.CmdReleaseAll}) }
+func (w *worker) ReleaseAll() {
+	w.writeMu.Lock()
+	w.writeBuf[0] = ipc.CmdReleaseAll
+	_, _ = w.stdin.Write(w.writeBuf[:1])
+	w.writeMu.Unlock()
+}
 
 type reply struct {
 	typ     byte

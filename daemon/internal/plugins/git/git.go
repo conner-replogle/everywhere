@@ -6,6 +6,7 @@ package git
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,9 +17,25 @@ import (
 
 // Plugin is the git plugin.
 type Plugin struct {
-	h       plugin.Host
-	fetches gitFetches
+	h           plugin.Host
+	fetches     gitFetches
+	statusMu    sync.Mutex
+	statusCache map[string]cachedStatus
+	statusIn    map[string]*inflightStatus
 }
+
+type cachedStatus struct {
+	res GitStatus
+	at  time.Time
+}
+
+type inflightStatus struct {
+	done chan struct{}
+	res  GitStatus
+	err  error
+}
+
+const gitStatusCacheTTL = 2 * time.Second
 
 // New makes the git plugin.
 func New() *Plugin { return &Plugin{} }
@@ -43,12 +60,12 @@ func (p *Plugin) Start(h plugin.Host) error {
 		if err != nil {
 			return nil, err
 		}
-		return p.status(dir)
-	}))
+		return p.status(dir, false)
+	}), plugin.Slow())
 	for _, m := range []string{"git.fetch", "git.pull", "git.updateDefault"} {
 		h.HandleRPC(m, plugin.Params(func(_ plugin.RPCContext, ps params) (any, error) {
 			return p.action(m, ps.ThreadID, ps.ProjectID)
-		}))
+		}), plugin.Slow())
 	}
 	h.HandleRPC("git.info", plugin.Params(func(_ plugin.RPCContext, ps params) (any, error) {
 		proj, err := h.Store().GetProject(ps.ProjectID)
@@ -56,28 +73,25 @@ func (p *Plugin) Start(h plugin.Host) error {
 			return nil, err
 		}
 		return Info(proj.Path), nil
-	}))
+	}), plugin.Slow())
 	return nil
 }
 
 func (p *Plugin) Stop() {}
 
-func (p *Plugin) changed() { p.h.Emit(protocol.RPCEvent{Event: protocol.EventGitChanged}) }
+func (p *Plugin) changed() {
+	p.statusMu.Lock()
+	clear(p.statusCache)
+	p.statusMu.Unlock()
+	p.h.Emit(protocol.RPCEvent{Event: protocol.EventGitChanged})
+}
 
 // Info lists a directory's branches, for the workspace picker.
 func Info(dir string) protocol.GitInfo {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	info := protocol.GitInfo{Branches: []string{}}
-	if !gitx.IsRepo(ctx, dir) {
-		return info
-	}
-	info.IsRepo = true
-	info.Current = gitx.CurrentBranch(ctx, dir)
-	if b, err := gitx.Branches(ctx, dir); err == nil {
-		info.Branches = b
-	}
-	return info
+	isRepo, current, branches := gitx.RepoBranches(ctx, dir)
+	return protocol.GitInfo{IsRepo: isRepo, Current: current, Branches: branches}
 }
 
 const (
@@ -131,9 +145,55 @@ func (p *Plugin) dir(threadID, projectID string) (string, error) {
 	return plugin.Dir(p.h, threadID, projectID)
 }
 
-// gitStatus reads dir's status and, if origin is stale, fetches it in the
-// background (git.changed follows when it's done).
-func (p *Plugin) status(dir string) (GitStatus, error) {
+// status reads dir's status (with short-TTL caching and singleflight
+// coalescing across concurrent callers) and, if origin is stale, fetches it in
+// the background (git.changed follows when it's done).
+func (p *Plugin) status(dir string, fresh bool) (GitStatus, error) {
+	if !fresh {
+		p.statusMu.Lock()
+		if c, ok := p.statusCache[dir]; ok && time.Since(c.at) < gitStatusCacheTTL {
+			p.statusMu.Unlock()
+			return c.res, nil
+		}
+		if call, ok := p.statusIn[dir]; ok {
+			p.statusMu.Unlock()
+			<-call.done
+			return call.res, call.err
+		}
+		call := &inflightStatus{done: make(chan struct{})}
+		if p.statusIn == nil {
+			p.statusIn = map[string]*inflightStatus{}
+		}
+		p.statusIn[dir] = call
+		p.statusMu.Unlock()
+
+		res, err := p.readStatus(dir)
+		p.statusMu.Lock()
+		if err == nil {
+			if p.statusCache == nil {
+				p.statusCache = map[string]cachedStatus{}
+			}
+			p.statusCache[dir] = cachedStatus{res: res, at: time.Now()}
+		}
+		delete(p.statusIn, dir)
+		p.statusMu.Unlock()
+		call.res, call.err = res, err
+		close(call.done)
+		return res, err
+	}
+	res, err := p.readStatus(dir)
+	if err == nil {
+		p.statusMu.Lock()
+		if p.statusCache == nil {
+			p.statusCache = map[string]cachedStatus{}
+		}
+		p.statusCache[dir] = cachedStatus{res: res, at: time.Now()}
+		p.statusMu.Unlock()
+	}
+	return res, err
+}
+
+func (p *Plugin) readStatus(dir string) (GitStatus, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), gitStatusTimeout)
 	defer cancel()
 	st, err := gitx.ReadStatus(ctx, dir)
@@ -141,8 +201,15 @@ func (p *Plugin) status(dir string) (GitStatus, error) {
 	if err != nil || !st.IsRepo {
 		return out, err
 	}
-	common, err := gitx.CommonDir(ctx, dir)
-	if err != nil || !gitx.HasRemote(ctx, dir, "origin") {
+	common := st.CommonDir
+	if common == "" {
+		common, err = gitx.CommonDir(ctx, dir)
+		if err != nil {
+			return out, nil
+		}
+	}
+	hasOrigin := st.DefaultBranch != "" || strings.HasPrefix(st.Upstream, "origin/") || gitx.HasRemote(ctx, dir, "origin")
+	if !hasOrigin {
 		return out, nil
 	}
 
@@ -237,5 +304,5 @@ func (p *Plugin) action(method, threadID, projectID string) (GitStatus, error) {
 		}
 		p.changed()
 	}
-	return p.status(dir)
+	return p.status(dir, true)
 }

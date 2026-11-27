@@ -77,10 +77,13 @@ export const pluginSettings: WorkerPlugin = {
   hubFeatures: ["pluginSettings"],
   // A daemon that takes them gets every plugin's as it connects.
   onDaemonHello: async (hub, deviceId) => {
-    for (const id of (await hub.storage.list<Stored>()).keys()) {
-      const { values: vals } = await values(hub, id);
-      await push(hub, id, vals, [deviceId]);
-    }
+    const stored = await hub.storage.list<Stored>();
+    await Promise.all(
+      [...stored.entries()].map(async ([id, s]) => {
+        const vals = JSON.parse(await open(hub.env, s.sealed)) as Record<string, unknown>;
+        await push(hub, id, vals, [deviceId]);
+      }),
+    );
   },
   hubMethods: {
     get: async (hub, id) => view(await values(hub, String(id))),

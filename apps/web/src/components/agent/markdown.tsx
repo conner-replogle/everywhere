@@ -1,21 +1,13 @@
 import { SquareTerminalIcon } from "lucide-react";
-import { createContext, memo, useContext } from "react";
+import { memo, useContext } from "react";
 import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { OpenLinkContext, RunInTerminalContext } from "@/components/agent/markdown-context";
 import { cn } from "@/lib/utils";
 
-/**
- * Opens a terminal with a command typed in, not run, for the user to check
- * and run themselves: offered on code blocks that need root, which claude
- * can't do. Absent where there's no terminal to open.
- */
-export const RunInTerminalContext = createContext<((command: string) => void) | null>(null);
+export { OpenLinkContext, RunInTerminalContext };
 
-/**
- * Opens a web link as a tab of the thread (a web tab, in this browser).
- * Absent where there are no tabs: links then open in a new browser tab.
- */
-export const OpenLinkContext = createContext<((url: string) => void) | null>(null);
+const REMARK_PLUGINS = [remarkGfm];
 
 function Link({ href, children }: { href?: string; children: React.ReactNode }) {
   const open = useContext(OpenLinkContext);
@@ -133,7 +125,7 @@ const components: Components = {
 export const Markdown = memo(function Markdown({ text, className }: { text: string; className?: string }) {
   return (
     <div className={cn("break-words", className)}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} components={components}>
         {text}
       </ReactMarkdown>
     </div>

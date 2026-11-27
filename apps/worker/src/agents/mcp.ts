@@ -37,29 +37,33 @@ function headers(c: Context<App>) {
   c.header("x-content-type-options", "nosniff");
 }
 
-// None of it exists while connected agents are off.
-mcp.use("/mcp", async (c, next) => {
+// None of it exists while connected agents are off. Authenticated POSTs check
+// agents_enabled_at inside bearerAgent's single JOIN query, avoiding a second
+// D1 round-trip on every tool call.
+mcp.options("/mcp", async (c) => {
   if (!(await agentsOn(c.env))) return c.json({ error: "not found" }, 404);
-  await next();
+  headers(c);
+  return c.body(null, 204);
 });
 
-mcp.options("/mcp", (c) => (headers(c), c.body(null, 204)));
-
 // No server-initiated streams or sessions: only POST.
-mcp.on(["GET", "DELETE"], "/mcp", (c) => {
+mcp.on(["GET", "DELETE"], "/mcp", async (c) => {
+  if (!(await agentsOn(c.env))) return c.json({ error: "not found" }, 404);
   headers(c);
   c.header("allow", "POST, OPTIONS");
   return c.body(null, 405);
 });
 
 mcp.post("/mcp", async (c) => {
-  headers(c);
   const who = await bearerAgent(c);
   if (!who) {
+    if (!(await agentsOn(c.env))) return c.json({ error: "not found" }, 404);
+    headers(c);
     // Where OAuth clients (e.g. ChatGPT) find how to sign in (RFC 9728).
     c.header("www-authenticate", `Bearer resource_metadata="${resourceMetadataUrl(c.env)}"`);
     return c.json({ jsonrpc: "2.0", id: null, error: { code: -32001, message: "unauthorized: connect with OAuth, or use an API key from Settings → Connected agents" } }, 401);
   }
+  headers(c);
   let body: unknown;
   try {
     body = await c.req.json();

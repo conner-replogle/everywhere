@@ -27,14 +27,22 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 
 /** The thread's checkout: branch, sync with its upstream and origin's default branch, and changes. */
 export function GitChip({ peer, threadId }: { peer: DevicePeer; threadId: string }) {
-  const status = useRpc(peer, "git.status", { threadId }, ["git.changed", "threads.changed"]);
+  const status = useRpc(peer, "git.status", { threadId }, ["git.changed"]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { refetch } = status;
 
   // Look again when the page comes back into view, and now and then while it's shown.
+  // Cooldown avoids double-firing when focus and visibilitychange arrive together.
   useEffect(() => {
-    const onShow = () => document.visibilityState === "visible" && refetch();
+    let last = 0;
+    const onShow = () => {
+      if (document.visibilityState !== "visible") return;
+      const now = Date.now();
+      if (now - last < 2000) return;
+      last = now;
+      refetch();
+    };
     const timer = setInterval(onShow, REFRESH_MS);
     window.addEventListener("focus", onShow);
     document.addEventListener("visibilitychange", onShow);

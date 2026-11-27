@@ -65,14 +65,31 @@ export async function vapidPublicKey(env: Env): Promise<string> {
   return (await vapid(env)).publicKey;
 }
 
+const ENCODER = new TextEncoder();
+const VAPID_JWT_TTL_S = 12 * 60 * 60;
+const VAPID_JWT_REUSE_S = 6 * 60 * 60;
+const INFO_WEBPUSH = ENCODER.encode("WebPush: info\0");
+const INFO_AES128GCM = ENCODER.encode("Content-Encoding: aes128gcm\0");
+const INFO_NONCE = ENCODER.encode("Content-Encoding: nonce\0");
+const JWT_HEADER_B64 = b64url(ENCODER.encode(JSON.stringify({ typ: "JWT", alg: "ES256" })));
+
+const cachedJwts = new Map<string, { jwt: string; exp: number }>();
+
 /**
  * Sends one push. Resolves to the push service's status: 201 when accepted;
  * 404 and 410 mean the subscription is gone for good.
  */
 export async function sendPush(env: Env, sub: PushSubscription, payload: unknown, opts: PushOptions): Promise<number> {
+  return sendPushBytes(env, sub, ENCODER.encode(JSON.stringify(payload)), opts);
+}
+
+async function sendPushBytes(env: Env, sub: PushSubscription, plaintext: Uint8Array, opts: PushOptions): Promise<number> {
   const { privateKey, publicKey } = await vapid(env);
-  const body = await encrypt(sub, new TextEncoder().encode(JSON.stringify(payload)));
-  const jwt = await vapidJwt(privateKey, new URL(sub.endpoint).origin, env.PUBLIC_URL);
+  const origin = new URL(sub.endpoint).origin;
+  const [body, jwt] = await Promise.all([
+    encrypt(sub, plaintext),
+    vapidJwt(privateKey, origin, env.PUBLIC_URL, env.VAPID_KEY),
+  ]);
   const headers: Record<string, string> = {
     authorization: `vapid t=${jwt}, k=${publicKey}`,
     "content-encoding": "aes128gcm",
@@ -82,16 +99,25 @@ export async function sendPush(env: Env, sub: PushSubscription, payload: unknown
   if (opts.urgency) headers.urgency = opts.urgency;
   if (opts.topic) headers.topic = opts.topic;
   const res = await fetch(sub.endpoint, { method: "POST", headers, body });
+  await res.body?.cancel();
   return res.status;
 }
 
-async function vapidJwt(key: CryptoKey, audience: string, subject: string): Promise<string> {
-  const enc = (v: unknown) => b64url(new TextEncoder().encode(JSON.stringify(v)));
-  const exp = Math.floor(Date.now() / 1000) + 12 * 60 * 60;
-  const unsigned = `${enc({ typ: "JWT", alg: "ES256" })}.${enc({ aud: audience, exp, sub: subject })}`;
+async function vapidJwt(key: CryptoKey, audience: string, subject: string, keyId: string): Promise<string> {
+  const nowS = Math.floor(Date.now() / 1000);
+  const cacheKey = `${audience}\0${subject}\0${keyId}`;
+  const hit = cachedJwts.get(cacheKey);
+  if (hit && hit.exp - nowS > VAPID_JWT_REUSE_S) return hit.jwt;
+
+  const exp = nowS + VAPID_JWT_TTL_S;
+  const claims = b64url(ENCODER.encode(JSON.stringify({ aud: audience, exp, sub: subject })));
+  const unsigned = `${JWT_HEADER_B64}.${claims}`;
   // WebCrypto's ECDSA signature is r || s, which is what ES256 wants.
-  const sig = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, new TextEncoder().encode(unsigned));
-  return `${unsigned}.${b64url(new Uint8Array(sig))}`;
+  const sig = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, ENCODER.encode(unsigned));
+  const jwt = `${unsigned}.${b64url(new Uint8Array(sig))}`;
+  if (cachedJwts.size > 32) cachedJwts.clear();
+  cachedJwts.set(cacheKey, { jwt, exp });
+  return jwt;
 }
 
 /**
@@ -105,25 +131,33 @@ export async function encrypt(
 ): Promise<Uint8Array> {
   const uaPublic = fromB64url(sub.p256dh);
   const authSecret = fromB64url(sub.auth);
-  const local =
-    fixed?.local ??
-    ((await crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"])) as CryptoKeyPair);
-  const asPublic = new Uint8Array((await crypto.subtle.exportKey("raw", local.publicKey)) as ArrayBuffer);
-  const uaKey = await crypto.subtle.importKey("raw", uaPublic, { name: "ECDH", namedCurve: "P-256" }, false, []);
-  const ecdhSecret = new Uint8Array(
+  const [local, uaKey] = await Promise.all([
+    fixed?.local
+      ? Promise.resolve(fixed.local)
+      : (crypto.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]) as Promise<CryptoKeyPair>),
+    crypto.subtle.importKey("raw", uaPublic, { name: "ECDH", namedCurve: "P-256" }, false, []),
+  ]);
+  const [asPublicBuf, ecdhSecretBuf] = await Promise.all([
+    crypto.subtle.exportKey("raw", local.publicKey),
     // workers-types spells `public` as `$public` (a reserved word); the runtime takes `public`.
-    await crypto.subtle.deriveBits(
+    crypto.subtle.deriveBits(
       { name: "ECDH", public: uaKey } as unknown as SubtleCryptoDeriveKeyAlgorithm,
       local.privateKey,
       256,
     ),
-  );
+  ]);
+  const asPublic = new Uint8Array(asPublicBuf as ArrayBuffer);
+  const ecdhSecret = new Uint8Array(ecdhSecretBuf);
 
-  const text = (s: string) => new TextEncoder().encode(s);
-  const ikm = await hkdf(authSecret, ecdhSecret, concat(text("WebPush: info\0"), uaPublic, asPublic), 32);
+  const ikm = await hkdf(authSecret, ecdhSecret, concat(INFO_WEBPUSH, uaPublic, asPublic), 32);
   const salt = fixed?.salt ?? crypto.getRandomValues(new Uint8Array(16));
-  const cek = await hkdf(salt, ikm, text("Content-Encoding: aes128gcm\0"), 16);
-  const nonce = await hkdf(salt, ikm, text("Content-Encoding: nonce\0"), 12);
+  const ikmKey = await crypto.subtle.importKey("raw", ikm, "HKDF", false, ["deriveBits"]);
+  const [cekBuf, nonceBuf] = await Promise.all([
+    crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt, info: INFO_AES128GCM }, ikmKey, 16 * 8),
+    crypto.subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt, info: INFO_NONCE }, ikmKey, 12 * 8),
+  ]);
+  const cek = new Uint8Array(cekBuf);
+  const nonce = new Uint8Array(nonceBuf);
 
   const key = await crypto.subtle.importKey("raw", cek, "AES-GCM", false, ["encrypt"]);
   // 0x02 marks the last (only) record; no further padding.
@@ -164,12 +198,15 @@ export async function deliver(
   payload: unknown,
   opts: PushOptions,
 ): Promise<number> {
+  if (subs.length === 0) return 0;
+  const plaintext = ENCODER.encode(JSON.stringify(payload));
+  const dead: string[] = [];
   const results = await Promise.all(
     subs.map(async (sub) => {
       try {
-        const status = await sendPush(env, sub, payload, opts);
+        const status = await sendPushBytes(env, sub, plaintext, opts);
         if (status === 404 || status === 410) {
-          await env.DB.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?").bind(sub.endpoint).run();
+          dead.push(sub.endpoint);
         } else if (status >= 400) {
           console.warn("push rejected", new URL(sub.endpoint).host, status);
         }
@@ -180,5 +217,10 @@ export async function deliver(
       }
     }),
   );
+  if (dead.length > 0) {
+    await env.DB.batch(
+      dead.map((ep) => env.DB.prepare("DELETE FROM push_subscriptions WHERE endpoint = ?").bind(ep)),
+    );
+  }
   return results.filter(Boolean).length;
 }

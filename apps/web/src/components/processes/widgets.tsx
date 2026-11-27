@@ -244,8 +244,15 @@ export function LineChart({
   const overTime = !xLabel;
   const formatX = (x: number) => (overTime ? formatDuration(x) : `${xLabel} ${formatNumber(x)}`);
 
-  const allX = indexed.flatMap(({ s }) => s.points.map((p) => p[0]));
-  const dataX: XRange | null = allX.length ? [Math.min(...allX), Math.max(...allX)] : null;
+  let xMin = Infinity;
+  let xMax = -Infinity;
+  for (const { s } of indexed) {
+    for (const p of s.points) {
+      if (p[0] < xMin) xMin = p[0];
+      if (p[0] > xMax) xMax = p[0];
+    }
+  }
+  const dataX: XRange | null = xMin <= xMax ? [xMin, xMax] : null;
   const [x0, x1] = zoom ?? dataX ?? [0, 1];
   // In view, plus a point either side so lines run to the edges.
   const inView = (pts: [number, number][]) => {
@@ -256,11 +263,20 @@ export function LineChart({
     return pts.slice(a, b + 1);
   };
   const shown = visible.map(({ s, i }) => ({ s: { ...s, points: inView(s.points) }, i })).filter(({ s }) => s.points.length > 0);
-  const ys = shown.flatMap(({ s }) => s.points.filter((p) => p[0] >= x0 && p[0] <= x1).map((p) => p[1]));
+  let yMin = Infinity;
+  let yMax = -Infinity;
+  for (const { s } of shown) {
+    for (const p of s.points) {
+      if (p[0] >= x0 && p[0] <= x1) {
+        if (p[1] < yMin) yMin = p[1];
+        if (p[1] > yMax) yMax = p[1];
+      }
+    }
+  }
 
   let body = <Empty />;
   if (dataX && width > 0) {
-    const yTicks = ys.length ? niceTicks(Math.min(...ys), Math.max(...ys), 4) : niceTicks(0, 1, 4);
+    const yTicks = yMin <= yMax ? niceTicks(yMin, yMax, 4) : niceTicks(0, 1, 4);
     const [y0, y1] = [yTicks[0]!, yTicks[yTicks.length - 1]!];
     const left = Math.max(...yTicks.map((t) => formatAxis(t).length)) * 6 + 10;
     const plotW = Math.max(1, width - left - PAD.right);

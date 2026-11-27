@@ -42,6 +42,54 @@ function parseState(s?: string): ProcessesState {
   }
 }
 
+const EMPTY_COMPARE: string[] = [];
+
+function ProcessList({
+  processes,
+  maximized,
+  shownId,
+  onSelect,
+  onStop,
+  onRestart,
+  onRemove,
+  onOpenUrl,
+}: {
+  processes: Process[];
+  maximized: boolean;
+  shownId?: string;
+  onSelect: (id: string) => void;
+  onStop: (id: string) => Promise<void>;
+  onRestart: (id: string) => Promise<void>;
+  onRemove: (id: string) => Promise<void>;
+  onOpenUrl?: (url: string) => void;
+}) {
+  // Keep the 1 Hz elapsed-time tick isolated to the list so ProcessPane and charts don't re-render every second.
+  const now = useNow(processes.some(isRunning));
+  return (
+    <ul
+      className={cn(
+        "flex min-h-0 shrink-0 flex-col gap-2 overflow-y-auto p-2 @max-[48rem]:max-h-[45%] @max-[48rem]:border-b @min-[48rem]:w-96 @min-[48rem]:border-r",
+        maximized && shownId && "hidden",
+      )}
+    >
+      {processes.map((p) => (
+        <li key={p.id}>
+          <ProcessCard
+            process={p}
+            now={now}
+            selected={p.id === shownId}
+            onSelect={() => onSelect(p.id)}
+            onStop={() => onStop(p.id)}
+            onRestart={() => onRestart(p.id)}
+            onRemove={() => onRemove(p.id)}
+            onOpenUrl={onOpenUrl}
+          />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function ProcessesView({
   peer,
   threadId,
@@ -88,7 +136,6 @@ export function ProcessesView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showId, showAt]);
 
-  const now = useNow(processes.some(isRunning));
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const act = async (f: () => Promise<unknown>) => {
@@ -132,27 +179,16 @@ export function ProcessesView({
         </div>
       ) : (
         <div className="flex min-h-0 flex-1 @max-[48rem]:flex-col">
-          <ul
-            className={cn(
-              "flex min-h-0 shrink-0 flex-col gap-2 overflow-y-auto p-2 @max-[48rem]:max-h-[45%] @max-[48rem]:border-b @min-[48rem]:w-96 @min-[48rem]:border-r",
-              state.maximized && shown && "hidden",
-            )}
-          >
-            {processes.map((p) => (
-              <li key={p.id}>
-                <ProcessCard
-                  process={p}
-                  now={now}
-                  selected={p.id === shown?.id}
-                  onSelect={() => select(p.id)}
-                  onStop={() => act(() => peer.call("processes.stop", { id: p.id }, 15_000))}
-                  onRestart={() => act(() => peer.call("processes.restart", { id: p.id }, 15_000))}
-                  onRemove={() => act(() => peer.call("processes.remove", { id: p.id }, 15_000))}
-                  onOpenUrl={onOpenUrl}
-                />
-              </li>
-            ))}
-          </ul>
+          <ProcessList
+            processes={processes}
+            maximized={!!state.maximized}
+            shownId={shown?.id}
+            onSelect={select}
+            onStop={(id) => act(() => peer.call("processes.stop", { id }, 15_000))}
+            onRestart={(id) => act(() => peer.call("processes.restart", { id }, 15_000))}
+            onRemove={(id) => act(() => peer.call("processes.remove", { id }, 15_000))}
+            onOpenUrl={onOpenUrl}
+          />
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             {shown && (
               <ProcessPane
@@ -163,7 +199,7 @@ export function ProcessesView({
                 process={shown}
                 view={state.view}
                 onView={(view) => save({ ...state, view })}
-                compare={(shown.experiment && state.compare?.[shown.experiment]) || []}
+                compare={(shown.experiment && state.compare?.[shown.experiment]) || EMPTY_COMPARE}
                 maximized={!!state.maximized}
                 onMaximize={(maximized) => save({ ...state, maximized })}
                 onCompare={(runs) =>

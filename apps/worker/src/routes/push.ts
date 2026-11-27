@@ -13,7 +13,10 @@ export const push = new Hono<App>();
 
 push.use("*", requireUser);
 
-push.get("/key", async (c) => c.json({ publicKey: await vapidPublicKey(c.env) }));
+push.get("/key", async (c) => {
+  c.header("cache-control", "private, max-age=3600");
+  return c.json({ publicKey: await vapidPublicKey(c.env) });
+});
 
 push.post("/subscriptions", async (c) => {
   const body = await c.req.json<{ endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown } }>();

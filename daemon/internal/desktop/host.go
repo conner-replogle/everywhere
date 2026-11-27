@@ -1,10 +1,12 @@
 package desktop
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/netip"
 	"os/exec"
+	"time"
 )
 
 // notify shows a desktop notification in the session.
@@ -21,7 +23,9 @@ func (h *hyprInstance) notify(summary, body string) {
 // tailnetPath reports whether Tailscale is relaying traffic to ip through DERP.
 // known is false when ip isn't a tailnet peer (or tailscale isn't installed).
 func tailnetPath(ip netip.Addr) (known, relayed bool, relay string) {
-	out, err := exec.Command("tailscale", "status", "--json").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "tailscale", "status", "--json").Output()
 	if err != nil {
 		return false, false, ""
 	}

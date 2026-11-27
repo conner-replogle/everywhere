@@ -151,11 +151,27 @@ export class InputForwarder {
     if (ch.readyState === "open") ch.send(msg);
   }
 
+  private rectCache: DOMRect | null = null;
+  private rectScheduled = false;
+
   /** Maps a client position to 0..1 within the letterboxed video content. */
   private normalize(e: MouseEvent): [number, number] | null {
     const vw = this.video.videoWidth, vh = this.video.videoHeight;
     if (!vw || !vh) return null;
-    const r = this.video.getBoundingClientRect();
+    // Reuse the video's bounding rect within the same animation frame so
+    // high-polling mice (up to 1000 Hz) don't trigger repeated layout queries.
+    let r = this.rectCache;
+    if (!r) {
+      r = this.video.getBoundingClientRect();
+      this.rectCache = r;
+      if (!this.rectScheduled && typeof requestAnimationFrame === "function") {
+        this.rectScheduled = true;
+        requestAnimationFrame(() => {
+          this.rectCache = null;
+          this.rectScheduled = false;
+        });
+      }
+    }
     const scale = Math.min(r.width / vw, r.height / vh);
     const cw = vw * scale, ch = vh * scale;
     const x = (e.clientX - r.left - (r.width - cw) / 2) / cw;

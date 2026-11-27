@@ -6,7 +6,7 @@ import { failingScript, type InstallPlatform, installScript } from "./install";
 import { WORKER_PLUGINS } from "./plugins";
 import { auth, requireUser } from "./routes/auth";
 import { prefs } from "./routes/prefs";
-import { iceServers, TURN_TTL_SECONDS } from "./turn";
+import { iceServers } from "./turn";
 import { apiGuard, clientIp, originAllowed, rateLimited, tooMany } from "./security";
 import type { App } from "./types";
 
@@ -67,8 +67,8 @@ app.delete("/api/devices/:id", requireUser, async (c) => {
 
 app.get("/api/ice-servers", requireUser, async (c) => {
   if (await rateLimited(c, `ice:${c.var.user.id}`)) return tooMany(c);
-  const { iceServers: servers, turn } = await iceServers(c.env);
-  return c.json({ iceServers: servers, turn, expiresAt: Date.now() + TURN_TTL_SECONDS * 1000 });
+  const { iceServers: servers, turn, expiresAt } = await iceServers(c.env);
+  return c.json({ iceServers: servers, turn, expiresAt });
 });
 
 // Daemons get relay candidates too, for networks that block the UDP ports a
@@ -77,8 +77,8 @@ app.get("/api/daemon/ice-servers", async (c) => {
   const device = await bearerDevice(c);
   if (!device) return c.json({ error: "unauthorized" }, 401);
   if (await rateLimited(c, `ice:${device.id}`)) return tooMany(c);
-  const { iceServers: servers, turn } = await iceServers(c.env);
-  return c.json({ iceServers: servers, turn, expiresAt: Date.now() + TURN_TTL_SECONDS * 1000 });
+  const { iceServers: servers, turn, expiresAt } = await iceServers(c.env);
+  return c.json({ iceServers: servers, turn, expiresAt });
 });
 
 // --- enrollment -------------------------------------------------------------
@@ -178,7 +178,11 @@ app.get("/api/daemon/ws", async (c) => {
   const device = await bearerDevice(c);
   if (!device) return c.json({ error: "unauthorized" }, 401);
   const version = (c.req.header("x-ew-version") ?? "unknown").slice(0, 64);
-  await c.env.DB.prepare("UPDATE devices SET version = ? WHERE id = ?").bind(version, device.id).run();
+  c.executionCtx.waitUntil(
+    c.env.DB.prepare("UPDATE devices SET version = ?, last_seen_at = ? WHERE id = ?")
+      .bind(version, Date.now(), device.id)
+      .run(),
+  );
   const headers = new Headers(c.req.raw.headers);
   headers.set(HUB_KIND_HEADER, "device");
   headers.set(HUB_ID_HEADER, device.id);

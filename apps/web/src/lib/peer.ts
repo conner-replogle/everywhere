@@ -723,7 +723,7 @@ export class DevicePeer {
   }
 
   /** Big control messages arrive in chunks; these are the parts so far. */
-  private chunks = new Map<number, string[]>();
+  private chunks = new Map<number, { parts: string[]; received: number }>();
 
   private onControlMessage(raw: string): void {
     let msg: RpcResponse | RpcEvent | ControlChunk;
@@ -733,14 +733,16 @@ export class DevicePeer {
       return;
     }
     if ("chunk" in msg) {
-      const parts = this.chunks.get(msg.chunk) ?? [];
-      parts[msg.index] = msg.data;
-      if (parts.filter((p) => p !== undefined).length < msg.count) {
-        this.chunks.set(msg.chunk, parts);
-        return;
+      let entry = this.chunks.get(msg.chunk);
+      if (!entry) {
+        entry = { parts: new Array<string>(msg.count), received: 0 };
+        this.chunks.set(msg.chunk, entry);
       }
+      if (entry.parts[msg.index] === undefined) entry.received++;
+      entry.parts[msg.index] = msg.data;
+      if (entry.received < msg.count) return;
       this.chunks.delete(msg.chunk);
-      this.onControlMessage(parts.join(""));
+      this.onControlMessage(entry.parts.join(""));
       return;
     }
     if ("event" in msg) {

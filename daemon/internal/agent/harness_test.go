@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -426,4 +427,93 @@ func TestHarnessModesNamedLikeClaudes(t *testing.T) {
 		s := c3.state()
 		return len(s.Modes) == 3 && s.PermissionMode != "" && s.PermissionMode != "bypassPermissions"
 	})
+}
+
+// Where an agent has no auto mode, everywhere's Accept all stands in for it:
+// the agent runs in its own mode for that, and its requests are approved
+// without asking, before and after it starts again. With an auto, there's
+// none.
+func TestHarnessAcceptAll(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(acptest.Env, "1")
+	t.Setenv(acptest.NoAutoEnv, "1")
+	saved := harness.Agents
+	harness.Agents = []harness.Agent{{Kind: "fake", Title: "Fake", Command: []string{exe}, AcceptAll: "plan"}}
+	t.Cleanup(func() { harness.Agents = saved })
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	projects, _ := st.ListProjects()
+	th, err := st.CreateThread(projects[0].ID, "", "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(st, t.TempDir(), func() {})
+	t.Cleanup(m.Shutdown)
+	c := &recorder{}
+	if err := m.Attach(th.ID, c, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	offers := func(s protocol.AgentState, mode string) bool {
+		return slices.ContainsFunc(s.Modes, func(m protocol.AgentMode) bool { return m.Value == mode })
+	}
+	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "send", Text: "please write a.txt now"})
+	eventually(t, "the first request", func() bool { return len(c.state().Pending) == 1 })
+	if s := c.state(); !offers(s, harness.AcceptAllMode) || offers(s, "auto") || len(s.Modes) != 3 {
+		t.Fatalf("modes %+v", s.Modes)
+	}
+	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "respond", RequestID: c.state().Pending[0].ID, Decision: "deny"})
+	eventually(t, "the first turn", lastTurnEnded(c))
+
+	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "setMode", Mode: harness.AcceptAllMode})
+	eventually(t, "accept all", func() bool { return c.state().PermissionMode == harness.AcceptAllMode })
+	before := len(c.events())
+	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "send", Text: "please write b.txt now"})
+	eventually(t, "the second turn", func() bool { return len(c.events()) > before+2 && lastTurnEnded(c)() })
+	got := strings.Join(summary(c.events(), before), "|")
+	if strings.Contains(got, "request:") || !strings.Contains(got, "tool:Write|result:false:Wrote file successfully.") {
+		t.Fatalf("approved without asking? %s", got)
+	}
+	if s := c.state(); s.PermissionMode != harness.AcceptAllMode || len(s.Pending) != 0 {
+		t.Fatalf("after: %+v", s)
+	}
+
+	// Started again, it accepts all still.
+	m.Kill(th.ID)
+	c2 := &recorder{}
+	if err := m.Attach(th.ID, c2, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "the replay", func() bool { return len(c2.events()) > 0 })
+	before = len(c2.events())
+	m.Handle(th.ID, c2, protocol.AgentClientMsg{T: "send", Text: "please write c.txt now"})
+	eventually(t, "the third turn", func() bool { return len(c2.events()) > before+2 && lastTurnEnded(c2)() })
+	if got := strings.Join(summary(c2.events(), before), "|"); strings.Contains(got, "request:") {
+		t.Fatalf("asked after starting again: %s", got)
+	}
+	if s := c2.state(); s.PermissionMode != harness.AcceptAllMode {
+		t.Fatalf("started again in %q", s.PermissionMode)
+	}
+
+	// An agent with an auto of its own has no Accept all.
+	m.Kill(th.ID)
+	t.Setenv(acptest.NoAutoEnv, "")
+	if err := st.SetAgentPermissionMode(th.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	c3 := &recorder{}
+	if err := m.Attach(th.ID, c3, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	m.Handle(th.ID, c3, protocol.AgentClientMsg{T: "send", Text: "please write d.txt now"})
+	eventually(t, "a request with auto offered", func() bool { return len(c3.state().Pending) == 1 })
+	if s := c3.state(); offers(s, harness.AcceptAllMode) || !offers(s, "auto") {
+		t.Fatalf("modes with auto: %+v", s.Modes)
+	}
 }

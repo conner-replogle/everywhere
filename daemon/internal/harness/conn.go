@@ -50,6 +50,10 @@ type Conn struct {
 	pending       map[string]*permission
 	modelConfig   string
 	modeConfig    string
+	// offersAcceptAll: AcceptAllMode is one of its modes (it has no auto);
+	// acceptAll: it's the mode, so permission requests are approved here.
+	offersAcceptAll bool
+	acceptAll       bool
 	// options are the values each setting takes.
 	options map[string]map[string]bool
 	closing bool
@@ -155,7 +159,7 @@ func Start(ctx context.Context, o StartOptions) (*Conn, error) {
 		_ = c.setConfig(ctx, c.modelConfig, o.Model)
 	}
 	if o.Mode != "" && c.modeConfig != "" && c.hasOption(c.modeConfig, o.Mode) {
-		_ = c.setConfig(ctx, c.modeConfig, o.Mode)
+		_ = c.setMode(ctx, o.Mode)
 	}
 	c.emit(message("system", "init", map[string]any{"session_id": c.sessionID}))
 	return c, nil
@@ -291,7 +295,31 @@ func (c *Conn) SetPermissionMode(ctx context.Context, mode string) error {
 	if c.modeConfig == "" {
 		return fmt.Errorf("%s has no modes", c.agent.Title)
 	}
-	return c.setConfig(ctx, c.modeConfig, mode)
+	return c.setMode(ctx, mode)
+}
+
+// setMode sets one of the agent's modes, or everywhere's AcceptAllMode.
+func (c *Conn) setMode(ctx context.Context, mode string) error {
+	c.mu.Lock()
+	if mode == AcceptAllMode && !c.offersAcceptAll {
+		c.mu.Unlock()
+		return fmt.Errorf("%s has no mode %q", c.agent.Title, mode)
+	}
+	c.acceptAll = mode == AcceptAllMode
+	c.mu.Unlock()
+	if mode != AcceptAllMode {
+		return c.setConfig(ctx, c.modeConfig, mode)
+	}
+	if under := c.agent.AcceptAll; c.hasOption(c.modeConfig, under) {
+		if err := c.setConfig(ctx, c.modeConfig, under); err != nil {
+			c.mu.Lock()
+			c.acceptAll = false
+			c.mu.Unlock()
+			return err
+		}
+	}
+	c.emit(message("system", "harness_config", map[string]any{"mode": AcceptAllMode}))
+	return nil
 }
 
 func (c *Conn) SetModel(ctx context.Context, model string) error {
@@ -352,6 +380,30 @@ func (c *Conn) setConfig(ctx context.Context, id, value string) error {
 	return nil
 }
 
+// withAcceptAllLocked adds everywhere's AcceptAllMode to an agent's modes
+// when it offers one (Agent.AcceptAll) and they have no auto of its own.
+func (c *Conn) withAcceptAllLocked(values []map[string]string, known map[string]bool) []map[string]string {
+	c.offersAcceptAll = c.agent.AcceptAll != "" && !known["auto"]
+	if !c.offersAcceptAll {
+		c.acceptAll = false
+		return values
+	}
+	known[AcceptAllMode] = true
+	return append(values, map[string]string{
+		"value": AcceptAllMode, "label": "Accept all",
+		"description": "Approve every edit and command without asking, with no sandbox. " + c.agent.Title + "'s Auto isn't available here.",
+	})
+}
+
+// reportedModeLocked is the mode the agent says it's in, or AcceptAllMode
+// while that's on (the agent being in its Agent.AcceptAll mode then).
+func (c *Conn) reportedModeLocked(mode string) string {
+	if c.acceptAll {
+		return AcceptAllMode
+	}
+	return mode
+}
+
 func (c *Conn) hasOption(id, value string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -378,7 +430,8 @@ func (c *Conn) applyConfig(opts []acpConfigOption, res acpSessionResult) {
 			cfg["models"], cfg["model"] = values, o.CurrentValue
 		case o.Category == "mode" || o.ID == "mode":
 			c.modeConfig = o.ID
-			cfg["modes"], cfg["mode"] = values, o.CurrentValue
+			values = c.withAcceptAllLocked(values, known)
+			cfg["modes"], cfg["mode"] = values, c.reportedModeLocked(o.CurrentValue)
 		default:
 			continue
 		}
@@ -392,8 +445,9 @@ func (c *Conn) applyConfig(opts []acpConfigOption, res acpSessionResult) {
 			values = append(values, map[string]string{"value": m.ID, "label": m.Name, "description": m.Description})
 			known[m.ID] = true
 		}
+		values = c.withAcceptAllLocked(values, known)
 		c.options["mode"] = known
-		cfg["modes"], cfg["mode"] = values, res.Modes.CurrentModeID
+		cfg["modes"], cfg["mode"] = values, c.reportedModeLocked(res.Modes.CurrentModeID)
 	}
 	if len(cfg) > 0 {
 		c.emitLocked(message("system", "harness_config", cfg))
@@ -448,7 +502,7 @@ func (c *Conn) onNotify(method string, params json.RawMessage) {
 		}
 		c.emitLocked(message("system", "commands_changed", map[string]any{"commands": cmds}))
 	case "current_mode_update":
-		c.emitLocked(message("system", "harness_config", map[string]any{"mode": u.CurrentModeID}))
+		c.emitLocked(message("system", "harness_config", map[string]any{"mode": c.reportedModeLocked(u.CurrentModeID)}))
 	case "config_option_update":
 		c.mu.Unlock()
 		c.applyConfig(u.ConfigOptions, acpSessionResult{})
@@ -619,6 +673,11 @@ func (c *Conn) onRequest(method string, params json.RawMessage) (any, error) {
 	if !t.emitted {
 		c.emitToolLocked(t)
 	}
+	if c.acceptAll && p.options["allow"] != "" {
+		// Accept all: approved here, without asking (the call is drawn all the same).
+		c.mu.Unlock()
+		return map[string]any{"outcome": map[string]string{"outcome": "selected", "optionId": p.options["allow"]}}, nil
+	}
 	name, input := t.named()
 	req := &claude.PermissionRequest{ID: newID(), ToolName: name, ToolUseID: t.id, Input: input, Title: t.title}
 	if p.options["allowSession"] != "" {
@@ -689,10 +748,12 @@ func (c *Conn) pump() {
 			close(c.msgs)
 			return
 		}
-		m := c.out[0]
-		c.out = c.out[1:]
+		batch := c.out
+		c.out = nil
 		c.mu.Unlock()
-		c.msgs <- m
+		for _, m := range batch {
+			c.msgs <- m
+		}
 	}
 }
 

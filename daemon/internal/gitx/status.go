@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // Status is where a checkout stands: its branch against its upstream, its
@@ -29,8 +30,9 @@ type Status struct {
 	Deletions  int `json:"deletions"`
 
 	// Worktree: this checkout is a linked worktree (not the repo's main one).
-	Worktree bool   `json:"worktree"`
-	Root     string `json:"root"` // top of the checkout
+	Worktree  bool   `json:"worktree"`
+	Root      string `json:"root"` // top of the checkout
+	CommonDir string `json:"-"`    // shared .git directory, reused by callers
 
 	// DefaultBranch is origin's (e.g. "main"); "" without an origin.
 	DefaultBranch string `json:"defaultBranch,omitempty"`
@@ -55,7 +57,7 @@ func ReadStatus(ctx context.Context, dir string) (Status, error) {
 	if len(p) < 3 {
 		return st, nil
 	}
-	st.IsRepo, st.Root = true, p[0]
+	st.IsRepo, st.Root, st.CommonDir = true, p[0], p[2]
 	st.Worktree = filepath.Clean(p[1]) != filepath.Clean(p[2])
 
 	// A commit or rebase in progress holds the index lock; git status would
@@ -69,27 +71,40 @@ func ReadStatus(ctx context.Context, dir string) (Status, error) {
 	}
 	parsePorcelain(&st, out)
 
-	if st.Head != "" {
-		if num, err := run(ctx, dir, "diff", "HEAD", "--numstat", "--no-renames", "--"); err == nil {
-			st.Insertions, st.Deletions = sumNumstat(num)
-		}
+	var wg sync.WaitGroup
+	// Skip diff --numstat when the working tree and index have no tracked changes.
+	if st.Head != "" && (st.Staged > 0 || st.Unstaged > 0 || st.Conflicted > 0) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if num, err := run(ctx, dir, "diff", "HEAD", "--numstat", "--no-renames", "--"); err == nil {
+				st.Insertions, st.Deletions = sumNumstat(num)
+			}
+		}()
 	}
 
 	st.DefaultBranch = defaultBranch(ctx, dir)
 	if st.DefaultBranch != "" {
 		remote := "refs/remotes/origin/" + st.DefaultBranch
 		local := "refs/heads/" + st.DefaultBranch
-		if HasCommit(ctx, dir, local) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
 			if n, err := run(ctx, dir, "rev-list", "--count", local+".."+remote); err == nil {
 				st.DefaultBehind, _ = strconv.Atoi(n)
 			}
-		}
+		}()
 		if st.Head != "" && st.Branch != st.DefaultBranch {
-			if lr, err := run(ctx, dir, "rev-list", "--left-right", "--count", "HEAD..."+remote); err == nil {
-				st.AheadOfDefault, st.BehindDefault = leftRight(lr)
-			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if lr, err := run(ctx, dir, "rev-list", "--left-right", "--count", "HEAD..."+remote); err == nil {
+					st.AheadOfDefault, st.BehindDefault = leftRight(lr)
+				}
+			}()
 		}
 	}
+	wg.Wait()
 	return st, nil
 }
 

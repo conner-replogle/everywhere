@@ -1,14 +1,19 @@
 const PBKDF2_ITERATIONS = 100_000; // Workers' WebCrypto maximum
+const ENCODER = new TextEncoder();
 
 export function b64url(bytes: Uint8Array): string {
   let s = "";
-  for (const b of bytes) s += String.fromCharCode(b);
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
   return btoa(s).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 }
 
 export function fromB64url(s: string): Uint8Array {
   const bin = atob(s.replaceAll("-", "+").replaceAll("_", "/"));
-  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }
 
 export function randomToken(bytes = 32): string {
@@ -21,12 +26,12 @@ export function randomId(): string {
 }
 
 export async function sha256(input: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+  const digest = await crypto.subtle.digest("SHA-256", ENCODER.encode(input));
   return b64url(new Uint8Array(digest));
 }
 
 async function pbkdf2(password: string, salt: Uint8Array, iterations: number): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, [
+  const key = await crypto.subtle.importKey("raw", ENCODER.encode(password), "PBKDF2", false, [
     "deriveBits",
   ]);
   const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt, iterations }, key, 256);

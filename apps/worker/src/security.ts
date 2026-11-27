@@ -38,7 +38,7 @@ export async function apiGuard(c: Context<App>, next: Next) {
   }
   await next();
   if (c.res.status === 101) return; // WebSocket upgrade; headers are immutable
-  c.header("cache-control", "no-store");
+  if (!c.res.headers.has("cache-control")) c.header("cache-control", "no-store");
   c.header("x-content-type-options", "nosniff");
   c.header("referrer-policy", "no-referrer");
   c.header("x-frame-options", "DENY");

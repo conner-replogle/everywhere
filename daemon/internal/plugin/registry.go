@@ -434,6 +434,32 @@ func (r *Registry) Decorate(t *protocol.Thread) {
 	}
 }
 
+// DecorateAll fills live fields for a slice of threads, snapshotting kinds and
+// decorators once instead of per thread.
+func (r *Registry) DecorateAll(threads []protocol.Thread) {
+	if len(threads) == 0 {
+		return
+	}
+	r.mu.RLock()
+	decor := slices.Clone(r.decor)
+	statuses := make(map[string]func(protocol.Thread) (bool, string), len(r.kinds))
+	for name, k := range r.kinds {
+		if k.h.Status != nil {
+			statuses[name] = k.h.Status
+		}
+	}
+	r.mu.RUnlock()
+	for i := range threads {
+		t := &threads[i]
+		if fn := statuses[t.Kind]; fn != nil {
+			t.Running, t.AgentStatus = fn(*t)
+		}
+		for _, d := range decor {
+			d.fn(t)
+		}
+	}
+}
+
 // Service finds a plugin's exported service, as Host.Service does.
 func (r *Registry) Service(name string) (any, bool) {
 	r.mu.RLock()

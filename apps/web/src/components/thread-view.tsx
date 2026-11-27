@@ -12,10 +12,10 @@ import {
   PuzzleIcon,
   XIcon,
 } from "lucide-react";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CenteredMessage } from "@/components/centered-message";
 import { ConfirmDialog } from "@/components/confirm-dialog";
-import { OpenLinkContext, RunInTerminalContext } from "@/components/agent/markdown";
+import { OpenLinkContext, RunInTerminalContext } from "@/components/agent/markdown-context";
 import { CellFocusContext } from "@/components/cell-focus";
 import { useDevice } from "@/components/device-context";
 import { useFleet } from "@/components/fleet";
@@ -303,10 +303,14 @@ export function ThreadView({
   };
 
   // Opens a terminal tab with a command typed in (not run), e.g. one that needs sudo.
-  const runInTerminal =
-    canTab && features.includes("scratch")
-      ? (command: string) => void openTab("terminal", { name: "Terminal", input: command, another: true })
-      : null;
+  // Kept referentially stable via a ref so Markdown CodeBlocks don't re-render on every ThreadView render.
+  const openTabRef = useRef(openTab);
+  openTabRef.current = openTab;
+  const runInTerminalFn = useCallback(
+    (command: string) => void openTabRef.current("terminal", { name: "Terminal", input: command, another: true }),
+    [],
+  );
+  const runInTerminal = canTab && features.includes("scratch") ? runInTerminalFn : null;
 
   // A shown tab closing: with a split, the other pane takes the view; else its neighbour.
   const leave = (t: Pane) => {
@@ -358,6 +362,9 @@ export function ThreadView({
     keep();
     if (!opts.background) setActive(t.id);
   };
+  const openUrlRef = useRef(openUrl);
+  openUrlRef.current = openUrl;
+  const openLinkFn = useCallback((url: string) => openUrlRef.current(url), []);
 
   // Annotations go to the thread's claude, or else the last claude tab
   // opened here (only a mounted one has a composer to take them).
@@ -619,7 +626,7 @@ export function ThreadView({
           </div>
         </div>
       )}
-      <OpenLinkContext.Provider value={thread && !archived && desktop ? openUrl : null}>
+      <OpenLinkContext.Provider value={thread && !archived && desktop ? openLinkFn : null}>
       <RunInTerminalContext.Provider value={runInTerminal}>
       {/* Panes wait for the thread list, so a claude thread never flashes a terminal. */}
       <SplitArea

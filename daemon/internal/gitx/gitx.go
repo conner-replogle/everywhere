@@ -68,6 +68,37 @@ func Branches(ctx context.Context, dir string) ([]string, error) {
 	return strings.Split(out, "\n"), nil
 }
 
+// RepoBranches returns whether dir is inside a git work tree, its current
+// branch ("" if detached or unborn), and local branches (most recently
+// committed first) in a single git invocation on the common path.
+func RepoBranches(ctx context.Context, dir string) (isRepo bool, current string, branches []string) {
+	branches = []string{}
+	out, err := run(ctx, dir, "for-each-ref", "--sort=-committerdate", "--format=%(HEAD) %(refname:short)", "refs/heads")
+	if err != nil {
+		return false, "", branches
+	}
+	if out == "" {
+		if !IsRepo(ctx, dir) {
+			return false, "", branches
+		}
+		return true, CurrentBranch(ctx, dir), branches
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if len(line) < 2 {
+			continue
+		}
+		name := strings.TrimSpace(line[1:])
+		if name == "" {
+			continue
+		}
+		if line[0] == '*' {
+			current = name
+		}
+		branches = append(branches, name)
+	}
+	return true, current, branches
+}
+
 // AddWorktree creates a worktree at path on a new branch started from base.
 // Only committed state carries over; uncommitted changes stay in the
 // original checkout.

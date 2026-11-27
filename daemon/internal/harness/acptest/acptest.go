@@ -15,6 +15,10 @@ import (
 // Env, set to "1", makes Main run the fake agent.
 const Env = "FAKE_ACP_AGENT"
 
+// NoAutoEnv, set to "1", leaves out the auto mode (as Antigravity does
+// where it can't sandbox commands).
+const NoAutoEnv = "FAKE_ACP_NO_AUTO"
+
 // AuthEnv, set to a file's path, has the agent refuse sessions (ACP's
 // auth_required) until that file exists: it's signed in once it does.
 const AuthEnv = "FAKE_ACP_AUTH"
@@ -123,6 +127,10 @@ func run() {
 				"options": []any{map[string]any{"value": "m1", "name": "Model One"}, map[string]any{"value": "m2", "name": "Model Two"}}},
 			map[string]any{"id": "mode", "category": "mode", "type": "select", "currentValue": "build",
 				"options": []any{map[string]any{"value": "build", "name": "Build"}, map[string]any{"value": "plan", "name": "Plan"}, map[string]any{"value": "auto", "name": "Auto"}}},
+		}
+		if os.Getenv(NoAutoEnv) == "1" {
+			mode := config[1].(map[string]any)
+			mode["options"] = mode["options"].([]any)[:2]
 		}
 		for _, o := range config {
 			o := o.(map[string]any)

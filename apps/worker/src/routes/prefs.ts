@@ -31,18 +31,26 @@ prefs.get("/", async (c) => c.json({ prefs: await load(c.env, c.var.user.id) }))
 /** Merges the given keys into the stored preferences. */
 prefs.patch("/", async (c) => {
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
-  const next = await load(c.env, c.var.user.id);
+  const patch: Prefs = {};
   if ("defaultPermissionMode" in body) {
     const mode = body.defaultPermissionMode;
     if (typeof mode !== "string" || !PERMISSION_MODES.has(mode)) {
       return c.json({ error: "unknown permission mode" }, 400);
     }
-    next.defaultPermissionMode = mode as Prefs["defaultPermissionMode"];
+    patch.defaultPermissionMode = mode as Prefs["defaultPermissionMode"];
   }
   if ("autoRecap" in body) {
     if (typeof body.autoRecap !== "boolean") return c.json({ error: "autoRecap must be true or false" }, 400);
-    next.autoRecap = body.autoRecap;
+    patch.autoRecap = body.autoRecap;
   }
-  await c.env.DB.prepare("UPDATE users SET prefs = ? WHERE id = ?").bind(JSON.stringify(next), c.var.user.id).run();
+  const row = await c.env.DB.prepare(
+    "UPDATE users SET prefs = json_patch(COALESCE(NULLIF(prefs, ''), '{}'), ?) WHERE id = ? RETURNING prefs",
+  )
+    .bind(JSON.stringify(patch), c.var.user.id)
+    .first<{ prefs: string }>();
+  let next: Prefs = {};
+  try {
+    next = JSON.parse(row?.prefs ?? "{}") as Prefs;
+  } catch {}
   return c.json({ prefs: next });
 });

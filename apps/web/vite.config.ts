@@ -1,12 +1,32 @@
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackRouter } from "@tanstack/router-plugin/vite";
 import react from "@vitejs/plugin-react";
-import { defaultAllowedOrigins, defineConfig } from "vite";
+import { defaultAllowedOrigins, defineConfig, type Plugin } from "vite";
 
 const worker = "http://localhost:8787";
 
+/**
+ * terminal-view.tsx always loads ghostty-vt.wasm from its emitted static URL
+ * (Ghostty.load(ghosttyWasmUrl)) because CSP blocks data: fetches. Strip the
+ * unused ~552 KB inline base64 WASM fallback from ghostty-web so browsers
+ * don't download and parse the WASM twice.
+ */
+function stripGhosttyInlineWasm(): Plugin {
+  return {
+    name: "strip-ghostty-inline-wasm",
+    transform(code, id) {
+      if (!id.includes("ghostty-web") || !code.includes("data:application/wasm;base64,")) return null;
+      return {
+        code: code.replace(/data:application\/wasm;base64,[A-Za-z0-9+/=]+/g, ""),
+        map: null,
+      };
+    },
+  };
+}
+
 export default defineConfig({
   plugins: [
+    stripGhosttyInlineWasm(),
     // Must come before the React plugin.
     tanstackRouter({ target: "react", autoCodeSplitting: true }),
     react(),

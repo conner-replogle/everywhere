@@ -55,7 +55,7 @@ export function SplitArea({
   onRatio?: (ratio: number) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const [width, setWidth] = useState(0);
+  const [stacked, setStacked] = useState(false);
   const [ratio, setRatio] = useState(() => (valid(initialRatio) ? initialRatio : savedRatio()));
   const [dragging, setDragging] = useState(false);
   // The drag as it goes, ahead of a render.
@@ -63,12 +63,12 @@ export function SplitArea({
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    setWidth(el.clientWidth);
-    const ro = new ResizeObserver(() => setWidth(el.clientWidth));
+    const measure = () => setStacked(el.clientWidth > 0 && el.clientWidth < STACK_BELOW);
+    measure();
+    const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
-  const stacked = width > 0 && width < STACK_BELOW;
   const pct = `${ratio * 100}%`;
   const rest = `${(1 - ratio) * 100}%`;
 

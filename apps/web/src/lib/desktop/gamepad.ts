@@ -29,25 +29,40 @@ const RESEND_MS = 1000;
 /** Rumble plays for this long per request, and is renewed while the game keeps it on. */
 const RUMBLE_MS = 2000;
 
-function stateOf(p: Gamepad): proto.GamepadState {
+const ZERO_STATE: proto.GamepadState = { buttons: 0, lt: 0, rt: 0, lx: 0, ly: 0, rx: 0, ry: 0 };
+
+function readState(p: Gamepad, out: proto.GamepadState): proto.GamepadState {
   let buttons = 0;
   for (const [i, bit] of XINPUT_BUTTONS) if (p.buttons[i]?.pressed) buttons |= bit;
   // Gamepad API sticks have down positive; XInput has up.
-  return {
-    buttons,
-    lt: p.buttons[6]?.value ?? 0,
-    rt: p.buttons[7]?.value ?? 0,
-    lx: p.axes[0] ?? 0,
-    ly: -(p.axes[1] ?? 0),
-    rx: p.axes[2] ?? 0,
-    ry: -(p.axes[3] ?? 0),
-  };
+  out.buttons = buttons;
+  out.lt = p.buttons[6]?.value ?? 0;
+  out.rt = p.buttons[7]?.value ?? 0;
+  out.lx = p.axes[0] ?? 0;
+  out.ly = -(p.axes[1] ?? 0);
+  out.rx = p.axes[2] ?? 0;
+  out.ry = -(p.axes[3] ?? 0);
+  return out;
+}
+
+function sameState(a: proto.GamepadState, b: proto.GamepadState): boolean {
+  return (
+    a.buttons === b.buttons &&
+    a.lt === b.lt &&
+    a.rt === b.rt &&
+    a.lx === b.lx &&
+    a.ly === b.ly &&
+    a.rx === b.rx &&
+    a.ry === b.ry
+  );
 }
 
 interface Slot {
   /** The browser's Gamepad.index. */
   pad: number;
   last: ArrayBuffer | null;
+  lastState: proto.GamepadState | null;
+  scratch: proto.GamepadState;
   sentAt: number;
   rumble: { large: number; small: number; at: number } | null;
 }
@@ -118,7 +133,14 @@ export class GamepadForwarder {
     if (have >= 0) return have;
     const free = this.slots.indexOf(null);
     if (free < 0) return null;
-    this.slots[free] = { pad: p.index, last: null, sentAt: 0, rumble: null };
+    this.slots[free] = {
+      pad: p.index,
+      last: null,
+      lastState: null,
+      scratch: { ...ZERO_STATE },
+      sentAt: 0,
+      rumble: null,
+    };
     return free;
   }
 
@@ -145,12 +167,24 @@ export class GamepadForwarder {
         return;
       }
       any = true;
-      const msg = proto.gamepad(slot, document.hidden ? { buttons: 0, lt: 0, rt: 0, lx: 0, ly: 0, rx: 0, ry: 0 } : stateOf(p));
-      if (!s.last || !sameBytes(msg, s.last) || now - s.sentAt > RESEND_MS) {
+      const state = document.hidden ? ZERO_STATE : readState(p, s.scratch);
+      const due = now - s.sentAt > RESEND_MS;
+      // Fast zero-allocation path while the controller is idle between resends.
+      if (!due && s.lastState && sameState(state, s.lastState)) {
+        if (s.rumble && now - s.rumble.at > RUMBLE_MS - 500) this.rumble(slot, s.rumble.large, s.rumble.small);
+        return;
+      }
+      const msg = proto.gamepad(slot, state);
+      if (!s.last || !sameBytes(msg, s.last) || due) {
         if (this.send(msg)) {
           s.last = msg;
+          if (!s.lastState) s.lastState = { ...state };
+          else Object.assign(s.lastState, state);
           s.sentAt = now;
         }
+      } else {
+        if (!s.lastState) s.lastState = { ...state };
+        else Object.assign(s.lastState, state);
       }
       if (s.rumble && now - s.rumble.at > RUMBLE_MS - 500) this.rumble(slot, s.rumble.large, s.rumble.small);
     });

@@ -116,6 +116,38 @@ function isRecapPrompt(text: string | undefined): boolean {
   return text?.trim() === RECAP_PROMPT;
 }
 
+const ItemsList = memo(function ItemsList({
+  items,
+  peer,
+  cwd,
+  onRewind,
+  onCompact,
+  onSignIn,
+}: {
+  items: Item[];
+  peer?: DevicePeer;
+  cwd?: string;
+  onRewind?: (prompt: UserEvent) => void;
+  onCompact?: () => void;
+  onSignIn?: () => void;
+}) {
+  return (
+    <>
+      {items.map((item) => (
+        <ItemView
+          key={item.key}
+          item={item}
+          peer={peer}
+          cwd={cwd}
+          onRewind={onRewind}
+          onCompact={onCompact}
+          onSignIn={onSignIn}
+        />
+      ))}
+    </>
+  );
+});
+
 export const Timeline = memo(function Timeline({
   items,
   peer,
@@ -149,17 +181,14 @@ export const Timeline = memo(function Timeline({
 }) {
   return (
     <div className="flex flex-col gap-3">
-      {items.map((item) => (
-        <ItemView
-          key={item.key}
-          item={item}
-          peer={peer}
-          cwd={cwd}
-          onRewind={working ? undefined : onRewind}
-          onCompact={onCompact}
-          onSignIn={onSignIn}
-        />
-      ))}
+      <ItemsList
+        items={items}
+        peer={peer}
+        cwd={cwd}
+        onRewind={working ? undefined : onRewind}
+        onCompact={onCompact}
+        onSignIn={onSignIn}
+      />
       {recapping && (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <HistoryIcon className="size-3.5 animate-pulse" />
@@ -191,7 +220,7 @@ export const Timeline = memo(function Timeline({
   );
 });
 
-function ItemView({
+const ItemView = memo(function ItemView({
   item,
   peer,
   cwd,
@@ -284,7 +313,7 @@ function ItemView({
     case "files":
       return <SharedFiles caption={e.text} attachments={e.attachments} peer={peer} />;
   }
-}
+});
 
 const PROCESS_HEARD: Record<Ev<"process">["status"], string> = {
   turn: "Claude saw this during its turn",

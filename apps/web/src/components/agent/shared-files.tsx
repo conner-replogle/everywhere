@@ -9,16 +9,31 @@ import { cn, errorMessage } from "@/lib/utils";
 const AUTO_IMAGE_BYTES = 15 << 20;
 
 // A shared file's copy never changes (each share gets a folder of its own),
-// so one fetch per path serves every time the timeline draws it.
+// so one fetch per (device, path) serves every time the timeline draws it.
+// Bounded LRU so Blob object URLs don't accumulate without limit over long sessions.
+const MAX_CACHED_URLS = 40;
 const urls = new Map<string, Promise<string>>();
 
 function fileURL(peer: DevicePeer, path: string, mediaType: string): Promise<string> {
-  let url = urls.get(path);
-  if (!url) {
-    url = peer.readFile(path).then(({ bytes }) => URL.createObjectURL(new Blob([bytes], { type: mediaType })));
-    // A failed read can be tried again.
-    url.catch(() => urls.delete(path));
-    urls.set(path, url);
+  const key = `${peer.deviceId}:${path}`;
+  let url = urls.get(key);
+  if (url) {
+    // Refresh recency for LRU eviction.
+    urls.delete(key);
+    urls.set(key, url);
+    return url;
+  }
+  url = peer.readFile(path).then(({ bytes }) => URL.createObjectURL(new Blob([bytes], { type: mediaType })));
+  // A failed read can be tried again.
+  url.catch(() => {
+    if (urls.get(key) === url) urls.delete(key);
+  });
+  urls.set(key, url);
+  while (urls.size > MAX_CACHED_URLS) {
+    const oldest = urls.entries().next().value;
+    if (!oldest) break;
+    urls.delete(oldest[0]);
+    void oldest[1].then((u) => URL.revokeObjectURL(u)).catch(() => {});
   }
   return url;
 }

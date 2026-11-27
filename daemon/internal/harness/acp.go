@@ -105,7 +105,7 @@ func startACP(command []string, dir string, env []string, onNotify func(string, 
 }
 
 func (c *acpConn) read(r io.Reader) error {
-	br := bufio.NewReaderSize(r, 1<<20)
+	br := bufio.NewReaderSize(r, 64<<10)
 	for {
 		line, err := br.ReadBytes('\n')
 		if len(line) > 0 {

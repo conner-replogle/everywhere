@@ -33,7 +33,14 @@ export function useClaudeAuth(): ClaudeAuthCheck {
 
   useEffect(() => {
     if (!enabled) return;
-    const onVisible = () => document.visibilityState === "visible" && refetch();
+    let last = 0;
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      const now = Date.now();
+      if (now - last < 2000) return;
+      last = now;
+      refetch();
+    };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", onVisible);
     return () => {

@@ -3,8 +3,8 @@
 // leaving and reopening the thread: a new channel attaches with the last seen
 // seq, so only missed events are replayed.
 
-import type { AgentClientMsg, AgentDaemonMsg, AgentEvent, AgentState } from "@everywhere/protocol";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import type { AgentClientMsg, AgentDaemonMsg, AgentEvent, AgentState, AgentStreaming } from "@everywhere/protocol";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import type { AgentChannel, DevicePeer } from "./peer";
 
 export interface LoggedEvent {
@@ -52,6 +52,10 @@ class AgentThreadStore {
   private replay: LoggedEvent[] | null = null;
   /** lastSeq when the current replay began. */
   private replayFrom = 0;
+  /** Buffered streaming deltas coalesced to once per animation frame. */
+  private pendingDeltas = new Map<string, { kind: AgentStreaming["kind"]; text: string }>();
+  private deltaRaf: number | ReturnType<typeof setTimeout> | null = null;
+  private deltaUsingRaf = false;
 
   constructor(
     private peer: DevicePeer,
@@ -68,6 +72,59 @@ class AgentThreadStore {
   private set(patch: Partial<AgentThreadSnapshot>): void {
     this.snap = { ...this.snap, ...patch };
     for (const fn of this.listeners) fn();
+  }
+
+  private cancelDeltaFlush(): void {
+    if (this.deltaRaf === null) return;
+    if (this.deltaUsingRaf && typeof cancelAnimationFrame === "function") {
+      cancelAnimationFrame(this.deltaRaf as number);
+    } else {
+      clearTimeout(this.deltaRaf as ReturnType<typeof setTimeout>);
+    }
+    this.deltaRaf = null;
+    this.deltaUsingRaf = false;
+  }
+
+  private scheduleDeltaFlush(): void {
+    if (this.deltaRaf !== null) return;
+    if (typeof requestAnimationFrame === "function" && (typeof document === "undefined" || document.visibilityState === "visible")) {
+      this.deltaUsingRaf = true;
+      this.deltaRaf = requestAnimationFrame(() => {
+        this.deltaRaf = null;
+        this.deltaUsingRaf = false;
+        this.flushDeltas();
+      });
+    } else {
+      this.deltaUsingRaf = false;
+      this.deltaRaf = setTimeout(() => {
+        this.deltaRaf = null;
+        this.flushDeltas();
+      }, 50);
+    }
+  }
+
+  /** Applies buffered streaming deltas into snap.state (optionally skipping a completed key). */
+  private applyPendingDeltas(state: AgentState | null, dropKey?: string): AgentState | null {
+    this.cancelDeltaFlush();
+    if (dropKey) this.pendingDeltas.delete(dropKey);
+    if (!state || this.pendingDeltas.size === 0) {
+      this.pendingDeltas.clear();
+      return state;
+    }
+    const streaming = state.streaming.slice();
+    for (const [key, delta] of this.pendingDeltas) {
+      const i = streaming.findIndex((s) => s.key === key);
+      if (i < 0) streaming.push({ key, kind: delta.kind, text: delta.text });
+      else streaming[i] = { ...streaming[i]!, text: streaming[i]!.text + delta.text };
+    }
+    this.pendingDeltas.clear();
+    return { ...state, streaming };
+  }
+
+  private flushDeltas(): void {
+    if (this.pendingDeltas.size === 0) return;
+    const next = this.applyPendingDeltas(this.snap.state);
+    if (next !== this.snap.state) this.set({ state: next });
   }
 
   /** Opens a channel and attaches after the last seen event. */
@@ -98,6 +155,8 @@ class AgentThreadStore {
   }
 
   disconnect(): void {
+    this.cancelDeltaFlush();
+    this.pendingDeltas.clear();
     const ch = this.channel;
     this.channel = null;
     ch?.close();
@@ -108,21 +167,25 @@ class AgentThreadStore {
     if (this.snap.attached) this.set({ attached: false });
   }
 
-  send(msg: AgentClientMsg): void {
+  send = (msg: AgentClientMsg): void => {
     if (!this.channel?.send(msg)) this.set({ error: "Not connected to this thread" });
-  }
+  };
+
+  reconnect = (): void => {
+    this.connect();
+  };
 
   /** Asks the daemon for the page of events before the oldest one loaded. */
-  loadEarlier(): void {
+  loadEarlier = (): void => {
     const first = this.snap.events[0]?.seq;
     if (!first || !this.snap.truncated || this.snap.loadingEarlier || !this.snap.synced) return;
     if (!this.channel?.send({ t: "history", beforeSeq: first, limit: EARLIER_PAGE })) return;
     this.set({ loadingEarlier: true });
-  }
+  };
 
-  dismissError(): void {
+  dismissError = (): void => {
     this.set({ error: null });
-  }
+  };
 
   private onMessage(msg: AgentDaemonMsg): void {
     switch (msg.t) {
@@ -142,11 +205,11 @@ class AgentThreadStore {
           this.replay.push(logged);
           return;
         }
-        let state = this.snap.state;
+        const dropKey = "streamKey" in ev && ev.streamKey ? ev.streamKey : undefined;
+        let state = this.applyPendingDeltas(this.snap.state, dropKey);
         // The completed block replaces its streamed preview.
-        if (state && "streamKey" in ev && ev.streamKey) {
-          const key = ev.streamKey;
-          state = { ...state, streaming: state.streaming.filter((s) => s.key !== key) };
+        if (state && dropKey) {
+          state = { ...state, streaming: state.streaming.filter((s) => s.key !== dropKey) };
         }
         this.set({ events: [...this.snap.events, logged], state });
         return;
@@ -170,17 +233,17 @@ class AgentThreadStore {
         return;
       }
       case "state":
+        // Server state snapshots carry the complete streaming text; discard stale buffered deltas.
+        this.cancelDeltaFlush();
+        this.pendingDeltas.clear();
         this.set({ state: msg.state });
         return;
       case "delta": {
-        const state = this.snap.state;
-        if (!state) return;
-        const i = state.streaming.findIndex((s) => s.key === msg.key);
-        const streaming =
-          i < 0
-            ? [...state.streaming, { key: msg.key, kind: msg.kind, text: msg.text }]
-            : state.streaming.map((s, j) => (j === i ? { ...s, text: s.text + msg.text } : s));
-        this.set({ state: { ...state, streaming } });
+        if (!this.snap.state) return;
+        const cur = this.pendingDeltas.get(msg.key);
+        if (cur) cur.text += msg.text;
+        else this.pendingDeltas.set(msg.key, { kind: msg.kind, text: msg.text });
+        this.scheduleDeltaFlush();
         return;
       }
       case "error":
@@ -230,11 +293,14 @@ export function useAgentThread(peer: DevicePeer, threadId: string, generation: n
     return () => store.disconnect();
   }, [store, generation]);
 
-  return {
-    ...snap,
-    send: (msg) => store.send(msg),
-    reconnect: () => store.connect(),
-    loadEarlier: () => store.loadEarlier(),
-    dismissError: () => store.dismissError(),
-  };
+  return useMemo(
+    () => ({
+      ...snap,
+      send: store.send,
+      reconnect: store.reconnect,
+      loadEarlier: store.loadEarlier,
+      dismissError: store.dismissError,
+    }),
+    [snap, store],
+  );
 }

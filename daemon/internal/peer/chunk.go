@@ -10,10 +10,10 @@ import (
 	"github.com/conner-replogle/everywhere/daemon/internal/protocol"
 )
 
-// controlChunk is the most a control message carries at once. A data
-// channel message can't be bigger than the browser allows (64 KB unless it
-// says more), so bigger ones go as chunks the client puts back together.
-const controlChunk = 48 << 10
+// controlChunk is the most raw bytes a control chunk carries before JSON
+// escaping. Kept conservative so escaped JSON payloads stay well under the
+// 64 KB browser SCTP message limit.
+const controlChunk = 28 << 10
 
 var chunkSeq atomic.Uint64
 

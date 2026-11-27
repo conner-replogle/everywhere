@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS series (
   UNIQUE (name, labels)
 );
 CREATE INDEX IF NOT EXISTS series_experiment ON series (experiment, name);
+CREATE INDEX IF NOT EXISTS series_exp_run ON series (experiment, run);
 CREATE TABLE IF NOT EXISTS points (
   series INTEGER NOT NULL,
   ts     INTEGER NOT NULL,
@@ -59,7 +60,9 @@ CREATE TABLE IF NOT EXISTS points (
   value  REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS points_ts ON points (series, ts);
+CREATE INDEX IF NOT EXISTS points_ts_val ON points (series, ts, value);
 CREATE INDEX IF NOT EXISTS points_step ON points (series, step) WHERE step IS NOT NULL;
+CREATE INDEX IF NOT EXISTS points_step_val ON points (series, step, value) WHERE step IS NOT NULL;
 CREATE TABLE IF NOT EXISTS events (
   id         INTEGER PRIMARY KEY,
   experiment TEXT NOT NULL,
@@ -69,6 +72,7 @@ CREATE TABLE IF NOT EXISTS events (
   data       TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS events_run ON events (experiment, run, id);
+CREATE INDEX IF NOT EXISTS events_exp_id ON events (experiment, id);
 CREATE TABLE IF NOT EXISTS dashboard_state (
   dashboard TEXT NOT NULL,
   key       TEXT NOT NULL,
@@ -90,7 +94,7 @@ func openDB(home string) (*db, error) {
 		return nil, err
 	}
 	gitignore(filepath.Dir(path))
-	conn, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)")
+	conn, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=temp_store(MEMORY)&_pragma=cache_size(-32000)")
 	if err != nil {
 		return nil, err
 	}
@@ -117,11 +121,12 @@ func gitignore(dir string) {
 
 // Point is one value of a metric.
 type Point struct {
-	Name   string
-	Labels map[string]string // with experiment and run
-	TS     int64             // unix ms
-	Step   *float64
-	Value  float64
+	Name       string
+	Labels     map[string]string // with experiment and run
+	LabelsJSON string            // optional pre-marshaled canonical JSON of Labels
+	TS         int64             // unix ms
+	Step       *float64
+	Value      float64
 }
 
 // Event is something discrete a run reported: a checkpoint, a file it
@@ -159,34 +164,63 @@ func (d *db) write(points []Point, events []Event) error {
 		return err
 	}
 	defer tx.Rollback()
-	for _, p := range points {
-		key, labels := labelsKey(p.Name, p.Labels)
-		id, ok := d.series[key]
-		if !ok {
-			if err := tx.QueryRow(`SELECT id FROM series WHERE name = ? AND labels = ?`, p.Name, labels).Scan(&id); errors.Is(err, sql.ErrNoRows) {
-				res, err := tx.Exec(`INSERT INTO series (name, experiment, run, labels) VALUES (?, ?, ?, ?)`,
-					p.Name, p.Labels["experiment"], p.Labels["run"], labels)
-				if err != nil {
+	if len(points) > 0 {
+		selSeries, err := tx.Prepare(`SELECT id FROM series WHERE name = ? AND labels = ?`)
+		if err != nil {
+			return err
+		}
+		defer selSeries.Close()
+		insSeries, err := tx.Prepare(`INSERT INTO series (name, experiment, run, labels) VALUES (?, ?, ?, ?)`)
+		if err != nil {
+			return err
+		}
+		defer insSeries.Close()
+		insPoint, err := tx.Prepare(`INSERT INTO points (series, ts, step, value) VALUES (?, ?, ?, ?)`)
+		if err != nil {
+			return err
+		}
+		defer insPoint.Close()
+
+		for _, p := range points {
+			labels := p.LabelsJSON
+			var key string
+			if labels != "" {
+				key = p.Name + "\x00" + labels
+			} else {
+				key, labels = labelsKey(p.Name, p.Labels)
+			}
+			id, ok := d.series[key]
+			if !ok {
+				if err := selSeries.QueryRow(p.Name, labels).Scan(&id); errors.Is(err, sql.ErrNoRows) {
+					res, err := insSeries.Exec(p.Name, p.Labels["experiment"], p.Labels["run"], labels)
+					if err != nil {
+						return err
+					}
+					id, _ = res.LastInsertId()
+				} else if err != nil {
 					return err
 				}
-				id, _ = res.LastInsertId()
-			} else if err != nil {
+				d.series[key] = id
+			}
+			var step any
+			if p.Step != nil {
+				step = *p.Step
+			}
+			if _, err := insPoint.Exec(id, p.TS, step, p.Value); err != nil {
 				return err
 			}
 		}
-		var step any
-		if p.Step != nil {
-			step = *p.Step
-		}
-		if _, err := tx.Exec(`INSERT INTO points (series, ts, step, value) VALUES (?, ?, ?, ?)`, id, p.TS, step, p.Value); err != nil {
-			return err
-		}
-		d.series[key] = id
 	}
-	for _, e := range events {
-		if _, err := tx.Exec(`INSERT INTO events (experiment, run, ts, kind, data) VALUES (?, ?, ?, ?, ?)`,
-			e.Experiment, e.Run, e.TS, e.Kind, string(e.Data)); err != nil {
+	if len(events) > 0 {
+		insEvent, err := tx.Prepare(`INSERT INTO events (experiment, run, ts, kind, data) VALUES (?, ?, ?, ?, ?)`)
+		if err != nil {
 			return err
+		}
+		defer insEvent.Close()
+		for _, e := range events {
+			if _, err := insEvent.Exec(e.Experiment, e.Run, e.TS, e.Kind, string(e.Data)); err != nil {
+				return err
+			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -436,29 +470,29 @@ LEFT JOIN runs r ON r.experiment = s.experiment AND r.run = s.run WHERE s.name =
 		return res, fmt.Errorf("query: x is step or time, not %q", x)
 	}
 	res.X = x
-	// x as SQL: a step, or seconds since the run started.
-	xExpr := func(s seriesRow) (string, []any) {
-		if x == "step" {
-			return "step", nil
-		}
-		return "(ts - ?) / 1000.0", []any{s.started}
-	}
 
-	// The x range over every matched series, unless given.
+	// The x range over every matched series, unless both bounds are given.
 	lo, hi := math.Inf(1), math.Inf(-1)
-	for _, s := range matched {
-		e, a := xExpr(s)
-		var mn, mx sql.NullFloat64
-		cond := ""
-		if x == "step" {
-			cond = " AND step IS NOT NULL"
-		}
-		if err := d.sql.QueryRow(`SELECT MIN(`+e+`), MAX(`+e+`) FROM points WHERE series = ?`+cond,
-			append(append(a, a...), s.id)...).Scan(&mn, &mx); err != nil {
-			return res, err
-		}
-		if mn.Valid {
-			lo, hi = math.Min(lo, mn.Float64), math.Max(hi, mx.Float64)
+	if q.From == nil || q.To == nil {
+		for _, s := range matched {
+			if x == "step" {
+				var mn, mx sql.NullFloat64
+				if err := d.sql.QueryRow(`SELECT MIN(step), MAX(step) FROM points WHERE series = ? AND step IS NOT NULL`, s.id).Scan(&mn, &mx); err != nil {
+					return res, err
+				}
+				if mn.Valid {
+					lo, hi = math.Min(lo, mn.Float64), math.Max(hi, mx.Float64)
+				}
+			} else {
+				var mn, mx sql.NullInt64
+				if err := d.sql.QueryRow(`SELECT MIN(ts), MAX(ts) FROM points WHERE series = ?`, s.id).Scan(&mn, &mx); err != nil {
+					return res, err
+				}
+				if mn.Valid {
+					lo = math.Min(lo, float64(mn.Int64-s.started)/1000.0)
+					hi = math.Max(hi, float64(mx.Int64-s.started)/1000.0)
+				}
+			}
 		}
 	}
 	if q.From != nil {
@@ -492,17 +526,21 @@ LEFT JOIN runs r ON r.experiment = s.experiment AND r.run = s.run WHERE s.name =
 			groupLabels[gk] = gl
 			order = append(order, gk)
 		}
-		e, a := xExpr(s)
-		args := append([]any{}, a...)
-		args = append(args, lo, width)
-		args = append(args, a...)
-		args = append(args, s.id)
-		args = append(args, a...)
-		args = append(args, lo)
-		args = append(args, a...)
-		args = append(args, hi)
-		rows, err := d.sql.Query(`SELECT CAST((`+e+` - ?) / ? AS INTEGER) AS b, SUM(value), COUNT(*), MIN(value), MAX(value), AVG(`+e+`)
-FROM points WHERE series = ? AND `+e+` >= ? AND `+e+` <= ? GROUP BY b`, args...)
+		var (
+			rows *sql.Rows
+			err  error
+		)
+		if x == "step" {
+			rows, err = d.sql.Query(`SELECT CAST((step - ?) / ? AS INTEGER) AS b, SUM(value), COUNT(*), MIN(value), MAX(value), AVG(step)
+FROM points WHERE series = ? AND step IS NOT NULL AND step >= ? AND step <= ? GROUP BY b`,
+				lo, width, s.id, lo, hi)
+		} else {
+			tsLo := s.started + int64(math.Floor(lo*1000.0)) - 1
+			tsHi := s.started + int64(math.Ceil(hi*1000.0)) + 1
+			rows, err = d.sql.Query(`SELECT CAST(((ts - ?) / 1000.0 - ?) / ? AS INTEGER) AS b, SUM(value), COUNT(*), MIN(value), MAX(value), AVG((ts - ?) / 1000.0)
+FROM points WHERE series = ? AND ts >= ? AND ts <= ? AND (ts - ?) / 1000.0 >= ? AND (ts - ?) / 1000.0 <= ? GROUP BY b`,
+				s.started, lo, width, s.started, s.id, tsLo, tsHi, s.started, lo, s.started, hi)
+		}
 		if err != nil {
 			return res, err
 		}

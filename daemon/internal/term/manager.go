@@ -58,6 +58,75 @@ type TTY interface {
 	Close() error
 }
 
+type ringBuf struct {
+	buf  []byte
+	head int
+	full bool
+}
+
+func (r *ringBuf) len() int { return len(r.buf) }
+
+func (r *ringBuf) write(p []byte, limit int) {
+	if len(p) == 0 || limit <= 0 {
+		return
+	}
+	if len(p) >= limit {
+		if cap(r.buf) < limit {
+			r.buf = make([]byte, limit)
+		} else {
+			r.buf = r.buf[:limit]
+		}
+		copy(r.buf, p[len(p)-limit:])
+		r.head = 0
+		r.full = true
+		return
+	}
+	if !r.full {
+		need := len(r.buf) + len(p)
+		if need <= limit {
+			r.buf = append(r.buf, p...)
+			if len(r.buf) == limit {
+				r.full = true
+				r.head = 0
+			}
+			return
+		}
+		over := need - limit
+		keep := len(r.buf) - over
+		next := make([]byte, limit)
+		copy(next, r.buf[over:])
+		copy(next[keep:], p)
+		r.buf = next
+		r.head = 0
+		r.full = true
+		return
+	}
+	n := copy(r.buf[r.head:], p)
+	if n < len(p) {
+		copy(r.buf, p[n:])
+		r.head = len(p) - n
+	} else {
+		r.head += n
+		if r.head == limit {
+			r.head = 0
+		}
+	}
+}
+
+func (r *ringBuf) bytes() []byte {
+	if len(r.buf) == 0 {
+		return nil
+	}
+	out := make([]byte, len(r.buf))
+	if !r.full || r.head == 0 {
+		copy(out, r.buf)
+		return out
+	}
+	n := copy(out, r.buf[r.head:])
+	copy(out[n:], r.buf[:r.head])
+	return out
+}
+
 type session struct {
 	threadID string
 	tty      TTY
@@ -65,7 +134,7 @@ type session struct {
 	done     chan struct{}
 
 	mu         sync.Mutex
-	scrollback []byte
+	scrollback ringBuf
 	clients    []Client // in attach order
 	writer     Client
 	touchedAt  time.Time // when typing last counted as using the thread
@@ -119,8 +188,8 @@ func (m *Manager) Attach(threadID string, c Client, cols, rows uint16) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.scrollback) > 0 {
-		c.Output(s.scrollback)
+	if s.scrollback.len() > 0 {
+		c.Output(s.scrollback.bytes())
 	}
 	s.clients = append(s.clients, c)
 	if s.writer == nil {
@@ -171,12 +240,14 @@ func (m *Manager) Input(threadID string, c Client, p []byte) {
 		_, _ = s.tty.Write(p)
 	}
 	if touch {
-		if err := m.resolver.TouchThread(threadID); err != nil {
-			slog.Warn("touch thread", "thread", threadID, "err", err)
-		}
-		if m.onChange != nil {
-			m.onChange()
-		}
+		go func() {
+			if err := m.resolver.TouchThread(threadID); err != nil {
+				slog.Warn("touch thread", "thread", threadID, "err", err)
+			}
+			if m.onChange != nil {
+				m.onChange()
+			}
+		}()
 	}
 }
 
@@ -222,7 +293,7 @@ func (m *Manager) Scrollback(threadID string) []byte {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]byte(nil), s.scrollback...)
+	return s.scrollback.bytes()
 }
 
 // Type writes p to the thread's shell as keystrokes, whoever the writer is,
@@ -288,7 +359,7 @@ func (m *Manager) getOrSpawn(threadID string, cols, rows uint16) (*session, bool
 	}
 	s := &session{threadID: threadID, tty: t, group: group, done: make(chan struct{})}
 	if hadSession {
-		s.scrollback = append(s.scrollback, restartNotice...)
+		s.scrollback.write([]byte(restartNotice), scrollbackBytes)
 	}
 	if err := m.resolver.MarkSpawned(threadID); err != nil {
 		slog.Warn("mark spawned", "thread", threadID, "err", err)
@@ -301,16 +372,19 @@ func (m *Manager) getOrSpawn(threadID string, cols, rows uint16) (*session, bool
 // pump copies PTY output to scrollback and clients until the shell exits.
 func (m *Manager) pump(s *session) {
 	buf := make([]byte, 32*1024)
+	var clients []Client
 	for {
 		n, err := s.tty.Read(buf)
 		if n > 0 {
-			chunk := append([]byte(nil), buf[:n]...)
+			chunk := buf[:n]
 			s.mu.Lock()
-			s.appendScrollback(chunk)
-			for _, c := range s.clients {
+			s.scrollback.write(chunk, scrollbackBytes)
+			clients = append(clients[:0], s.clients...)
+			s.mu.Unlock()
+			for _, c := range clients {
 				c.Output(chunk)
 			}
-			s.mu.Unlock()
+			clear(clients)
 		}
 		if err != nil {
 			break
@@ -328,7 +402,7 @@ func (m *Manager) pump(s *session) {
 	m.mu.Unlock()
 
 	s.mu.Lock()
-	clients := s.clients
+	clients = s.clients
 	s.clients = nil
 	s.writer = nil
 	s.mu.Unlock()
@@ -337,14 +411,6 @@ func (m *Manager) pump(s *session) {
 	}
 	if m.onChange != nil {
 		m.onChange()
-	}
-}
-
-func (s *session) appendScrollback(p []byte) {
-	s.scrollback = append(s.scrollback, p...)
-	if over := len(s.scrollback) - scrollbackBytes; over > 0 {
-		// Copy rather than reslice so the backing array doesn't grow forever.
-		s.scrollback = append([]byte(nil), s.scrollback[over:]...)
 	}
 }
 

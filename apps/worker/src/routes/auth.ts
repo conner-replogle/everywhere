@@ -1,10 +1,11 @@
 import { Hono } from "hono";
 import type { Context, Next } from "hono";
+import { deleteCookie, getCookie } from "hono/cookie";
 import {
   checkPassword,
   createSession,
-  destroySession,
   passwordProblem,
+  SESSION_COOKIE,
   sessionUser,
 } from "../auth";
 import { hashPassword, randomId, randomToken, sha256 } from "../crypto";
@@ -50,7 +51,11 @@ export interface UserRow {
 }
 
 export async function userRow(env: Env, id: string): Promise<UserRow> {
-  const row = await env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(id).first<UserRow>();
+  const row = await env.DB.prepare(
+    "SELECT id, username, password_hash, totp_secret, totp_pending, totp_last_step FROM users WHERE id = ?",
+  )
+    .bind(id)
+    .first<UserRow>();
   if (!row) throw new Error("user vanished");
   return row;
 }
@@ -79,13 +84,21 @@ export async function verifySecondFactor(env: Env, user: UserRow, code: string):
   return res.meta.changes === 1;
 }
 
-async function newRecoveryCodes(env: Env, userId: string): Promise<string[]> {
+async function recoveryCodeBatch(env: Env, userId: string): Promise<{ codes: string[]; stmts: D1PreparedStatement[] }> {
   const codes = Array.from({ length: RECOVERY_CODE_COUNT }, generateRecoveryCode);
   const hashes = await Promise.all(codes.map((code) => sha256(normalizeRecoveryCode(code))));
-  await env.DB.batch([
-    env.DB.prepare("DELETE FROM recovery_codes WHERE user_id = ?").bind(userId),
-    ...hashes.map((h) => env.DB.prepare("INSERT INTO recovery_codes (code_hash, user_id) VALUES (?, ?)").bind(h, userId)),
-  ]);
+  return {
+    codes,
+    stmts: [
+      env.DB.prepare("DELETE FROM recovery_codes WHERE user_id = ?").bind(userId),
+      ...hashes.map((h) => env.DB.prepare("INSERT INTO recovery_codes (code_hash, user_id) VALUES (?, ?)").bind(h, userId)),
+    ],
+  };
+}
+
+async function newRecoveryCodes(env: Env, userId: string): Promise<string[]> {
+  const { codes, stmts } = await recoveryCodeBatch(env, userId);
+  await env.DB.batch(stmts);
   return codes;
 }
 
@@ -98,14 +111,8 @@ async function revokeSessions(env: Env, userId: string, sessionIds: string[]): P
 
 /** Closes the hub sockets that sessions opened. */
 async function closeSockets(env: Env, userId: string, sessionIds: string[]): Promise<void> {
+  if (sessionIds.length === 0) return;
   await env.HUB.get(env.HUB.idFromName(userId)).revokeSessions(sessionIds);
-}
-
-async function otherSessionIds(env: Env, userId: string, keep: string): Promise<string[]> {
-  const { results } = await env.DB.prepare("SELECT id_hash FROM sessions WHERE user_id = ? AND id_hash != ?")
-    .bind(userId, keep)
-    .all<{ id_hash: string }>();
-  return results.map((r) => r.id_hash);
 }
 
 /** The user as the web app sees it (same shape as /me). */
@@ -123,10 +130,38 @@ async function publicUser(env: Env, id: string) {
 
 export const auth = new Hono<App>();
 
+const TOUCH_INTERVAL_MS = 5 * 60 * 1000;
+
 auth.get("/me", async (c) => {
-  const s = await sessionUser(c);
-  const anyUser = await c.env.DB.prepare("SELECT 1 FROM users LIMIT 1").first();
-  return c.json({ user: s ? await publicUser(c.env, s.user.id) : null, signupOpen: !anyUser });
+  const token = getCookie(c, SESSION_COOKIE);
+  if (!token) {
+    const anyUser = await c.env.DB.prepare("SELECT 1 FROM users LIMIT 1").first();
+    return c.json({ user: null, signupOpen: !anyUser });
+  }
+  const sessionId = await sha256(token);
+  const now = Date.now();
+  const [sessRes, anyRes] = await c.env.DB.batch([
+    c.env.DB.prepare(
+      `SELECT u.id, u.username, u.totp_secret IS NOT NULL AS totp, s.last_seen_at,
+         (SELECT COUNT(*) FROM recovery_codes r WHERE r.user_id = u.id AND r.used_at IS NULL) AS codes
+       FROM sessions s JOIN users u ON u.id = s.user_id
+       WHERE s.id_hash = ? AND s.expires_at > ?`,
+    ).bind(sessionId, now),
+    c.env.DB.prepare("SELECT 1 AS one FROM users LIMIT 1"),
+  ]);
+  const row = (sessRes!.results as { id: string; username: string; totp: number; last_seen_at: number | null; codes: number }[])[0];
+  if (!row) {
+    return c.json({ user: null, signupOpen: anyRes!.results.length === 0 });
+  }
+  if (!row.last_seen_at || now - row.last_seen_at > TOUCH_INTERVAL_MS) {
+    c.executionCtx.waitUntil(
+      c.env.DB.prepare("UPDATE sessions SET last_seen_at = ? WHERE id_hash = ?").bind(now, sessionId).run(),
+    );
+  }
+  return c.json({
+    user: { id: row.id, username: row.username, totpEnabled: row.totp === 1, recoveryCodesLeft: row.codes },
+    signupOpen: false,
+  });
 });
 
 auth.post("/signup", async (c) => {
@@ -171,7 +206,7 @@ auth.post("/login", async (c) => {
     return c.json({ mfaRequired: true, challenge });
   }
   await createSession(c, row.id);
-  return c.json({ user: await publicUser(c.env, row.id) });
+  return c.json({ user: { id: row.id, username: row.username, totpEnabled: false, recoveryCodesLeft: 0 } });
 });
 
 auth.post("/login/mfa", async (c) => {
@@ -198,9 +233,15 @@ auth.post("/login/mfa", async (c) => {
 });
 
 auth.post("/logout", async (c) => {
-  const s = await sessionUser(c);
-  await destroySession(c);
-  if (s) await closeSockets(c.env, s.user.id, [s.sessionId]);
+  const token = getCookie(c, SESSION_COOKIE);
+  deleteCookie(c, SESSION_COOKIE, { path: "/", secure: true });
+  if (token) {
+    const sessionId = await sha256(token);
+    const deleted = await c.env.DB.prepare("DELETE FROM sessions WHERE id_hash = ? RETURNING user_id")
+      .bind(sessionId)
+      .first<{ user_id: string }>();
+    if (deleted) await closeSockets(c.env, deleted.user_id, [sessionId]);
+  }
   return c.json({});
 });
 
@@ -215,12 +256,18 @@ auth.post("/password", requireUser, async (c) => {
   }
   const problem = passwordProblem(newPassword);
   if (problem) return c.json({ error: problem }, 400);
-  await c.env.DB.prepare("UPDATE users SET password_hash = ? WHERE id = ?")
-    .bind(await hashPassword(newPassword!), user.id)
-    .run();
-  await revokeSessions(c.env, user.id, await otherSessionIds(c.env, user.id, c.var.sessionId));
-  // Connected agents' keys go too, like every other session.
-  await c.env.DB.prepare("DELETE FROM agent_keys WHERE user_id = ?").bind(user.id).run();
+  const newHash = await hashPassword(newPassword!);
+  const [, deletedSessions] = await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE users SET password_hash = ? WHERE id = ?").bind(newHash, user.id),
+    c.env.DB.prepare("DELETE FROM sessions WHERE user_id = ? AND id_hash != ? RETURNING id_hash").bind(
+      user.id,
+      c.var.sessionId,
+    ),
+    // Connected agents' keys go too, like every other session.
+    c.env.DB.prepare("DELETE FROM agent_keys WHERE user_id = ?").bind(user.id),
+  ]);
+  const revoked = (deletedSessions!.results as { id_hash: string }[]).map((r) => r.id_hash);
+  await closeSockets(c.env, user.id, revoked);
   return c.json({});
 });
 
@@ -244,12 +291,15 @@ auth.post("/2fa/enable", requireUser, async (c) => {
   if (!user.totp_pending) return c.json({ error: "start setup first" }, 409);
   const step = typeof code === "string" ? await verifyTotp(await open(c.env, user.totp_pending), code.trim()) : null;
   if (step === null) return c.json({ error: "invalid code; check your authenticator's clock" }, 400);
-  await c.env.DB.prepare(
-    "UPDATE users SET totp_secret = totp_pending, totp_pending = NULL, totp_last_step = ? WHERE id = ?",
-  )
-    .bind(step, user.id)
-    .run();
-  return c.json({ recoveryCodes: await newRecoveryCodes(c.env, user.id) });
+  const { codes, stmts } = await recoveryCodeBatch(c.env, user.id);
+  await c.env.DB.batch([
+    c.env.DB.prepare("UPDATE users SET totp_secret = totp_pending, totp_pending = NULL, totp_last_step = ? WHERE id = ?").bind(
+      step,
+      user.id,
+    ),
+    ...stmts,
+  ]);
+  return c.json({ recoveryCodes: codes });
 });
 
 auth.post("/2fa/disable", requireUser, async (c) => {
@@ -307,6 +357,9 @@ auth.delete("/sessions/:id", requireUser, async (c) => {
 });
 
 auth.post("/sessions/revoke-others", requireUser, async (c) => {
-  await revokeSessions(c.env, c.var.user.id, await otherSessionIds(c.env, c.var.user.id, c.var.sessionId));
+  const { results } = await c.env.DB.prepare("DELETE FROM sessions WHERE user_id = ? AND id_hash != ? RETURNING id_hash")
+    .bind(c.var.user.id, c.var.sessionId)
+    .all<{ id_hash: string }>();
+  await closeSockets(c.env, c.var.user.id, results.map((r) => r.id_hash));
   return c.json({});
 });

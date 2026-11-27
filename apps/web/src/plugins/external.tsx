@@ -245,7 +245,10 @@ function PluginFrame({ host, plugin, build }: { host: FrameHost; plugin: PluginI
             const dc = peer.openChannel(`${id}/${String(msg.params.name)}`, { ordered: msg.params.ordered ?? true });
             channels.push(dc);
             const { port1, port2 } = new MessageChannel();
-            dc.onmessage = (ev) => port1.postMessage({ t: "data", data: ev.data });
+            dc.onmessage = (ev) => {
+              if (ev.data instanceof ArrayBuffer) port1.postMessage({ t: "data", data: ev.data }, [ev.data]);
+              else port1.postMessage({ t: "data", data: ev.data });
+            };
             dc.onclose = () => port1.close();
             port1.onmessage = (ev: MessageEvent<{ t: "data"; data: string | ArrayBuffer } | { t: "close" }>) => {
               if (ev.data.t === "close") dc.close();
@@ -285,10 +288,18 @@ function PluginFrame({ host, plugin, build }: { host: FrameHost; plugin: PluginI
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, peer, id]);
 
-  // The theme, when the user changes it.
+  // The theme, when the user changes it. Diff against the last sent theme so
+  // unrelated documentElement style changes (like --app-height) don't churn the iframe.
   useEffect(() => {
     if (!ready) return;
-    const observer = new MutationObserver(() => send({ t: "theme", theme: currentTheme() }));
+    let last = JSON.stringify(currentTheme());
+    const observer = new MutationObserver(() => {
+      const theme = currentTheme();
+      const serialized = JSON.stringify(theme);
+      if (serialized === last) return;
+      last = serialized;
+      send({ t: "theme", theme });
+    });
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["style", "class"] });
     return () => observer.disconnect();
   }, [ready]);

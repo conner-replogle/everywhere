@@ -90,13 +90,41 @@ func (s *Store) KVDelete(plugin, scope, key string) error {
 	return err
 }
 
+// prefixUpper returns the exclusive upper bound for a B-tree prefix range scan
+// (col >= prefix AND col < upper), or ("", false) when no upper bound exists.
+func prefixUpper(prefix string) (string, bool) {
+	b := []byte(prefix)
+	for i := len(b) - 1; i >= 0; i-- {
+		if b[i] < 0xff {
+			b[i]++
+			return string(b[:i+1]), true
+		}
+	}
+	return "", false
+}
+
 // KVList lists a scope's keys starting with prefix, in key order.
 func (s *Store) KVList(plugin, scope, prefix string, limit int) ([]KVEntry, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 1000
 	}
-	rows, err := s.db.Query(`SELECT scope, key, value, updated_at FROM plugin_kv
-WHERE plugin = ? AND scope = ? AND substr(key, 1, ?) = ? ORDER BY key LIMIT ?`, plugin, scope, len(prefix), prefix, limit)
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	switch {
+	case prefix == "":
+		rows, err = s.db.Query(`SELECT scope, key, value, updated_at FROM plugin_kv
+WHERE plugin = ? AND scope = ? ORDER BY key LIMIT ?`, plugin, scope, limit)
+	default:
+		if upper, ok := prefixUpper(prefix); ok {
+			rows, err = s.db.Query(`SELECT scope, key, value, updated_at FROM plugin_kv
+WHERE plugin = ? AND scope = ? AND key >= ? AND key < ? ORDER BY key LIMIT ?`, plugin, scope, prefix, upper, limit)
+		} else {
+			rows, err = s.db.Query(`SELECT scope, key, value, updated_at FROM plugin_kv
+WHERE plugin = ? AND scope = ? AND key >= ? ORDER BY key LIMIT ?`, plugin, scope, prefix, limit)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -117,8 +145,22 @@ WHERE plugin = ? AND scope = ? AND substr(key, 1, ?) = ? ORDER BY key LIMIT ?`, 
 // KVScopes lists the scopes a plugin keeps keys in whose names start with
 // prefix (e.g. "thread:"), for a plugin to find what it has.
 func (s *Store) KVScopes(plugin, prefix string) ([]string, error) {
-	rows, err := s.db.Query(`SELECT DISTINCT scope FROM plugin_kv WHERE plugin = ? AND substr(scope, 1, ?) = ? ORDER BY scope`,
-		plugin, len(prefix), prefix)
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	switch {
+	case prefix == "":
+		rows, err = s.db.Query(`SELECT DISTINCT scope FROM plugin_kv WHERE plugin = ? ORDER BY scope`, plugin)
+	default:
+		if upper, ok := prefixUpper(prefix); ok {
+			rows, err = s.db.Query(`SELECT DISTINCT scope FROM plugin_kv WHERE plugin = ? AND scope >= ? AND scope < ? ORDER BY scope`,
+				plugin, prefix, upper)
+		} else {
+			rows, err = s.db.Query(`SELECT DISTINCT scope FROM plugin_kv WHERE plugin = ? AND scope >= ? ORDER BY scope`,
+				plugin, prefix)
+		}
+	}
 	if err != nil {
 		return nil, err
 	}

@@ -1,4 +1,4 @@
-import type { AgentCommand, AgentLimit, AgentModel, AgentState, PermissionMode } from "@everywhere/protocol";
+import type { AgentCommand, AgentLimit, AgentModel, AgentState, AgentStreaming, PermissionMode } from "@everywhere/protocol";
 import {
   ArchiveRestoreIcon,
   ArrowUpIcon,
@@ -75,6 +75,8 @@ const PAGE = 150;
 
 // Features of the engine rather than of claude.
 const shared = ["attachments", "history", "worktrees", "goal"];
+
+const EMPTY_STREAMING: AgentStreaming[] = [];
 
 export function AgentView({
   peer,
@@ -183,10 +185,12 @@ export function AgentView({
   // /compact is a prompt like any other; offered only when one could be sent.
   const canCompact =
     !archived && !busy && agent.attached && agent.synced && !state?.pending.length && commands.some((c) => c.name === "compact");
-  const compact = () => user.send({ t: "send", text: "/compact" });
+  const compact = useCallback(() => user.send({ t: "send", text: "/compact" }), [user]);
+  const cancelRecap = useCallback(() => agent.send({ t: "interrupt" }), [agent.send]);
+  const openSignIn = useCallback(() => setSigningIn(true), []);
   const claudeAuth = useClaudeAuth();
   const [signingIn, setSigningIn] = useState(false);
-  const onSignIn = !harness && signedOut(claudeAuth.data) ? () => setSigningIn(true) : undefined;
+  const onSignIn = !harness && signedOut(claudeAuth.data) ? openSignIn : undefined;
   // Another agent's sign-in on the device (Antigravity's with Google).
   const harnessAuth = useHarnessAuth(deviceCtx, harness?.kind ?? "", !!harness && !archived);
   const [harnessSigningIn, setHarnessSigningIn] = useState(false);
@@ -233,7 +237,7 @@ export function AgentView({
       el.scrollTop += el.scrollHeight - heightBefore.current;
       heightBefore.current = null;
     } else if (atBottom.current) el.scrollTop = el.scrollHeight;
-  });
+  }, [items, state?.streaming, firstKey]);
   // Layout that settles after a render (images, the composer growing, the
   // status bar appearing) would leave the view above the bottom until the
   // next render. The observer runs before paint, so it never shows.
@@ -319,12 +323,12 @@ export function AgentView({
           <Timeline
             items={items}
             peer={peer}
-            streaming={activeFilter ? [] : (state?.streaming ?? [])}
+            streaming={activeFilter ? EMPTY_STREAMING : (state?.streaming ?? EMPTY_STREAMING)}
             cwd={workdir}
             working={state?.status === "working"}
             compacting={state?.compacting}
             recapping={state?.recapping}
-            onCancelRecap={archived ? undefined : () => agent.send({ t: "interrupt" })}
+            onCancelRecap={archived ? undefined : cancelRecap}
             onCompact={canCompact ? compact : undefined}
             onSignIn={archived ? undefined : onSignIn}
             onRewind={features.includes("rewind") && !archived && !busy ? onRewind : undefined}

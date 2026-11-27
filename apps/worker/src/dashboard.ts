@@ -27,7 +27,7 @@ export function dashboardCSP(origin: string): string {
 
 /** Serves dashboard.html with its CSP for the origin it was asked on. */
 export async function serveDashboardFrame(c: Context<App>): Promise<Response> {
-  const res = await c.env.ASSETS.fetch(new URL("/dashboard", c.req.url));
+  const res = await c.env.ASSETS.fetch(new Request(new URL("/dashboard", c.req.url), c.req.raw));
   const out = new Response(res.body, res);
   out.headers.set("Content-Security-Policy", dashboardCSP(new URL(c.req.url).origin));
   out.headers.delete("X-Frame-Options");

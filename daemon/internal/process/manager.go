@@ -149,6 +149,98 @@ func NewManager(st Store, dir string) *Manager {
 	return m
 }
 
+type ringBuf struct {
+	buf  []byte
+	head int
+	full bool
+}
+
+func (r *ringBuf) len() int { return len(r.buf) }
+
+func (r *ringBuf) write(p []byte, limit int) {
+	if len(p) == 0 || limit <= 0 {
+		return
+	}
+	if len(p) >= limit {
+		if cap(r.buf) < limit {
+			r.buf = make([]byte, limit)
+		} else {
+			r.buf = r.buf[:limit]
+		}
+		copy(r.buf, p[len(p)-limit:])
+		r.head = 0
+		r.full = true
+		return
+	}
+	if !r.full {
+		need := len(r.buf) + len(p)
+		if need <= limit {
+			r.buf = append(r.buf, p...)
+			if len(r.buf) == limit {
+				r.full = true
+				r.head = 0
+			}
+			return
+		}
+		over := need - limit
+		keep := len(r.buf) - over
+		next := make([]byte, limit)
+		copy(next, r.buf[over:])
+		copy(next[keep:], p)
+		r.buf = next
+		r.head = 0
+		r.full = true
+		return
+	}
+	n := copy(r.buf[r.head:], p)
+	if n < len(p) {
+		copy(r.buf, p[n:])
+		r.head = len(p) - n
+	} else {
+		r.head += n
+		if r.head == limit {
+			r.head = 0
+		}
+	}
+}
+
+func (r *ringBuf) bytes() []byte {
+	if len(r.buf) == 0 {
+		return nil
+	}
+	out := make([]byte, len(r.buf))
+	if !r.full || r.head == 0 {
+		copy(out, r.buf)
+		return out
+	}
+	n := copy(out, r.buf[r.head:])
+	copy(out[n:], r.buf[:r.head])
+	return out
+}
+
+func (r *ringBuf) tail(n int) []byte {
+	total := len(r.buf)
+	if total == 0 || n <= 0 {
+		return nil
+	}
+	if n >= total {
+		return r.bytes()
+	}
+	out := make([]byte, n)
+	if !r.full || r.head == 0 {
+		copy(out, r.buf[total-n:])
+		return out
+	}
+	start := (r.head - n + total) % total
+	if start < r.head {
+		copy(out, r.buf[start:r.head])
+		return out
+	}
+	k := copy(out, r.buf[start:])
+	copy(out[k:], r.buf[:r.head])
+	return out
+}
+
 type proc struct {
 	m             *Manager
 	id            string
@@ -173,7 +265,7 @@ type proc struct {
 	prog       *progress
 	text       textScanner
 	events     []event
-	scrollback []byte
+	scrollback ringBuf
 	clients    []term.Client
 	writer     term.Client
 	log        *os.File
@@ -477,9 +569,11 @@ func (m *Manager) Get(id string) (protocol.Process, error) {
 
 // Running counts a thread's running processes (not trackers).
 func (m *Manager) Running(threadID string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	n := 0
-	for _, p := range m.ofThread(threadID) {
-		if p.tty != nil {
+	for _, p := range m.live {
+		if p.threadID == threadID && p.tty != nil {
 			n++
 		}
 	}
@@ -653,26 +747,12 @@ func (m *Manager) Output(id, sinceCheckpoint, grep string, tail, maxBytes int) (
 		}
 	}
 	base := m.logBase(id)
-	raw, err := readFrom(filepath.Join(m.dir, id+".log"), max(0, from-base))
+	lines, cut, err := streamPlainLines(filepath.Join(m.dir, id+".log"), max(0, from-base), re, tail)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return []string{}, false, nil
 		}
 		return nil, false, err
-	}
-	lines := plainLines(raw)
-	if re != nil {
-		kept := lines[:0]
-		for _, l := range lines {
-			if re.MatchString(l) {
-				kept = append(kept, l)
-			}
-		}
-		lines = kept
-	}
-	cut := false
-	if tail > 0 && len(lines) > tail {
-		lines, cut = lines[len(lines)-tail:], true
 	}
 	size := 0
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -683,6 +763,82 @@ func (m *Manager) Output(id, sinceCheckpoint, grep string, tail, maxBytes int) (
 		}
 	}
 	return lines, cut, nil
+}
+
+// streamPlainLines streams a log file in fixed-size chunks through textScanner,
+// keeping only the last tail matching lines in O(tail) memory instead of
+// loading the entire file (up to 64 MiB) into RAM.
+func streamPlainLines(path string, off int64, re *regexp.Regexp, tail int) ([]string, bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close()
+	if off > 0 {
+		if _, err := f.Seek(off, io.SeekStart); err != nil {
+			return nil, false, err
+		}
+	}
+	var (
+		lines []string
+		ring  []string
+		head  int
+		count int
+		cut   bool
+	)
+	if tail > 0 {
+		ring = make([]string, tail)
+	}
+	push := func(s string) {
+		if re != nil && !re.MatchString(s) {
+			return
+		}
+		if tail > 0 {
+			ring[head] = s
+			head++
+			if head == tail {
+				head = 0
+			}
+			if count < tail {
+				count++
+			} else {
+				cut = true
+			}
+			return
+		}
+		lines = append(lines, s)
+	}
+	sc := textScanner{onLine: push}
+	buf := make([]byte, 64*1024)
+	for {
+		n, rerr := f.Read(buf)
+		if n > 0 {
+			sc.write(buf[:n])
+		}
+		if rerr != nil {
+			if errors.Is(rerr, io.EOF) {
+				break
+			}
+			return nil, false, rerr
+		}
+	}
+	if p := sc.partial(); p != "" {
+		push(p)
+	}
+	if tail > 0 {
+		out := make([]string, 0, count)
+		if count < tail {
+			out = append(out, ring[:count]...)
+		} else {
+			out = append(out, ring[head:]...)
+			out = append(out, ring[:head]...)
+		}
+		return out, cut, nil
+	}
+	if lines == nil {
+		lines = []string{}
+	}
+	return lines, false, nil
 }
 
 func (m *Manager) logBase(id string) int64 {
@@ -698,18 +854,6 @@ func (m *Manager) logBase(id string) int64 {
 	var s saved
 	_ = json.Unmarshal(row.Snapshot, &s)
 	return s.LogBase
-}
-
-func readFrom(path string, off int64) ([]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	if _, err := f.Seek(off, io.SeekStart); err != nil {
-		return nil, err
-	}
-	return io.ReadAll(f)
 }
 
 // readTail reads up to n bytes from the end of a file.
@@ -764,8 +908,8 @@ func (m *Manager) Attach(id string, c term.Client, _, _ uint16) error {
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if len(p.scrollback) > 0 {
-		c.Output(append([]byte(nil), p.scrollback...))
+	if p.scrollback.len() > 0 {
+		c.Output(p.scrollback.bytes())
 	}
 	p.clients = append(p.clients, c)
 	if p.writer == nil {
@@ -1022,20 +1166,22 @@ func (p *proc) pump() {
 }
 
 func (p *proc) output(chunk []byte) {
-	p.mu.Lock()
+	// p.log is only written/closed by pump's goroutine, so disk I/O (including
+	// 16 MiB log trims) runs without holding p.mu.
 	p.writeLog(chunk)
-	p.scrollback = append(p.scrollback, chunk...)
-	if over := len(p.scrollback) - scrollbackBytes; over > 0 {
-		p.scrollback = append([]byte(nil), p.scrollback[over:]...)
-	}
-	for _, c := range p.clients {
-		c.Output(chunk)
-	}
+	p.mu.Lock()
+	p.scrollback.write(chunk, scrollbackBytes)
+	clients := append([]term.Client(nil), p.clients...)
 	p.text.write(chunk)
 	evs := p.events
 	p.events = nil
-	p.bump()
+	if p.awaited() {
+		p.bump()
+	}
 	p.mu.Unlock()
+	for _, c := range clients {
+		c.Output(chunk)
+	}
 	p.m.changedThread(p.threadID)
 	for _, e := range evs {
 		p.m.notify(p, e.attrs, e.text, !e.quiet)
@@ -1103,7 +1249,9 @@ func (p *proc) trimLog() {
 		p.log = nil
 		return
 	}
+	p.mu.Lock()
 	p.logBase += p.logSize - int64(len(keep))
+	p.mu.Unlock()
 	p.logSize = int64(len(keep))
 	p.log, err = os.OpenFile(p.logPath, os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -1134,7 +1282,7 @@ func (p *proc) finish(code int) {
 	p.clients, p.writer = nil, nil
 	stopping := p.stopping
 	awaited := p.awaited()
-	tail := plainLines(p.scrollback[max(0, len(p.scrollback)-32<<10):])
+	tail := plainLines(p.scrollback.tail(32 << 10))
 	p.bump()
 	close(p.done)
 	p.mu.Unlock()

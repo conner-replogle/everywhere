@@ -301,25 +301,32 @@ agentSettings.delete("/keys/:id", async (c) => {
 agentSettings.get("/activity", async (c) => {
   const limit = Math.min(Math.max(Number(c.req.query("limit")) || 30, 1), 100);
   const cursor = /^(\d+):([A-Za-z0-9_-]+)$/.exec(c.req.query("cursor") ?? "");
-  const before = cursor ? Number(cursor[1]) : Number.MAX_SAFE_INTEGER;
-  const beforeId = cursor ? cursor[2]! : "";
-  const { results } = await c.env.DB.prepare(
-    `SELECT id, at, key_id, key_name, tool, device_id, thread_id, ok, error FROM agent_activity
-     WHERE user_id = ? AND (at < ? OR (at = ? AND id < ?))
-     ORDER BY at DESC, id DESC LIMIT ?`,
-  )
-    .bind(c.var.user.id, before, before, beforeId, limit + 1)
-    .all<{
-      id: string;
-      at: number;
-      key_id: string;
-      key_name: string;
-      tool: string;
-      device_id: string | null;
-      thread_id: string | null;
-      ok: number;
-      error: string | null;
-    }>();
+  type ActivityRow = {
+    id: string;
+    at: number;
+    key_id: string;
+    key_name: string;
+    tool: string;
+    device_id: string | null;
+    thread_id: string | null;
+    ok: number;
+    error: string | null;
+  };
+  const { results } = cursor
+    ? await c.env.DB.prepare(
+        `SELECT id, at, key_id, key_name, tool, device_id, thread_id, ok, error FROM agent_activity
+         WHERE user_id = ? AND (at, id) < (?, ?)
+         ORDER BY at DESC, id DESC LIMIT ?`,
+      )
+        .bind(c.var.user.id, Number(cursor[1]), cursor[2]!, limit + 1)
+        .all<ActivityRow>()
+    : await c.env.DB.prepare(
+        `SELECT id, at, key_id, key_name, tool, device_id, thread_id, ok, error FROM agent_activity
+         WHERE user_id = ?
+         ORDER BY at DESC, id DESC LIMIT ?`,
+      )
+        .bind(c.var.user.id, limit + 1)
+        .all<ActivityRow>();
   const page = results.slice(0, limit);
   const last = page[page.length - 1];
   return c.json({

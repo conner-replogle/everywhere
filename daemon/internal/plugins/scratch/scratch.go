@@ -63,7 +63,7 @@ func (p *Plugin) Start(h plugin.Host) error {
 	}))
 	h.HandleRPC("scratch.usage", plugin.Params(func(plugin.RPCContext, struct{}) (any, error) {
 		return p.usage()
-	}))
+	}), plugin.Slow())
 	// A Scratch thread's folder stays unless the user asked for it to go.
 	plugin.Subscribe(h.Bus(), plugin.ThreadDeleted, func(e plugin.ThreadEvent) {
 		if !e.Delete.RemoveScratch || e.Thread.ScratchDir == "" {

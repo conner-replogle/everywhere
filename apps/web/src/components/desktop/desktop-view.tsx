@@ -334,8 +334,8 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
   // Read at connect time; later changes go over the open session.
   // Devices with plugins signal it as a plugin session.
   const rtc = !!useDevice().info.data?.features?.includes("plugins");
-  const connectRef = useRef({ mode: prefs.mode, follow, clipboard: prefs.clipboard, tab, rtc });
-  connectRef.current = { mode: prefs.mode, follow, clipboard: prefs.clipboard, tab, rtc };
+  const connectRef = useRef({ mode: prefs.mode, follow, clipboard: prefs.clipboard, stats: prefs.stats, tab, rtc });
+  connectRef.current = { mode: prefs.mode, follow, clipboard: prefs.clipboard, stats: prefs.stats, tab, rtc };
   // What the tab shows, saved as the host reports it.
   const tabSource = useRef<DesktopSource | undefined>(parseTabState(tab?.state)?.source);
   // Clipboard text both sides have, and host text waiting for this page to have focus.
@@ -456,7 +456,7 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
             break;
           }
           case Type.Pong:
-            setInputRtt(performance.now() - msg.clientMs);
+            if (connectRef.current.stats) setInputRtt(performance.now() - msg.clientMs);
             break;
           case Type.CursorImage:
             cur.setImage(msg);
@@ -520,6 +520,7 @@ function DesktopSession({ peer, deviceId, deviceName, tab, active = true, onAnno
       const sampler = new DesktopStatsSampler(conn.pc);
       timers.push(
         setInterval(() => {
+          if (!connectRef.current.stats) return;
           void sampler.sample().then((s) => {
             if (!cancelled && s) setStats(s);
           });

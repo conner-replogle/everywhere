@@ -53,7 +53,7 @@ func (p *Plugin) Start(h plugin.Host) error {
 	for _, m := range []string{"telemetry.catalog", "telemetry.query", "telemetry.events", "telemetry.deleteRun"} {
 		h.HandleRPC(m, func(_ context.Context, _ plugin.RPCContext, raw json.RawMessage) (any, error) {
 			return p.call(m, raw)
-		})
+		}, plugin.Slow())
 	}
 	return nil
 }

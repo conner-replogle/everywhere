@@ -97,6 +97,7 @@ type session struct {
 	refreshRetry   *time.Timer
 	clients        map[Client]bool
 	state          protocol.AgentState
+	streamBufs     map[string]*strings.Builder
 	pending        map[string]*claude.PermissionRequest
 	turnActive     bool
 	interrupted    bool // the user stopped the current turn
@@ -1204,6 +1205,10 @@ func (s *session) onStreamEvent(msg claude.Message) {
 	case "content_block_start":
 		if kind := streamKind(ev.ContentBlock.Type); kind != "" {
 			s.state.Streaming = append(s.state.Streaming, protocol.AgentStreaming{Key: key, Kind: kind})
+			if s.streamBufs == nil {
+				s.streamBufs = map[string]*strings.Builder{}
+			}
+			s.streamBufs[key] = &strings.Builder{}
 		}
 	case "content_block_delta":
 		text := ev.Delta.Text
@@ -1215,7 +1220,17 @@ func (s *session) onStreamEvent(msg claude.Message) {
 		}
 		for i := range s.state.Streaming {
 			if st := &s.state.Streaming[i]; st.Key == key {
-				st.Text += text
+				if b := s.streamBufs[key]; b != nil {
+					b.WriteString(text)
+				} else {
+					b := &strings.Builder{}
+					b.WriteString(st.Text)
+					b.WriteString(text)
+					if s.streamBufs == nil {
+						s.streamBufs = map[string]*strings.Builder{}
+					}
+					s.streamBufs[key] = b
+				}
 				s.broadcast(protocol.AgentDeltaMsg{T: "delta", Key: key, Kind: st.Kind, Text: text})
 			}
 		}
@@ -1483,6 +1498,7 @@ func (s *session) endTurn(ev protocol.AgentEvent) {
 	done := s.doneAfterTurn && ev.Status == "completed"
 	s.turnActive, s.interrupted, s.doneAfterTurn = false, false, false
 	s.state.Streaming = []protocol.AgentStreaming{}
+	clear(s.streamBufs)
 	s.emit(ev)
 	if done {
 		if err := s.setDone(); err != nil {
@@ -1561,6 +1577,7 @@ func (s *session) takeStream(msgID, kind string) string {
 	for i, st := range s.state.Streaming {
 		if st.Kind == kind && strings.HasPrefix(st.Key, msgID+":") {
 			s.state.Streaming = append(s.state.Streaming[:i:i], s.state.Streaming[i+1:]...)
+			delete(s.streamBufs, st.Key)
 			return st.Key
 		}
 	}
@@ -1604,6 +1621,16 @@ func (s *session) broadcast(frame any) {
 
 func (s *session) stateMsg() protocol.AgentStateMsg {
 	st := s.state
+	if len(st.Streaming) > 0 && len(s.streamBufs) > 0 {
+		streaming := make([]protocol.AgentStreaming, len(st.Streaming))
+		for i, item := range st.Streaming {
+			if b := s.streamBufs[item.Key]; b != nil {
+				item.Text = b.String()
+			}
+			streaming[i] = item
+		}
+		st.Streaming = streaming
+	}
 	if s.agent != nil {
 		// Another agent's models, commands and modes are its thread's own.
 		return protocol.AgentStateMsg{T: "state", State: st}

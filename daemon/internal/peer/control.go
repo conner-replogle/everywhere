@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/pion/webrtc/v4"
 
@@ -147,26 +149,45 @@ func (s *Server) registerCore(h plugin.Host) {
 		}
 		return proj, err
 	})
+	type cachedIcon struct {
+		icon *favicon.Icon
+		at   time.Time
+	}
+	var (
+		iconMu    sync.Mutex
+		iconCache = map[string]cachedIcon{}
+	)
+	const iconTTL = 2 * time.Minute
+
 	rpc("projects.icon", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		proj, err := s.store.GetProject(p.ID)
 		if err != nil {
 			return nil, err
 		}
+		iconMu.Lock()
+		if c, ok := iconCache[proj.Path]; ok && time.Since(c.at) < iconTTL {
+			iconMu.Unlock()
+			return struct {
+				Icon *favicon.Icon `json:"icon"`
+			}{c.icon}, nil
+		}
+		iconMu.Unlock()
 		icon, err := favicon.Find(proj.Path)
 		if err != nil {
 			icon = nil // an unreadable project just has no icon
 		}
+		iconMu.Lock()
+		iconCache[proj.Path] = cachedIcon{icon: icon, at: time.Now()}
+		iconMu.Unlock()
 		return struct {
 			Icon *favicon.Icon `json:"icon"`
 		}{icon}, nil
-	})
-	rpc("projects.delete", func(_ plugin.RPCContext, p coreParams) (any, error) { return s.deleteProject(p.ID) })
+	}, plugin.Slow())
+	rpc("projects.delete", func(_ plugin.RPCContext, p coreParams) (any, error) { return s.deleteProject(p.ID) }, plugin.Slow())
 
 	rpc("threads.list", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		threads, err := s.store.ListThreads(p.ProjectID)
-		for i := range threads {
-			s.plugins.Decorate(&threads[i])
-		}
+		s.plugins.DecorateAll(threads)
 		return threads, err
 	}, plugin.Agent())
 	rpc("threads.get", func(_ plugin.RPCContext, p coreParams) (any, error) {
@@ -234,14 +255,12 @@ func (s *Server) registerCore(h plugin.Host) {
 			return nil, err
 		}
 		return plugin.Empty{}, s.deleteThread(t, plugin.DeleteParams{KeepWorktree: p.KeepWorktree, RemoveScratch: p.RemoveScratch})
-	})
+	}, plugin.Slow())
 	rpc("threads.workdir", func(_ plugin.RPCContext, p coreParams) (any, error) { return s.Threads().Workdir(p.ID) })
 
 	rpc("tabs.list", func(_ plugin.RPCContext, p coreParams) (any, error) {
 		tabs, err := s.store.ListTabs(p.ThreadID)
-		for i := range tabs {
-			s.plugins.Decorate(&tabs[i])
-		}
+		s.plugins.DecorateAll(tabs)
 		return tabs, err
 	})
 	rpc("tabs.create", func(_ plugin.RPCContext, p coreParams) (any, error) {

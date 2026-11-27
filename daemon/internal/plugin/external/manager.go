@@ -147,7 +147,7 @@ func (m *Manager) Start(h plugin.Host) error {
 			return protocol.DashboardBuild{Version: res.Version, Unchanged: true}, nil
 		}
 		return protocol.DashboardBuild{Version: res.Version, JS: res.JS, CSS: res.CSS, Errors: res.Errors}, nil
-	}))
+	}), plugin.Slow())
 	// Settings: the form's data, and saving the device's values.
 	type settingsParams struct {
 		ID     string                     `json:"id"`

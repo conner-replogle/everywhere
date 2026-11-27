@@ -46,9 +46,13 @@ func (p *Plugin) Start(h plugin.Host) error {
 	p.procs = plugin.MustLookup[*process.Manager](h, processes.Service)
 	p.builds = dashboard.NewBuilder()
 	for _, m := range []string{"processes.dashboard", "processes.output", "processes.file", "processes.dashboardError", "processes.setState"} {
+		var opts []plugin.RPCOption
+		if m == "processes.dashboard" || m == "processes.output" || m == "processes.file" {
+			opts = append(opts, plugin.Slow())
+		}
 		h.HandleRPC(m, func(_ context.Context, _ plugin.RPCContext, raw json.RawMessage) (any, error) {
 			return p.call(m, raw)
-		})
+		}, opts...)
 	}
 	for _, t := range p.tools() {
 		h.AddTools(plugin.Tool{Tool: t})

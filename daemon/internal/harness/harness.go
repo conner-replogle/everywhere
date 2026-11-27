@@ -39,7 +39,16 @@ type Agent struct {
 	// code, after which its output says why a sign-in failed.
 	Login       []string
 	LoginPrompt string
+	// AcceptAll is the agent's own mode that everywhere's AcceptAllMode runs
+	// it in, where the agent has no auto mode of its own; "" offers none.
+	AcceptAll string
 }
+
+// AcceptAllMode is everywhere's mode for an agent without an auto mode (as
+// Antigravity is where it can't sandbox commands): the agent runs in its
+// Agent.AcceptAll mode, and everywhere approves each of its permission
+// requests, edits and commands alike, without asking.
+const AcceptAllMode = "everywhere-accept-all"
 
 //go:embed icons/opencode.svg
 var opencodeIcon string
@@ -61,6 +70,8 @@ var Agents = []Agent{
 		// Google's sign-in, whose page (antigravity.google/oauth-callback)
 		// shows the code to paste back.
 		Login: []string{"agy", "acp", "--login"}, LoginPrompt: "and press Enter:",
+		// Its Auto needs its terminal sandbox, which Windows hasn't.
+		AcceptAll: "accept-edits",
 	},
 }
 

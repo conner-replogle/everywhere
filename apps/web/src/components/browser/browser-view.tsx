@@ -164,7 +164,6 @@ export function BrowserView({
   const [stage, setStage] = useState({ width: 0, height: 0 });
   const [cursor, setCursor] = useState("default");
   const [notice, setNotice] = useState<string | null>(null);
-  const [stats, setStats] = useState<Stats | null>(null);
   const [draftUrl, setDraftUrl] = useState<string | null>(null);
   const [focused, setFocused] = useState(false);
   const [attachKey, setAttachKey] = useState(0);
@@ -285,28 +284,8 @@ export function BrowserView({
     [pump],
   );
 
-  useEffect(() => {
-    const id = setInterval(() => {
-      const v = videoRef.current;
-      if (videoOn.current && v) {
-        void v.stats().then((st) => {
-          if (!st) return;
-          setStats({
-            label: `${st.fps} fps · ${formatBits(st.bitsPerSec)}`,
-            title: `${st.codec} video, ${st.width}×${st.height}`,
-          });
-        });
-        return;
-      }
-      const { frames, bytes } = counters.current;
-      counters.current = { frames: 0, bytes: 0 };
-      setStats({
-        label: `${frames} fps · ${formatBytes(bytes)}/s · ${formatBytes(frames ? bytes / frames : 0)}/frame`,
-        title: `JPEG frames, quality ${settingsRef.current.quality}`,
-      });
-    }, 1000);
-    return () => clearInterval(id);
-  }, []);
+  // Stats polling lives inside BrowserStatsBadge so it only runs when visible
+  // and never re-renders the entire BrowserView every second.
 
   /** The page's CSS size: the video carries none, so it comes from the tab's state. */
   const setPageSize = useCallback((width: number, height: number) => {
@@ -946,17 +925,15 @@ export function BrowserView({
             className="h-6 w-full rounded-sm border border-transparent bg-background px-2 font-mono text-xs outline-none placeholder:text-muted-foreground focus:border-ring pointer-coarse:h-8 pointer-coarse:text-base"
           />
         </form>
-        {stats && status === "live" && stage.width >= 720 && (
-          <span
-            className="shrink-0 px-1 font-mono text-[11px] text-muted-foreground tabular-nums"
-            title={
-              frameSize
-                ? `${frameSize.width}×${frameSize.height} CSS px at ${viewport()?.dpr ?? 1}x; ${stats.title}`
-                : stats.title
-            }
-          >
-            {stats.label}
-          </span>
+        {status === "live" && stage.width >= 720 && (
+          <BrowserStatsBadge
+            videoRef={videoRef}
+            videoOn={videoOn}
+            counters={counters}
+            settingsRef={settingsRef}
+            frameSize={frameSize}
+            dpr={viewport()?.dpr ?? 1}
+          />
         )}
         {coarsePointer && (
           <Button
@@ -1302,6 +1279,56 @@ function ResizeHandle({
       onPointerUp={onUp}
       onPointerCancel={onUp}
     />
+  );
+}
+
+function BrowserStatsBadge({
+  videoRef,
+  videoOn,
+  counters,
+  settingsRef,
+  frameSize,
+  dpr,
+}: {
+  videoRef: React.RefObject<BrowserVideo | null>;
+  videoOn: React.RefObject<boolean>;
+  counters: React.RefObject<{ frames: number; bytes: number }>;
+  settingsRef: React.RefObject<{ quality: number }>;
+  frameSize: { width: number; height: number } | null;
+  dpr: number;
+}) {
+  const [stats, setStats] = useState<Stats | null>(null);
+  useEffect(() => {
+    const id = setInterval(() => {
+      const v = videoRef.current;
+      if (videoOn.current && v) {
+        void v.stats().then((st) => {
+          if (!st) return;
+          setStats({
+            label: `${st.fps} fps · ${formatBits(st.bitsPerSec)}`,
+            title: `${st.codec} video, ${st.width}×${st.height}`,
+          });
+        });
+        return;
+      }
+      const { frames, bytes } = counters.current;
+      counters.current = { frames: 0, bytes: 0 };
+      setStats({
+        label: `${frames} fps · ${formatBytes(bytes)}/s · ${formatBytes(frames ? bytes / frames : 0)}/frame`,
+        title: `JPEG frames, quality ${settingsRef.current.quality}`,
+      });
+    }, 1000);
+    return () => clearInterval(id);
+  }, [videoRef, videoOn, counters, settingsRef]);
+
+  if (!stats) return null;
+  return (
+    <span
+      className="shrink-0 px-1 font-mono text-[11px] text-muted-foreground tabular-nums"
+      title={frameSize ? `${frameSize.width}×${frameSize.height} CSS px at ${dpr}x; ${stats.title}` : stats.title}
+    >
+      {stats.label}
+    </span>
   );
 }
 

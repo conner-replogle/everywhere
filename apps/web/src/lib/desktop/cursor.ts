@@ -22,17 +22,30 @@ export class CursorRenderer {
   private overlay: HTMLCanvasElement;
   private cssCursor = "default";
   private resizeObserver: ResizeObserver;
+  private cachedRect: { left: number; top: number; width: number; height: number } | null | undefined = undefined;
+  private lastRenderKey = "";
 
   constructor(private video: HTMLVideoElement) {
     this.overlay = document.createElement("canvas");
-    this.overlay.className = "pointer-events-none fixed z-50 opacity-85";
+    this.overlay.className = "pointer-events-none fixed top-0 left-0 z-50 opacity-85 will-change-transform";
     this.overlay.hidden = true;
     video.after(this.overlay);
     video.addEventListener("pointermove", this.onLocalMove);
-    video.addEventListener("resize", this.render);
-    this.resizeObserver = new ResizeObserver(this.render);
+    video.addEventListener("resize", this.onLayoutChange);
+    window.addEventListener("resize", this.invalidateRect);
+    window.addEventListener("scroll", this.invalidateRect, { passive: true, capture: true });
+    this.resizeObserver = new ResizeObserver(this.onLayoutChange);
     this.resizeObserver.observe(video);
   }
+
+  private invalidateRect = () => {
+    this.cachedRect = undefined;
+  };
+
+  private onLayoutChange = () => {
+    this.cachedRect = undefined;
+    this.render();
+  };
 
   private onLocalMove = (e: PointerEvent) => {
     if (this.following) return;
@@ -43,7 +56,9 @@ export class CursorRenderer {
 
   dispose() {
     this.video.removeEventListener("pointermove", this.onLocalMove);
-    this.video.removeEventListener("resize", this.render);
+    this.video.removeEventListener("resize", this.onLayoutChange);
+    window.removeEventListener("resize", this.invalidateRect);
+    window.removeEventListener("scroll", this.invalidateRect, true);
     this.resizeObserver.disconnect();
     this.overlay.remove();
     this.video.style.cursor = "";
@@ -84,11 +99,13 @@ export class CursorRenderer {
 
   /** Redraws after the picture moved or scaled without resizing (zoom). */
   refresh() {
+    this.cachedRect = undefined;
     this.render();
   }
 
   setImage(img: CursorImage) {
     this.image = img.width && img.height ? img : null;
+    this.lastRenderKey = "";
     this.render();
   }
 
@@ -121,25 +138,32 @@ export class CursorRenderer {
     if (!r) return;
     const img = this.image;
     const scale = this.overlayScale;
-    this.overlay.style.left = `${r.left + pos.x * r.width - (img ? img.hotX * scale : 0)}px`;
-    this.overlay.style.top = `${r.top + pos.y * r.height - (img ? img.hotY * scale : 0)}px`;
+    const x = r.left + pos.x * r.width - (img ? img.hotX * scale : 0);
+    const y = r.top + pos.y * r.height - (img ? img.hotY * scale : 0);
+    this.overlay.style.transform = `translate3d(${x}px, ${y}px, 0)`;
     this.overlay.hidden = false;
   }
 
   /** The video's picture on screen, inside any letterboxing. */
   contentRect() {
+    if (this.cachedRect !== undefined) return this.cachedRect;
     const vw = this.video.videoWidth, vh = this.video.videoHeight;
-    if (!vw || !vh) return null;
+    if (!vw || !vh) {
+      this.cachedRect = null;
+      return null;
+    }
     const box = this.video.getBoundingClientRect();
     const scale = Math.min(box.width / vw, box.height / vh);
     const width = vw * scale, height = vh * scale;
-    return { left: box.left + (box.width - width) / 2, top: box.top + (box.height - height) / 2, width, height };
+    this.cachedRect = { left: box.left + (box.width - width) / 2, top: box.top + (box.height - height) / 2, width, height };
+    return this.cachedRect;
   }
 
   private render = () => {
     const img = this.image;
     const r = this.contentRect();
     if (!img || !r) {
+      this.lastRenderKey = "";
       this.setCss("default");
       this.overlayScale = 1;
       this.drawOverlay(null);
@@ -148,17 +172,30 @@ export class CursorRenderer {
     }
     // Host cursor pixels are video pixels; show them at the size they appear in the video.
     const cssScale = r.width / this.video.videoWidth;
-    const src = new OffscreenCanvas(img.width, img.height);
-    src.getContext("2d")!.putImageData(new ImageData(new Uint8ClampedArray(img.rgba), img.width, img.height), 0, 0);
-    const canvas = scaledCursor(src, cssScale);
-    const url = canvas.toDataURL("image/png");
     const dpr = window.devicePixelRatio || 1;
-    const hx = Math.round(img.hotX * cssScale), hy = Math.round(img.hotY * cssScale);
-    this.setCss(this.following ? "default" : `image-set(url("${url}") ${dpr}x) ${hx} ${hy}, url("${url}") ${hx} ${hy}, default`);
     // A whole desktop on a phone shrinks the pointer to a speck; one steered
     // by trackpad stays big enough to aim.
-    this.overlayScale = this.pinned ? Math.max(cssScale, MIN_PINNED_HEIGHT / img.height) : cssScale;
-    this.drawOverlay(this.overlayScale === cssScale ? canvas : scaledCursor(src, this.overlayScale));
+    const nextOverlayScale = this.pinned ? Math.max(cssScale, MIN_PINNED_HEIGHT / img.height) : cssScale;
+    // Skip expensive OffscreenCanvas + PNG data-URL re-encoding on pan-only updates where scale didn't change.
+    const key = `${Math.round(cssScale * 1000)}:${Math.round(nextOverlayScale * 1000)}:${dpr}:${this.following ? 1 : 0}`;
+    if (key === this.lastRenderKey) {
+      if (this.pinned) this.place(this.pinned);
+      return;
+    }
+    this.lastRenderKey = key;
+    this.overlayScale = nextOverlayScale;
+    const src = new OffscreenCanvas(img.width, img.height);
+    src.getContext("2d")!.putImageData(new ImageData(new Uint8ClampedArray(img.rgba), img.width, img.height), 0, 0);
+    if (this.following) {
+      this.setCss("default");
+      this.drawOverlay(scaledCursor(src, nextOverlayScale));
+    } else {
+      const canvas = scaledCursor(src, cssScale);
+      const url = canvas.toDataURL("image/png");
+      const hx = Math.round(img.hotX * cssScale), hy = Math.round(img.hotY * cssScale);
+      this.setCss(`image-set(url("${url}") ${dpr}x) ${hx} ${hy}, url("${url}") ${hx} ${hy}, default`);
+      this.drawOverlay(nextOverlayScale === cssScale ? canvas : scaledCursor(src, nextOverlayScale));
+    }
     if (this.pinned) this.place(this.pinned);
   };
 
