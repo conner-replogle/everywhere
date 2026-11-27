@@ -344,7 +344,9 @@ export interface PluginKind {
  * agent.auth, agent.login, agent.loginCode, agent.loginCancel, claude.auth
  * and the signedOut turn kind. harnessAuth: agent.harnessAuth,
  * agent.harnessLogin, agent.harnessLoginCode and agent.harnessLoginCancel,
- * for other agents' sign-ins (changes come as claude.auth). done: Thread.doneAt, threads.done and the
+ * for other agents' sign-ins (changes come as claude.auth). harnessQueue: a
+ * prompt sent while another agent works is passed on after the one before
+ * it, in the same turn. done: Thread.doneAt, threads.done and the
  * agent's thread_done tool. agents: device.agents and device.setAgents
  * (connected agents' switch on the device) and the user event's via. pin:
  * Thread.pinnedAt and seenAt, threads.pin and threads.seen. search:
@@ -382,7 +384,8 @@ export type DeviceFeature =
   | "autoUpdate"
   | "iceRestart"
   | "goal"
-  | "harnessAuth";
+  | "harnessAuth"
+  | "harnessQueue";
 
 /**
  * What desktop.start captures: a monitor by name, or a window by id

@@ -40,7 +40,7 @@ func (p *Plugin) Manifest() plugin.Manifest {
 		ID: "agent", Title: "Agents", API: plugin.API, Builtin: true,
 		Permissions: []string{plugin.PermExec, plugin.PermFSWrite, plugin.PermAgentTools, plugin.PermRemote},
 		Features: []string{protocol.FeatureClaude, protocol.FeatureWorktrees, protocol.FeatureAttachments, protocol.FeatureHistory,
-			protocol.FeatureRewind, protocol.FeatureClaudeUpdate, protocol.FeatureClaudeAuth, protocol.FeatureToken, protocol.FeatureSearch, protocol.FeatureHarnessAuth},
+			protocol.FeatureRewind, protocol.FeatureClaudeUpdate, protocol.FeatureClaudeAuth, protocol.FeatureToken, protocol.FeatureSearch, protocol.FeatureHarnessAuth, protocol.FeatureHarnessQueue},
 	}
 }
 

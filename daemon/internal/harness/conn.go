@@ -242,13 +242,20 @@ func (c *Conn) prompt(blocks []acpContentBlock) {
 	case res.StopReason == "refusal":
 		fail("The model declined to continue.")
 	}
-	c.emitLocked(message("result", "", result))
 	c.tools = map[string]*toolCall{}
+	// Prompts sent while it worked (the agent takes one at a time) follow
+	// in the same turn: it ends after the last of them. A prompt that failed
+	// ends it at once, and those waiting aren't sent.
 	var next []acpContentBlock
-	if len(c.queued) > 0 {
+	if len(c.queued) > 0 && result["is_error"] == nil && res.StopReason != "cancelled" {
 		next, c.queued = c.queued[0], c.queued[1:]
 	} else {
+		if n := len(c.queued); n > 0 && result["is_error"] != nil {
+			result["result"] = fmt.Sprintf("%v (%d message(s) sent meanwhile weren't passed on)", result["result"], n)
+		}
+		c.queued = nil
 		c.prompting = false
+		c.emitLocked(message("result", "", result))
 	}
 	c.mu.Unlock()
 	if next != nil {

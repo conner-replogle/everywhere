@@ -666,8 +666,12 @@ function Composer({
   }, [shown, dictating]);
 
   // A prompt sent mid-recap would join the recap's turn; it's only a few seconds.
-  // Other agents take one prompt per turn: nothing joins a turn in progress.
-  const oneAtATime = !!state?.harness && active;
+  // Other agents take one prompt at a time: on a device that queues them, one
+  // sent now is passed on when the agent is done (in the same turn); before,
+  // nothing could be sent mid-turn.
+  const deviceFeatures = useDevice().info.data?.features;
+  const queues = !!state?.harness && !!deviceFeatures?.includes("harnessQueue");
+  const oneAtATime = !!state?.harness && active && !queues;
   const canSend =
     ready &&
     !dictating &&
@@ -771,7 +775,9 @@ function Composer({
               : active
                 ? oneAtATime
                   ? `${name} is working… (Esc to stop)`
-                  : "Add to the current turn… (Esc to stop)"
+                  : state?.harness
+                    ? `${name} gets this when it's done… (Esc to stop)`
+                    : "Add to the current turn… (Esc to stop)"
                 : suggestion
                   ? suggestion
                   : `Ask ${name} to do something… (/ for commands)`

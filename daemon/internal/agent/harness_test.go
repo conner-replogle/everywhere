@@ -517,3 +517,55 @@ func TestHarnessAcceptAll(t *testing.T) {
 		t.Fatalf("modes with auto: %+v", s.Modes)
 	}
 }
+
+// A message sent while another agent works (it takes one prompt at a time)
+// is passed on once the prompt before it is done, in the same turn.
+func TestHarnessMessageWhileWorking(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(acptest.Env, "1")
+	saved := harness.Agents
+	harness.Agents = []harness.Agent{{Kind: "fake", Title: "Fake", Command: []string{exe}}}
+	t.Cleanup(func() { harness.Agents = saved })
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	projects, _ := st.ListProjects()
+	th, err := st.CreateThread(projects[0].ID, "", "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(st, t.TempDir(), func() {})
+	t.Cleanup(m.Shutdown)
+	c := &recorder{}
+	if err := m.Attach(th.ID, c, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "send", Text: "please write a.txt now"})
+	eventually(t, "the first request", func() bool { return len(c.state().Pending) == 1 })
+	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "send", Text: "then write b.txt"})
+	eventually(t, "the second message logged", func() bool {
+		return strings.Contains(strings.Join(summary(c.events(), 0), "|"), "user:then write b.txt:0")
+	})
+	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "respond", RequestID: c.state().Pending[0].ID, Decision: "allow"})
+	// The second prompt runs, in the same turn.
+	eventually(t, "the second request", func() bool {
+		s := c.state()
+		return len(s.Pending) == 1 && strings.Count(strings.Join(summary(c.events(), 0), "|"), "request:") == 1
+	})
+	if s := c.state(); s.Status != statusWaiting {
+		t.Fatalf("between the prompts: %s", s.Status)
+	}
+	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "respond", RequestID: c.state().Pending[0].ID, Decision: "allow"})
+	eventually(t, "the turn to end", lastTurnEnded(c))
+	got := strings.Join(summary(c.events(), 0), "|")
+	if strings.Count(got, "turn:started") != 1 || strings.Count(got, "turn:completed") != 1 || strings.Count(got, "tool:Write") != 2 {
+		t.Fatalf("events: %s", got)
+	}
+	eventually(t, "idle", func() bool { return c.state().Status == statusIdle })
+}

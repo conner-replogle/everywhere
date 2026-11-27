@@ -170,7 +170,10 @@ const (
 	// agent.harnessLoginCode and agent.harnessLoginCancel, for other agents'
 	// sign-ins; changes come as claude.auth.
 	FeatureHarnessAuth = "harnessAuth"
-	FeaturePin         = "pin" // Thread.pinnedAt and seenAt, threads.pin and threads.seen
+	// FeatureHarnessQueue: a prompt sent while another agent works is passed
+	// on after the one before it, in the same turn.
+	FeatureHarnessQueue = "harnessQueue"
+	FeaturePin          = "pin" // Thread.pinnedAt and seenAt, threads.pin and threads.seen
 	// FeatureAutoUpdate: updating when idle; UpdateInfo.auto, waiting and
 	// lastAuto, and device.setAutoUpdate.
 	FeatureAutoUpdate = "autoUpdate"
