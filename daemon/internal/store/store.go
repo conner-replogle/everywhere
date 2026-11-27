@@ -494,6 +494,12 @@ func (s *Store) CreateThread(projectID, name, kind string) (protocol.Thread, err
 		}
 		mode = "auto"
 	}
+	if kind != protocol.ThreadClaude && kind != protocol.ThreadTerminal {
+		// Those are claude's modes. Another agent's thread starts in the
+		// agent's own default: its modes may have the same names (Antigravity
+		// has a default and an auto), so a mode kept is one that was chosen.
+		mode = ""
+	}
 	_, err = s.db.Exec(`INSERT INTO threads (id, project_id, kind, name, created_at, scratch_dir, agent_permission_mode)
 VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), ?)`,
 		t.ID, t.ProjectID, t.Kind, t.Name, t.CreatedAt, t.ScratchDir, mode)

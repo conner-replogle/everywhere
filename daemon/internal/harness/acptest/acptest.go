@@ -96,6 +96,7 @@ func run() {
 	replies := map[float64]chan json.RawMessage{}
 	cancel := make(chan struct{}, 1)
 	nextID := 9000.0
+	current := map[string]string{} // config options set, by id
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 1<<20), 8<<20)
 	for in.Scan() {
@@ -121,7 +122,13 @@ func run() {
 			map[string]any{"id": "model", "category": "model", "type": "select", "currentValue": "m1",
 				"options": []any{map[string]any{"value": "m1", "name": "Model One"}, map[string]any{"value": "m2", "name": "Model Two"}}},
 			map[string]any{"id": "mode", "category": "mode", "type": "select", "currentValue": "build",
-				"options": []any{map[string]any{"value": "build", "name": "Build"}, map[string]any{"value": "plan", "name": "Plan"}}},
+				"options": []any{map[string]any{"value": "build", "name": "Build"}, map[string]any{"value": "plan", "name": "Plan"}, map[string]any{"value": "auto", "name": "Auto"}}},
+		}
+		for _, o := range config {
+			o := o.(map[string]any)
+			if v, ok := current[o["id"].(string)]; ok {
+				o["currentValue"] = v
+			}
 		}
 		switch m.Method {
 		case "initialize":
@@ -148,7 +155,19 @@ func run() {
 			text("agent_message_chunk", "replayed from before")
 			send(map[string]any{"id": *m.ID, "result": map[string]any{"configOptions": config}})
 		case "session/set_config_option":
-			send(map[string]any{"id": *m.ID, "result": map[string]any{}})
+			// Answered with the options as they are now, as agy does.
+			var p struct {
+				ConfigID string `json:"configId"`
+				Value    string `json:"value"`
+			}
+			json.Unmarshal(m.Params, &p)
+			current[p.ConfigID] = p.Value
+			for _, o := range config {
+				if o := o.(map[string]any); o["id"] == p.ConfigID {
+					o["currentValue"] = p.Value
+				}
+			}
+			send(map[string]any{"id": *m.ID, "result": map[string]any{"configOptions": config}})
 		case "session/cancel":
 			select {
 			case cancel <- struct{}{}:

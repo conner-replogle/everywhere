@@ -135,7 +135,7 @@ func TestHarnessThread(t *testing.T) {
 	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "send", Text: "please write b.txt now"})
 	eventually(t, "the permission prompt", func() bool { return len(c.state().Pending) == 1 })
 	s := c.state()
-	if s.Harness == nil || s.Harness.Kind != "fake" || s.Harness.Version != "9.9" || len(s.Models) != 2 || len(s.Modes) != 2 || s.PermissionMode != "build" {
+	if s.Harness == nil || s.Harness.Kind != "fake" || s.Harness.Version != "9.9" || len(s.Models) != 2 || len(s.Modes) != 3 || s.PermissionMode != "build" {
 		t.Fatalf("state = %+v", s)
 	}
 	req := s.Pending[0]
@@ -248,7 +248,7 @@ func TestAgentConfigBeforeStart(t *testing.T) {
 	if err := m.Attach(th.ID, c, 0, 0); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, "the probed config", func() bool { s := c.state(); return len(s.Models) == 2 && len(s.Modes) == 2 })
+	eventually(t, "the probed config", func() bool { s := c.state(); return len(s.Models) == 2 && len(s.Modes) == 3 })
 	s := c.state()
 	if s.Status != statusStopped || s.PermissionMode != "build" || len(c.events()) != 0 {
 		t.Fatalf("state %+v, events %v", s, c.events())
@@ -351,4 +351,79 @@ func TestHarnessSignIn(t *testing.T) {
 	if _, err := m.StartHarnessLogin(ctx, "nope"); err == nil {
 		t.Fatal("signed in an agent there isn't")
 	}
+}
+
+// Another agent's own modes are its thread's, even named like claude's
+// (Antigravity has an auto): a Scratch thread doesn't start in claude's auto,
+// and the agent's auto, chosen, is kept when the agent starts again.
+func TestHarnessModesNamedLikeClaudes(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(acptest.Env, "1")
+	saved := harness.Agents
+	harness.Agents = []harness.Agent{{Kind: "fake", Title: "Fake", Command: []string{exe}}}
+	t.Cleanup(func() { harness.Agents = saved })
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	scratch, err := st.ScratchProject()
+	if err != nil {
+		t.Fatal(err)
+	}
+	th, err := st.CreateThread(scratch.ID, "", "fake")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a, _ := st.AgentThread(th.ID); a.PermissionMode != "" {
+		t.Fatalf("a new Scratch thread of another agent starts in %q, claude's", a.PermissionMode)
+	}
+	m := NewManager(st, t.TempDir(), func() {})
+	t.Cleanup(m.Shutdown)
+	c := &recorder{}
+	if err := m.Attach(th.ID, c, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "send", Text: "please write b.txt now"})
+	eventually(t, "the agent's own default", func() bool { return c.state().PermissionMode == "build" && len(c.state().Pending) == 1 })
+	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "respond", RequestID: c.state().Pending[0].ID, Decision: "deny"})
+	eventually(t, "the turn to end", lastTurnEnded(c))
+	m.Handle(th.ID, c, protocol.AgentClientMsg{T: "setMode", Mode: "auto"})
+	eventually(t, "auto", func() bool { return c.state().PermissionMode == "auto" })
+
+	// Started again, it's in auto still.
+	m.Kill(th.ID)
+	c2 := &recorder{}
+	if err := m.Attach(th.ID, c2, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "auto before it starts again", func() bool { return c2.state().PermissionMode == "auto" })
+	m.Handle(th.ID, c2, protocol.AgentClientMsg{T: "send", Text: "please write c.txt now"})
+	eventually(t, "the agent at work again", func() bool { return len(c2.state().Pending) == 1 })
+	if s := c2.state(); s.PermissionMode != "auto" {
+		t.Fatalf("started again in %q", s.PermissionMode)
+	}
+	if a, _ := st.AgentThread(th.ID); a.PermissionMode != "auto" {
+		t.Fatalf("kept %q", a.PermissionMode)
+	}
+	m.Handle(th.ID, c2, protocol.AgentClientMsg{T: "respond", RequestID: c2.state().Pending[0].ID, Decision: "deny"})
+	eventually(t, "the second turn to end", lastTurnEnded(c2))
+
+	// A mode of claude's kept from before is no mode of the agent's.
+	m.Kill(th.ID)
+	if err := st.SetAgentPermissionMode(th.ID, "bypassPermissions"); err != nil {
+		t.Fatal(err)
+	}
+	c3 := &recorder{}
+	if err := m.Attach(th.ID, c3, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "one of the agent's modes over claude's", func() bool {
+		s := c3.state()
+		return len(s.Modes) == 3 && s.PermissionMode != "" && s.PermissionMode != "bypassPermissions"
+	})
 }

@@ -168,12 +168,13 @@ func newSession(m *Manager, threadID string, a store.AgentThread) *session {
 		s.agent = &agent
 		s.state.Harness = &protocol.AgentHarness{Kind: agent.Kind, Title: agent.Title}
 		s.state.Models, s.state.Commands = []protocol.AgentModel{}, []protocol.AgentCommand{}
-		// The store's default modes are claude's; an agent's own are known
-		// once it starts, or from the last of its kind that did.
-		if s.state.PermissionMode == "default" || s.state.PermissionMode == "auto" {
-			s.state.PermissionMode = ""
-		}
+		// An agent's modes are known once it starts, or from the last of its
+		// kind that did. A mode it doesn't have (claude's, kept for a thread
+		// from before agents' threads had their own) isn't shown.
 		if c, ok := m.agentConfigLocked(agent.Kind); ok { // newSession runs with m.mu held
+			if !offersMode(c.Modes, s.state.PermissionMode) {
+				s.state.PermissionMode = ""
+			}
 			s.applyAgentConfig(c)
 		}
 	}
@@ -1832,11 +1833,9 @@ func (s *session) startAgent(ctx context.Context, a store.AgentThread, dir strin
 			servers, s.releaseArgs = nil, nil
 		}
 	}
-	// What the user chose; the state may show the agent's defaults.
+	// What was chosen; the state may show the agent's defaults. One the
+	// agent doesn't have is left out when it starts (harness.Start).
 	mode := a.PermissionMode
-	if mode == "default" || mode == "auto" { // claude's, the store's default
-		mode = ""
-	}
 	p, err := s.m.startAgent(ctx, harness.StartOptions{
 		Agent: *s.agent, Dir: dir, Resume: a.SessionID, Model: a.Model, Mode: mode, MCP: servers,
 	})

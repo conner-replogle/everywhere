@@ -184,3 +184,13 @@ func (s *session) applyAgentConfig(c agentConfig) bool {
 	}
 	return changed
 }
+
+// offersMode: mode is one of modes.
+func offersMode(modes []protocol.AgentMode, mode string) bool {
+	for _, m := range modes {
+		if m.Value == mode {
+			return true
+		}
+	}
+	return false
+}
