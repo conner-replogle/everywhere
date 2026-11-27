@@ -563,8 +563,7 @@ export function ThreadView({
               </DropdownMenuContent>
             </DropdownMenu>
           )}
-          {/* pr-8: room for the bug button, fixed in the corner. */}
-          <div className="ml-auto flex min-w-0 shrink-0 items-center gap-2 pr-8 pl-2">
+          <div className="ml-auto flex min-w-0 shrink-0 items-center gap-2 pr-1 pl-2">
           {error && !archived && (
             <span className="min-w-0 max-w-64 truncate text-xs text-destructive" title={error}>
               {error}

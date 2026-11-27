@@ -1,7 +1,6 @@
 import { createFileRoute, Outlet, redirect, useLocation, useNavigate } from "@tanstack/react-router";
 import { useEffect } from "react";
 import { Alerts } from "@/components/alerts";
-import { BugReport } from "@/components/bug-report";
 import { FleetProvider } from "@/components/fleet";
 import { auth } from "@/lib/auth";
 import { hub } from "@/lib/hub";
@@ -54,7 +53,6 @@ function AppLayout() {
       <FleetProvider>
         <Outlet />
         <Alerts />
-        <BugReport />
       </FleetProvider>
     </main>
   );
